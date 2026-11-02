@@ -485,11 +485,14 @@ allowed"`, `"too fast"` (over 60 a minute), `"timeout"` (no answer within 6 s),
 URL that doesn't start with `https://` or has spaces in it, and a malformed header,
 are Lua errors, like a bad argument anywhere else.
 
-**Publish before you test.** The badge server checks each request against the app as
+**Test before you publish.** The badge server checks each request against the app as
 it is in the store: the permission, the hosts, and that the badge's owner may run it.
-An app that was never published gets `"denied"`, even from Run on badge or Try in
-emulator. Publish a first version, then keep trying changes with Run on badge; the
-hosts in effect are the published version's.
+When you're signed in, Try in emulator and Run on badge start a *test run* of the app
+you're editing on that badge first (see "Develop and publish"): for 12 hours its
+requests are checked against your draft's permissions and hosts instead, and act for
+you, before the app is in the store or while a new version waits. Anywhere else, an
+app that isn't in the store gets `"denied"`, and the hosts in effect are the published
+version's.
 
 **What your server receives.** Each request carries headers that say who is calling,
 signed by the badge server so nobody can fake them:
@@ -625,7 +628,7 @@ sock:state()                        -- "connecting", "open" or "closed"
 characters, to a host in the app's `hosts` (the same list as `http`), with no
 `badge_ticket` in its query. The badge first asks the badge server for a ticket (see
 "What the host receives"), which checks the permission, the hosts and that the owner
-may run the app, as for `http`: publish before you test. Then it closes its connection
+may run the app, as for `http` (a test run counts). Then it closes its connection
 to the badge server and connects. `protocols` (optional): up to 4 subprotocols to
 offer, each letters, digits, `.`, `-` and `_`, ≤ 32 characters; the host picks one or
 none. One socket at a time: while one is connecting or open, `ws.open` returns a
@@ -847,7 +850,7 @@ in brackets, why: `"rpc -32002: Transaction simulation failed (AccountNotFound)"
 `(BlockhashNotFound)`, or `({"InstructionError":[0,{"Custom":1}]})` for a program's error.
 
 `ok` is `false` with `"offline"`, `"not linked"`, `"denied"` (the app lacks the
-permission, or isn't in the store: publish before you test, as for `http`), `"busy"`,
+permission, or isn't in the store and has no test run, as for `http`), `"busy"`,
 `"socket open"`, `"too fast"` (over 30 calls a minute, or 6 `sendTransaction`s), `"rate
 limited"` (the RPC node is limiting the badge server: wait a few seconds and try again),
 `"timeout"` (no answer within 6 s), `"unavailable"` (this badge server has no node for
@@ -1276,15 +1279,23 @@ end
   Serial), sending only the files that changed, starts it and shows the badge's
   console, `print()` included. The badge needs a microSD card and Solana OS 0.5.0 or
   later (it checks `info` first). It replaces an installed app with the same id.
+- **Test runs.** Signed in, both start a test run before the app does, so everything
+  that goes through the badge server works with every permission the draft asks for:
+  `http`, `ws` and `rpc` with its hosts, !LAMPs, items, profile and quests, before you
+  publish. The emulator joins its demo Wi-Fi for this; a real badge needs Wi-Fi on and
+  to be yours or unclaimed. It lasts 12 hours on that badge (Run again renews it with
+  the draft as it is then) and acts for you with your real !LAMPs and items: a purchase
+  in your own app pays you back, and `lamps.award` gives only what the published app's
+  award limit allows (nothing for an app not in the store yet). Only the app's author
+  can test an app id that's taken.
 - **Publish** puts it in the store, once every Lua file compiles with the badge's Lua
   (see "Compiled by the store") and an automatic check has read the code: it looks for
   apps that harm players (taking !LAMPs by deception, asking for passwords, sending
   data away, hiding what they do), usually within a minute. What it flags waits for an
   organiser; until then only you see the app, or the store keeps your previous version.
   Each update is a new version; the badge offers it as an update and downloads only
-  the files that changed. An app that uses `http` or
-  `ws` gets answers and sockets only once it's published (the store holds its hosts),
-  so publish a first version early.
+  the files that changed. Once it's published, everyone's badge checks `http`, `ws` and
+  `rpc` against the published version's permissions and hosts.
 
 ## Console (development)
 
