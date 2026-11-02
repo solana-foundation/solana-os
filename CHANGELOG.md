@@ -6,7 +6,17 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.5 (2026-11-02)
+
+- Fixes 0.5.4 going offline after ~45 minutes. ESP-IDF 6.0.1's HTTP client opened a new
+  TLS connection for every request on a kept-alive one without closing the old, so each
+  reused request (every hello) leaked a socket and ~4 KB until none were left. The fix
+  from ESP-IDF's release/v6.0 branch (44987dfd14, after the 6.0.1 tag) is carried in
+  `components/esp_http_client/`, which replaces IDF's until 6.0.2.
+
 ## 0.5.4 (2026-11-02)
+
+On /stock for a few hours only (see 0.5.5); never offered over the air.
 
 - **Built with ESP-IDF 6.0.1** (was 5.5.4). It fixes a crash (heap corruption,
   `block_locate_free`) whenever the network dropped the badge's kept-alive server
