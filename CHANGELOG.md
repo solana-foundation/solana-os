@@ -6,6 +6,25 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.4 (2026-11-02)
+
+- **Built with ESP-IDF 6.0.1** (was 5.5.4). It fixes a crash (heap corruption,
+  `block_locate_free`) whenever the network dropped the badge's kept-alive server
+  connection: on some home routers that happened before every 300 s hello, so the badge
+  restarted every five minutes. The badge reconnects by resuming its TLS session, and
+  5.5's mbedTLS dynamic buffers then read the first answer into a buffer sized for the
+  handshake's last message. Resuming after a Lua app's WebSocket closed took the same path.
+- About 25 KB more free heap (the launcher has ~110 KB with Wi-Fi joined, was ~85 KB). A
+  full TLS handshake peaks a few KB higher (~35-40 KB).
+- mbedTLS 4: hashing goes through PSA Crypto. cJSON comes from the component registry
+  (`espressif/cjson`), still capped at 16 levels (`CONFIG_CJSON_NESTING_LIMIT`). The
+  certificate bundle verifies Google's cross-signed GTS Root R1 through the bundle's own
+  copy, since 6.0.1 dropped the GlobalSign root it is cross-signed by.
+- Badges updated over the air keep their 5.5.4 bootloader; `/stock` writes 6.0.1's.
+- The `Authorization` header no longer stays on the stack, so a crash's stack dump
+  doesn't print the badge secret.
+- Console: `cloud hangup` closes the server connection; the next request resumes it.
+
 ## 0.5.3 (2026-10-30)
 
 - **Lua QR codes**: `ui.qr(x, y, size, text)` and `q:text()`, 25 to 218 px, text up to

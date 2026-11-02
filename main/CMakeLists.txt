@@ -4,10 +4,7 @@ idf_component_register(
     SRCS ${SOLANA_OS_SRCS} ${SOLANA_OS_DEVICE_SRCS}
     INCLUDE_DIRS "."
     PRIV_REQUIRES bsp nvs_flash esp_wifi esp_netif esp_event console esp_timer mbedtls
-                  esp_app_format app_update esp_partition spi_flash fatfs vfs esp_http_client esp-tls tcp_transport lwip json esp_driver_uart)
+                  esp_app_format app_update esp_partition spi_flash fatfs vfs esp_http_client esp-tls tcp_transport lwip esp_driver_uart)
 
-# Mesh messages are untrusted JSON and cJSON parses recursively (~80 B of
-# stack per level): cap the depth so a crafted frame can't overflow a task.
-# os_mesh also drops anything nested deeper than 8 before parsing.
-idf_component_get_property(json_lib json COMPONENT_LIB)
-target_compile_definitions(${json_lib} PRIVATE CJSON_NESTING_LIMIT=16)
+# cJSON (espressif/cjson) parses mesh JSON with a depth cap of 16:
+# CONFIG_CJSON_NESTING_LIMIT in sdkconfig.defaults.

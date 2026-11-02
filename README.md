@@ -6,7 +6,7 @@ badge-to-badge mesh, the *Hitchhiker's Guide to Solana* game apps and a
 sandboxed Lua 5.5 app host. The same sources also build to WebAssembly for a
 browser emulator (`emulator/`) and for the store's Lua compiler (`tools/luac/`).
 
-Stack: ESP-IDF v5.5, C, LVGL 9, Lua 5.5. What changed in each release: [CHANGELOG.md](CHANGELOG.md).
+Stack: ESP-IDF v6.0.1, C, LVGL 9, Lua 5.5. What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
 ## Lua apps and memory
 
@@ -33,7 +33,7 @@ on 0.5.0; magic-8 22.8 KB, then 13.6 KB. While snake runs the badge keeps
 ## Build and flash
 
 ```sh
-source ~/.espressif/v5.5.4/esp-idf/export.sh
+source ~/.espressif/v6.0.1/esp-idf/export.sh
 idf.py build
 idf.py -p /dev/cu.usbserial-110 -b 460800 flash
 ```

@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 #include "cJSON.h"
 #include "lvgl.h"
-#include "mbedtls/sha256.h"
+#include "psa/crypto.h"
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "lua_install.h"
@@ -198,18 +198,18 @@ bool lua_pkg_sha256_file(const char *path, uint8_t out[32], long *size)
         }
         return false;
     }
-    mbedtls_sha256_context c;
-    mbedtls_sha256_init(&c);
-    mbedtls_sha256_starts(&c, 0);
+    psa_hash_operation_t c = PSA_HASH_OPERATION_INIT;
+    psa_hash_setup(&c, PSA_ALG_SHA_256);
     long total = 0;
     size_t got;
     while ((got = fread(buf, 1, HASH_CHUNK, f)) > 0) {
-        mbedtls_sha256_update(&c, buf, got);
+        psa_hash_update(&c, buf, got);
         total += got;
     }
     bool ok = !ferror(f);
-    mbedtls_sha256_finish(&c, out);
-    mbedtls_sha256_free(&c);
+    size_t c_len;
+    psa_hash_finish(&c, out, 32, &c_len);
+    psa_hash_abort(&c);
     fclose(f);
     free(buf);
     if (size) {

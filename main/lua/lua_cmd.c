@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "mbedtls/base64.h"
-#include "mbedtls/sha256.h"
+#include "psa/crypto.h"
 #include "core/console.h"
 #include "core/os_cmd.h"
 #include "core/os_data.h"
@@ -318,9 +318,8 @@ static const char *receive(const char *id, const char *file, long bytes, const u
         free(bin);
         return b64 && bin ? "can't write to the card" : "not enough memory";
     }
-    mbedtls_sha256_context sha;
-    mbedtls_sha256_init(&sha);
-    mbedtls_sha256_starts(&sha, 0);
+    psa_hash_operation_t sha = PSA_HASH_OPERATION_INIT;
+    psa_hash_setup(&sha, PSA_ALG_SHA_256);
     size_t total = (bytes + 2) / 3 * 4, done = 0;
     long written = 0;
     printf("recv: ready %d\n", RECV_BLOCK);
@@ -335,7 +334,7 @@ static const char *receive(const char *id, const char *file, long bytes, const u
             why = "can't write to the card";
         }
         if (!why) {
-            mbedtls_sha256_update(&sha, bin, out);
+            psa_hash_update(&sha, bin, out);
             written += out;
             done += n;
             if (done < total) {
@@ -345,8 +344,9 @@ static const char *receive(const char *id, const char *file, long bytes, const u
         }
     }
     uint8_t got[32];
-    mbedtls_sha256_finish(&sha, got);
-    mbedtls_sha256_free(&sha);
+    size_t sha_len;
+    psa_hash_finish(&sha, got, 32, &sha_len);
+    psa_hash_abort(&sha);
     free(b64);
     free(bin);
     if (fclose(f) != 0 && !why) {

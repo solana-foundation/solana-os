@@ -28,7 +28,7 @@
 #include "esp_transport_ssl.h"
 #include "lwip/netdb.h"
 #include "mbedtls/base64.h"
-#include "mbedtls/sha1.h"
+#include "psa/crypto.h"
 #include "os_ws.h"
 
 static const char *TAG = "os_ws";
@@ -242,7 +242,8 @@ static esp_err_t upgrade(const char *host, const char *path, const char *protoco
     if (joined) {
         memcpy(joined, key, kl);
         memcpy(joined + kl, WS_GUID, sizeof(WS_GUID));
-        mbedtls_sha1((const unsigned char *)joined, kl + sizeof(WS_GUID) - 1, digest);
+        size_t dl;
+        psa_hash_compute(PSA_ALG_SHA_1, (const uint8_t *)joined, kl + sizeof(WS_GUID) - 1, digest, sizeof(digest), &dl);
         mbedtls_base64_encode(want, sizeof(want), &wl, digest, sizeof(digest));
         free(joined);
         err = status == 101 && accept && al == wl && !memcmp(accept, want, wl) ? ESP_OK : ESP_FAIL;

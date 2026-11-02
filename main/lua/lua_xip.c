@@ -17,7 +17,7 @@
 #include <sys/param.h>
 #include "esp_log.h"
 #include "esp_partition.h"
-#include "mbedtls/sha256.h"
+#include "psa/crypto.h"
 #include "lua_xip.h"
 
 static const char *TAG = "lua_xip";
@@ -46,12 +46,8 @@ static const esp_partition_t *code_part(void)
 
 static void sha256(const uint8_t *data, size_t n, uint8_t out[32])
 {
-    mbedtls_sha256_context c;
-    mbedtls_sha256_init(&c);
-    mbedtls_sha256_starts(&c, 0);
-    mbedtls_sha256_update(&c, data, n);
-    mbedtls_sha256_finish(&c, out);
-    mbedtls_sha256_free(&c);
+    size_t len;
+    psa_hash_compute(PSA_ALG_SHA_256, data, n, out, 32, &len);
 }
 
 // The file into slot `off`'s image area, erased first along with the header.

@@ -266,6 +266,13 @@ static int cmd_server(int argc, char **argv)
 
 static int cmd_cloud(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "hangup")) {
+        // Drops the kept-alive connection but keeps its session ticket, so the next
+        // request resumes the TLS session: the path a connection the network reset takes.
+        os_http_hangup();
+        printf("cloud: connection closed; the next request resumes the TLS session\n");
+        return 0;
+    }
     static const char *names[] = {"offline", "connecting", "unclaimed", "claimed", "error", "linked elsewhere"};
     os_cloud_info_t in;
     os_cloud_get_info(&in);
@@ -349,7 +356,7 @@ void console_start(void)
         { .command = "key", .help = "key <up|down|left|right|select|back|home>... - press keys", .func = cmd_key },
         { .command = "wifi", .help = "wifi [status|on|off|connect <ssid> [pass [channel]]|forget]", .func = cmd_wifi },
         { .command = "server", .help = "server [url|clear] - show or set the badge server", .func = cmd_server },
-        { .command = "cloud", .help = "Badge server link: state, badge ID, owner, claim URL", .func = cmd_cloud },
+        { .command = "cloud", .help = "cloud [hangup] - badge server link: state, badge ID, owner, claim URL; hangup closes the connection", .func = cmd_cloud },
         { .command = "shot", .help = "Dump a screenshot (decode with tools/badge.py)", .func = cmd_shot },
         { .command = "heap", .help = "heap [stacks] - heap usage, and the tasks' stack margins", .func = cmd_heap },
         { .command = "reboot", .help = "Restart the badge", .func = cmd_reboot },

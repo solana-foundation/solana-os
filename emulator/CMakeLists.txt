@@ -60,19 +60,13 @@ foreach(call ${boot_calls})
     endif()
 endforeach()
 
-# cJSON: the badge uses ESP-IDF's copy (the "json" component); so do we.
+# cJSON: the badge's copy (espressif/cjson from the component registry, in
+# managed_components once the badge project is configured); so do we.
 if(NOT CJSON_DIR)
-    set(idf_candidates $ENV{IDF_PATH} $ENV{HOME}/.espressif/v5.5.4/esp-idf)
-    file(GLOB more_idf $ENV{HOME}/.espressif/v5.5*/esp-idf $ENV{HOME}/esp/esp-idf)
-    foreach(idf ${idf_candidates} ${more_idf})
-        if(EXISTS ${idf}/components/json/cJSON/cJSON.c)
-            set(CJSON_DIR ${idf}/components/json/cJSON CACHE PATH "cJSON sources (ESP-IDF components/json/cJSON)")
-            break()
-        endif()
-    endforeach()
+    set(CJSON_DIR ${FW}/managed_components/espressif__cjson/cJSON CACHE PATH "cJSON sources (espressif/cjson)")
 endif()
 if(NOT EXISTS ${CJSON_DIR}/cJSON.c)
-    message(FATAL_ERROR "cJSON not found: set IDF_PATH or -DCJSON_DIR=<esp-idf>/components/json/cJSON")
+    message(FATAL_ERROR "cJSON not found in ${CJSON_DIR}: configure the badge project first (idf.py reconfigure)")
 endif()
 
 # Emulator runtime: scheduler, ESP-IDF services, simulated radios.

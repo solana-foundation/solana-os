@@ -18,7 +18,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "mbedtls/sha256.h"
+#include "psa/crypto.h"
 #include "nvs.h"
 #include "bsp.h"
 #include "lua/lua_install.h"
@@ -88,17 +88,17 @@ static bool sha256_file(const char *path, uint8_t out[32], size_t *size)
         }
         return false;
     }
-    mbedtls_sha256_context c;
-    mbedtls_sha256_init(&c);
-    mbedtls_sha256_starts(&c, 0);
+    psa_hash_operation_t c = PSA_HASH_OPERATION_INIT;
+    psa_hash_setup(&c, PSA_ALG_SHA_256);
     size_t total = 0, got;
     while ((got = fread(buf, 1, CHUNK, f)) > 0) {
-        mbedtls_sha256_update(&c, buf, got);
+        psa_hash_update(&c, buf, got);
         total += got;
     }
     bool ok = !ferror(f);
-    mbedtls_sha256_finish(&c, out);
-    mbedtls_sha256_free(&c);
+    size_t c_len;
+    psa_hash_finish(&c, out, 32, &c_len);
+    psa_hash_abort(&c);
     fclose(f);
     free(buf);
     *size = total;

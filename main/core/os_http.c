@@ -165,7 +165,10 @@ static esp_err_t send_request(const char *method, const char *bearer, const char
     if (bearer && bearer[0]) {
         char auth[160];
         snprintf(auth, sizeof(auth), "Bearer %s", bearer);
-        esp_http_client_set_header(s_client, "Authorization", auth);
+        esp_http_client_set_header(s_client, "Authorization", auth);   // copies it
+        // Not left on the stack: a panic's stack dump would print the badge secret.
+        memset(auth, 0, sizeof(auth));
+        __asm__ volatile("" ::"r"(auth) : "memory");
     } else {
         esp_http_client_delete_header(s_client, "Authorization");
     }

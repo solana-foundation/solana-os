@@ -12,7 +12,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 export IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$HOME/.espressif}"
 if ! command -v idf.py >/dev/null; then
     # shellcheck disable=SC1090
-    source "${IDF_EXPORT:-$IDF_TOOLS_PATH/v5.5.4/esp-idf/export.sh}" >/dev/null
+    source "${IDF_EXPORT:-$IDF_TOOLS_PATH/v6.0.1/esp-idf/export.sh}" >/dev/null
 fi
 
 (cd "$root/firmware" && idf.py build)

@@ -13,8 +13,8 @@ bun run emulator                 # or firmware/emulator/build.sh
 
 Prerequisites: a configured badge project (`firmware/sdkconfig` and
 `firmware/managed_components/`, produced by any `idf.py build` or
-`idf.py reconfigure`) and ESP-IDF v5.5 installed (the build takes cJSON from
-`$IDF_PATH/components/json`, falling back to `~/.espressif/v5.5*/esp-idf`).
+`idf.py reconfigure` with ESP-IDF v6.0.1). LVGL and cJSON (`espressif/cjson`) come
+from `managed_components/`.
 The build dir is `firmware/emulator/build/` (`BUILD_DIR=... build.sh` to move it).
 The generated files are checked in under `web/static/`, so working on the site
 does not need Emscripten.
