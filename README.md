@@ -60,6 +60,7 @@ This repo is a git submodule (at `firmware/`) of
 which holds the server, website, beacon firmware and the protocol contracts
 (`docs/MESH.md`, `server/API.md`). The Lua app API (`docs/LUA_API.md`) lives
 here, next to the host that implements it; the site renders it at `/apps/docs`.
+So does the quest-building guide (`docs/QUESTS.md`, at `/apps/docs/quests`).
 A few tools assume that
 layout: `tools/export_web.ts` / `tools/build_web.sh`, `tools/gen_assets.sh`
 (brand fonts) and the emulator build (writes to `../web/static/emulator`).
