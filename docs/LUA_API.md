@@ -824,7 +824,7 @@ end
 | Accounts | `getAccountInfo`, `getBalance`, `getMultipleAccounts` (≤ 5 addresses), `getMinimumBalanceForRentExemption` |
 | Tokens | `getTokenAccountBalance`, `getTokenAccountsByOwner`, `getTokenLargestAccounts`, `getTokenSupply` |
 | Transactions | `getSignaturesForAddress` (`limit` ≤ 10, and 10 if you don't set one), `getSignatureStatuses` (≤ 10), `getTransaction` (`maxSupportedTransactionVersion` is 0 unless you set it), `getFeeForMessage`, `simulateTransaction`, `sendTransaction` |
-| The chain | `getSlot`, `getBlockHeight`, `getBlockTime`, `getEpochInfo`, `getLatestBlockhash`, `isBlockhashValid`, `getRecentPrioritizationFees`, `getHealth`, `getVersion`, `getGenesisHash` |
+| The chain | `getSlot`, `getBlockHeight`, `getBlockTime`, `getEpochInfo`, `getLatestBlockhash`, `isBlockhashValid`, `getRecentPrioritizationFees`, `getRecentPerformanceSamples` (≤ 10 samples, and 10 if you don't give a limit), `getHealth`, `getVersion`, `getGenesisHash` |
 
 Anything else fails with `"method not allowed"`: the rest either can't answer in a
 badge-sized reply (`getBlock`, `getProgramAccounts`, `getLargestAccounts`) or isn't
