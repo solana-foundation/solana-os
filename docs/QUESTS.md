@@ -2,8 +2,8 @@
 
 How to write quests for *The Hitchhiker's Guide to Solana*, the game on the Solana
 BP26 badge: what a quest is, every field and step type, how the engine behaves,
-patterns that work, how to test, and how to ship one. It's written for organisers
-and for the AI agents they hand it to. Everything here matches the server's quest
+patterns that work, how to test, and how to ship one. It's written for organisers,
+QuestMakers and the AI agents they hand it to. Everything here matches the server's quest
 engine and validator; where this guide and the server's API contract (`server/API.md`,
 "Quest definition") disagree, the contract wins.
 
@@ -13,15 +13,24 @@ site shows it at `/apps/docs/quests` (raw Markdown: `/docs/quests.md`). Paths li
 [solana-bp26-badges](https://github.com/spacemandev-git/solana-bp26-badges) repo, which
 holds the badge server.
 
-**For AI agents:** you can't save quests yourself (the admin API needs an organiser's
-signed-in session). Your job is to produce one **QuestDef JSON object** per quest that
-an organiser pastes into `/admin/quests`. Read "Rules that the validator doesn't check"
-and "Checklist for AI agents" at the end before you answer.
+**Who builds quests:** organisers (the site's admins) and **QuestMakers**, people an admin
+gave that role in `/admin/admins` (Team). A QuestMaker gets the quest tools in `/admin`
+(Quests, Characters, Beacons, the beacon simulator and their own quests' activity) and
+nothing else. They change, delete and test only the quests they made; everyone else's
+open read-only. Admins can change any quest.
+
+**For AI agents:** you can't save quests yourself (the admin API needs an organiser's or
+QuestMaker's signed-in session). Your job is to produce one **QuestDef JSON object** per
+quest that they paste into `/admin/quests`. Write new quests with `"active": false`, so
+they can be tested before anyone else sees them. Read "Rules that the validator doesn't
+check" and "Checklist for AI agents" at the end before you answer.
 
 ## How quests work
 
 - Quests are **data on the server**. Nothing quest-specific ships on the badge, so a new
-  quest goes live the moment an organiser saves it, with no firmware update.
+  quest goes live the moment it's saved with `"active": true`, with no firmware update.
+  Saved with `"active": false` it isn't live: only the people testing it can play it
+  (see "Testing a quest").
 - A quest is given by a **character** (Pip Thumbwell, Dr. Hexa Strain, ...). Characters
   live on **beacons**: always-on ESP32 boards around the venue. One character can be on
   several beacons; a beacon plays one character at a time.
@@ -73,7 +82,7 @@ A quest is one JSON object, a `QuestDef` (the comments mark what goes there; rea
 | `giver` | yes | a character id | The quest is offered at that character's beacons |
 | `requires` | no | quest ids (not itself) | Quests the player must have completed once first. Until then the quest is `locked` |
 | `repeatable` | no | default `false` | Can be started again after completing; the reward pays every run |
-| `active` | no | default `true` | `false` stops new players starting it (see "Editing live quests") |
+| `active` | no | default `true` | Live for everyone. `false`: nobody new can start it, except the people testing it. Write new quests with `false`, test, then set `true` (see "Testing a quest" and "Editing live quests") |
 | `intro` | yes | 1-32 dialog nodes, at least one option with `"action": "accept"` | The offer conversation |
 | `steps` | yes | 1-20 steps, unique step ids | Done in order, one at a time |
 | `reward` | no | see "Rewards" | Paid when the last step completes |
@@ -309,7 +318,8 @@ or have its author submit it at `/apps/submit` and an organiser set its status t
   within a minute. Quests don't change.
 - A character offers one quest at a time: the first one available to this player, in
   the server's quest order (seeded quests in file order, quests made in the admin page
-  after them). Others show up once it's done or locked. Spread
+  after them; a quest you're testing comes first). Others show up once it's done or
+  locked. Spread
   quests across characters so the venue has many doors.
 - Chat with a character (hold a screen beacon) is flavour only. It never moves quests.
 
@@ -404,7 +414,8 @@ make sure every path can reach the `accept` or `complete` option or an exit.
 
 A new quest for Madame Whisper: hear a rumour, fetch a sealed note from Bo Lampwick
 within 20 minutes, bring it back unopened. It shows branching, `close`, a checkpoint
-with a time limit, `deliver`, actions and a mixed reward.
+with a time limit, `deliver`, actions and a mixed reward. Like every new quest it's
+saved with `"active": false`: test it, then set it to `true`.
 
 ```json
 {
@@ -413,7 +424,7 @@ with a time limit, `deliver`, actions and a mixed reward.
   "summary": "Fetch a sealed note from Bo Lampwick for Madame Whisper. Twenty minutes, and don't peek.",
   "giver": "whisper",
   "requires": ["rumor-mill"],
-  "active": true,
+  "active": false,
   "intro": [
     {
       "id": "start",
@@ -485,7 +496,7 @@ with a time limit, `deliver`, actions and a mixed reward.
 }
 ```
 
-How it plays: Whisper offers it only after `rumor-mill`. Accepting doesn't start a
+How it plays, once it's live: Whisper offers it only after `rumor-mill`. Accepting doesn't start a
 conversation at Lampwick, so the badge says `Next: Collect the note from Bo Lampwick`.
 At Lampwick's beacon the `get-note` dialog shows; taking the note saves a checkpoint and
 starts step 2's 20-minute clock. Missing it removes the note and sends the player back
@@ -496,9 +507,13 @@ quest (40 !LAMPs and the Turbine page) and then shows the `thanks` node.
 
 Two ways to get a quest onto the server:
 
-1. **Admin page** (live at once): `/admin/quests` > New quest. The editor is the JSON,
-   with a readable preview beside it. Save checks every field and reference and points
-   at the failing path, e.g. `steps[1].dialog[0].options[0].next: unknown node 'thanks'`.
+1. **Admin page**: `/admin/quests` > New quest (organisers and QuestMakers). The editor
+   is the JSON, with a readable preview beside it; a new quest starts with
+   `"active": false`. Save checks every field and reference and points at the failing
+   path, e.g. `steps[1].dialog[0].options[0].next: unknown node 'thanks'`. Test it (next
+   section), then set `"active": true` and save again: it's live at once. The quest is
+   yours: the list shows who made each quest, and a QuestMaker can't change anyone
+   else's.
 2. **Seed content** (in the repo, for quests that should exist on every server): add
    it to `server/content/quests.json`, run `bun server/content/check.ts` (it also checks
    ASCII and that items a quest takes are given earlier), and open a pull request. The
@@ -509,28 +524,55 @@ won't overwrite your edit.
 
 ## Testing a quest
 
-Best on a local server (`bun run dev:server` and `bun run dev`), where nobody else sees
-it. On the production site an active quest shows on `/quests` for everyone at once.
+A quest that isn't live (`"active": false`) can be played by the people testing it, and
+nobody else: it isn't on `/quests`, and a beacon playing its giver doesn't offer it to
+anyone else. Admins can test any quest, QuestMakers their own. Tests play the saved
+version, on your own badge or an emulator signed in as you.
 
-1. Make sure the quest's characters exist. For a test, `/admin/beacons` > *New beacon
-   with a key* with that character gives you a key.
+What's different in a test:
+
+- The quest is offered to you even if its `requires` aren't done, and at its giver it
+  comes before that character's live quests, so you can test with a seeded character.
+  Its title reads `Test: <title>` on the badge, in the quest log and on `/quests`.
+- A test run **pays no !LAMPs** (actions or reward), **pages or packs**, and `pay` steps
+  charge nothing. Completing it toasts `Test complete`.
+- Items and quest apps work as usual, so every step can be played. Items a test gives are
+  marked as test items: they can't be traded, and they count only for test runs (a live
+  quest's `item`, `take` or `deliver` step ignores them).
+- A test completion doesn't unlock other quests' `requires`.
+- Its events show in the activity log marked `test`; the dashboard, leaderboards and
+  funnels don't count them.
+
+Step by step:
+
+1. Make sure the quest's characters exist (`/admin/characters`). For a test beacon,
+   `/admin/beacons` > *New beacon with a key*, with the giver as its character, gives
+   you a key.
 2. Open `/admin/beacon-sim`, paste the key and start it: this browser tab is now a
    beacon.
 3. Open `/emulator` in another tab of the same browser, turn its Wi-Fi on once to get an
-   id, claim it from the account you test with, then turn Wi-Fi off. Keep both tabs
-   visible.
-4. On the emulated badge open Quests: the character is nearby. Talk to start the quest.
-5. For steps at another character, change the beacon's character in `/admin/beacons`
+   id, claim it with the account you test with (the one that will press *Test it*), then
+   turn Wi-Fi off. Keep both tabs visible. A real badge near a beacon playing the
+   character works too (Solana OS 0.5.0 or newer for quest apps).
+4. In `/admin/quests`, open the quest and press **Test it**.
+5. On the emulated badge open Quests: the character is nearby and offers `Test: <title>`.
+   Talk to start it.
+6. For steps at another character, change the beacon's character in `/admin/beacons`
    (the sim picks it up at its next hello) or run a second sim tab with another key.
    For `collect` steps, `/emulator?badge=2` is a second badge (X Dex between the two;
    both owners need X linked unless the server runs without X).
-6. Watch `/quests` (signed in as the tester) for progress and deadlines, and
-   `/admin/activity?quest=<id>` for every start, step, failure and completion.
-7. To replay from scratch, use a second test account, or make the quest repeatable
-   while testing.
+7. Watch `/quests` (signed in as the tester) for progress and deadlines, and the quest's
+   **Activity** (the button in the editor, or `/admin/activity?quest=<id>`) for every
+   start, step, failure and completion.
+8. Changed the quest? Save, then **Start over**: your test run and the items it gave
+   are removed and the quest is offered again from the beginning. Do the same after a
+   test completion to play it again.
+9. When it works, set `"active": true` and save. That ends every test of it (test runs
+   and test items are removed), and everyone, testers included, plays it from the start,
+   for real. **Stop testing** ends your test without going live.
 
-On real hardware: a badge near a beacon running that character, with the badge on
-Solana OS 0.5.0 or newer for quest apps.
+You can test several of your quests at once, for example both parts of a story arc:
+items one test gives count for your other tests.
 
 ## Editing live quests
 
@@ -538,19 +580,24 @@ Solana OS 0.5.0 or newer for quest apps.
   insert or remove steps in a quest people are playing: they'd jump to a different step.
   Fixing text, dialog, rewards and limits is safe; adding steps at the end is safe.
 - `active: false` stops new players from starting it. Players mid-quest can still
-  finish, and players who finished still see it as completed.
+  finish, and players who finished still see it as completed. Set it to test a big
+  change first: only testers are offered it until it's live again.
 - Deleting a quest is refused while another quest `requires` it. Prefer `active: false`:
   deleting takes it out of everyone's history.
+- QuestMakers can change and delete only the quests they made. An admin can change
+  anyone's; the quest keeps its maker.
 - Rewards changed later don't touch players who already completed it.
 
 ## Watching how it does
 
-- `/admin` dashboard: the quests leaderboard (starts, completions, failures, players,
-  completion rate, average time) for any time range. Open a quest for its **funnel**:
-  how many players reached, finished and failed each step. A step where many fail or
-  stall is too hard, too far, or badly explained.
+- `/admin` dashboard (admins): the quests leaderboard (starts, completions, failures,
+  players, completion rate, average time) for any time range. Open a quest for its
+  **funnel**: how many players reached, finished and failed each step. A step where many
+  fail or stall is too hard, too far, or badly explained. Test runs don't count.
 - `/admin/activity`: filter by quest for the live log of `quest.start`, `quest.step`,
-  `quest.fail` (with the reason: `time` or `left`) and `quest.complete`.
+  `quest.fail` (with the reason: `time` or `left`) and `quest.complete`; test runs are
+  marked `test`. QuestMakers see the activity of their own quests here (players' names,
+  never their emails).
 - Beacon liveness is on `/admin/beacons`: a quest whose beacon is offline can't move.
 
 ## Checklist for AI agents
@@ -562,7 +609,8 @@ When asked to write a quest:
    organiser must create first.
 2. Output **one JSON object per quest**, valid JSON (no comments, no trailing commas),
    with keys in this order: `id`, `title`, `summary`, `giver`, `requires`, `repeatable`,
-   `active`, `intro`, `steps`, `reward`. Omit optional keys you don't use.
+   `active`, `intro`, `steps`, `reward`. Omit optional keys you don't use, but set
+   `"active": false` on a new quest so it can be tested before it goes live.
 3. Check the limits: title and step titles ≤ 48, summary ≤ 140, dialog text ≤ 400
    (aim for 250), labels ≤ 32, item names ≤ 40, ≤ 4 options per node, ≤ 20 steps,
    ≤ 8 actions per list, ids `a-z 0-9 -`.
@@ -576,5 +624,6 @@ When asked to write a quest:
    ellipsis character, no emoji or accents. Say `!LAMPs`.
 7. Original writing in the HH GtS tone: playful, a little absurd, kind to the player,
    and accurate about Solana.
-8. After the JSON, list what the organiser must check: beacons for each character,
-   anything that has to be created first, and how to test it.
+8. After the JSON, list what the organiser or QuestMaker must check: beacons for each
+   character, anything that has to be created first, and how to test it (*Test it* in
+   `/admin/quests`, the beacon simulator and the emulator), then set `"active": true`.
