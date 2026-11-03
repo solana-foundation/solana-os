@@ -179,6 +179,7 @@ typedef struct {
     char message[160];              // linked: the server's text
     char update[32], update_sha[65];    // "update": a Solana OS build on offer, "" = none
     char site[96];                      // "site", printable ASCII, "" = none
+    char beacon[8];                     // "beacon": the beacon id when this badge plays one, "" = none
     int update_size;
     int poll, mesh, lamps, level, packs;
     int64_t time;
@@ -285,6 +286,14 @@ static void parse(const char *body, hello_t *r)
     }
     if (sok) {
         strlcpy(r->site, site, sizeof(r->site));
+    }
+    const char *beacon = cJSON_GetStringValue(cJSON_GetObjectItem(j, "beacon"));
+    bool bok = beacon && strlen(beacon) == 6;
+    for (const char *p = beacon; bok && *p; p++) {
+        bok = (*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'Z');    // a mesh id (MESH.md)
+    }
+    if (bok) {
+        strlcpy(r->beacon, beacon, sizeof(r->beacon));
     }
     if (uok) {
         strlcpy(r->update, uv, sizeof(r->update));
@@ -445,6 +454,11 @@ static int apply(const char *server, const hello_t *r, int *errors, int *backoff
         strlcpy(s_info.claim_url, r->claim_url, sizeof(s_info.claim_url));
         if (r->site[0]) {
             strlcpy(s_info.site, r->site, sizeof(s_info.site));
+        }
+        if (strcmp(s_info.beacon, r->beacon)) {
+            ESP_LOGI(TAG, "%s%s", r->beacon[0] ? "quest beacon " : "no longer a quest beacon", r->beacon);
+            strlcpy(s_info.beacon, r->beacon, sizeof(s_info.beacon));
+            nvs_save("beacon", r->beacon);
         }
         if (r->claimed) {
             if (strcmp(s_info.owner, r->owner)) {
@@ -700,6 +714,7 @@ void os_cloud_init(void)
     nvs_load("key", key, sizeof(key));
     s_info.has_key = hex_decode(key, s_key, sizeof(s_key));
     s_info.mesh_channel = nvs_load_int("mesh", CONFIG_SOLANA_OS_MESH_CHANNEL);
+    nvs_load("beacon", s_info.beacon, sizeof(s_info.beacon));
     nvs_load("user", s_owner_tag, sizeof(s_owner_tag));
     s_info.claimed = nvs_load_int("claimed", 0) == 1;
     if (s_info.claimed) {
@@ -764,6 +779,19 @@ void os_cloud_server(char *out, size_t n)
     unlock();
 }
 
+void os_cloud_set_beacon(const char *id)
+{
+    char b[sizeof(s_info.beacon)];
+    strlcpy(b, id && strlen(id) == 6 ? id : "", sizeof(b));
+    lock();
+    bool changed = strcmp(s_info.beacon, b) != 0;
+    strlcpy(s_info.beacon, b, sizeof(s_info.beacon));
+    unlock();
+    if (changed) {
+        nvs_save("beacon", b);
+    }
+}
+
 void os_cloud_set_server(const char *url)
 {
     char clean[sizeof(s_info.server)];
@@ -782,7 +810,7 @@ void os_cloud_set_server(const char *url)
         // The ID, secret, mesh key and owner belong to the old server. The
         // owner tag stays: a different account there still means new owner.
         strlcpy(s_info.server, clean, sizeof(s_info.server));
-        s_info.id[0] = s_info.claim_url[0] = s_info.owner[0] = s_info.user[0] = 0;
+        s_info.id[0] = s_info.claim_url[0] = s_info.owner[0] = s_info.user[0] = s_info.beacon[0] = 0;
         s_secret[0] = 0;
         s_info.has_key = s_info.claimed = false;
         s_info.lamps = s_info.level = s_info.packs = 0;
@@ -799,6 +827,7 @@ void os_cloud_set_server(const char *url)
         nvs_save("secret", "");
         nvs_save("key", "");
         nvs_save("owner", "");
+        nvs_save("beacon", "");
         nvs_save_int("claimed", 0);
         ESP_LOGI(TAG, "server set to '%s'", clean);
     }

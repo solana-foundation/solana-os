@@ -47,12 +47,16 @@ typedef struct {
     char update[32];
     int update_size;        // bytes of the image
     char update_sha[65];    // its SHA-256, hex
+    // Hello "beacon": this badge is also a quest beacon (server/API.md "Badge
+    // beacons", game/beacon.c), pending or adopted. Kept in NVS. "" = not one.
+    char beacon[8];
 } os_cloud_info_t;
 
 void os_cloud_init(void);                   // after os_wifi_init()
 void os_cloud_get_info(os_cloud_info_t *out);
 void os_cloud_refresh(void);                // say hello now instead of at the next poll
 void os_cloud_set_server(const char *url);  // saved to NVS; "" clears
+void os_cloud_set_beacon(const char *id);   // what pairing or the beacon's hello learned first ("" = none)
 
 // For os_api / os_mesh (any task).
 bool os_cloud_bearer(char *out, size_t n);  // badge secret; false if none

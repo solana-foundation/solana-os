@@ -322,6 +322,14 @@ or have its author submit it at `/apps/submit` and an organiser set its status t
   locked. Spread
   quests across characters so the venue has many doors.
 - Chat with a character (hold a screen beacon) is flavour only. It never moves quests.
+- **Any badge can be a beacon**, with nothing erased: plug it in at
+  `/admin/beacons/badge` (Solana OS 0.5.6 or newer), which joins it to Wi-Fi, pairs it
+  and lets you adopt it with a character. Its launcher then has **Beacon**: while that
+  app is open the badge plays the character (radio, quest relays, a scan code for the
+  emulator); CANCEL stops it, and it reopens by itself after a restart. Its network must
+  be on the mesh channel, like a beacon's. For an emulated badge, `/emulator` has the
+  same panel for QuestMakers. Deleting it in `/admin/beacons` takes the app away again;
+  the badge's owner keeps everything either way.
 
 Seeded characters (check `/admin/characters` for the current list):
 
@@ -549,7 +557,8 @@ Step by step:
    `/admin/beacons` > *New beacon with a key*, with the giver as its character, gives
    you a key.
 2. Open `/admin/beacon-sim`, paste the key and start it: this browser tab is now a
-   beacon.
+   beacon. (Or make an emulated badge a beacon in another tab: `/emulator?badge=3`, the
+   *Quest beacon* panel, then leave its Beacon app open.)
 3. Open `/emulator` in another tab of the same browser, turn its Wi-Fi on once to get an
    id, claim it with the account you test with (the one that will press *Test it*), then
    turn Wi-Fi off. Keep both tabs visible. A real badge near a beacon playing the

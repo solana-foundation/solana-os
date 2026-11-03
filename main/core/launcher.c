@@ -1,5 +1,7 @@
-// App browser: paged 3x2 grid of every registered app.
+// App browser: paged 3x2 grid of every registered app (but those whose
+// visible() says no, e.g. Beacon on a badge that isn't one).
 
+#include <string.h>
 #include "os.h"
 #include "ui.h"
 
@@ -14,6 +16,38 @@
 
 static lv_obj_t *s_root, *s_tiles[PER_PAGE], *s_icons[PER_PAGE], *s_names[PER_PAGE], *s_dots, *s_hint;
 static int s_sel, s_page = -1;
+static const os_app_t *s_list[32];          // the apps shown, in registry order
+static int s_count;
+
+static bool listed(const os_app_t *app)
+{
+    return !app->visible || app->visible();
+}
+
+// Rebuilds the list; true if it changed. The selection stays on its app.
+static bool collect(void)
+{
+    const os_app_t *sel = s_count ? s_list[s_sel < s_count ? s_sel : 0] : NULL;
+    const os_app_t *next[32];
+    int n = 0;
+    for (int i = 0; i < os_app_count && n < 32; i++) {
+        if (listed(os_apps[i])) {
+            next[n++] = os_apps[i];
+        }
+    }
+    if (n == s_count && !memcmp(next, s_list, n * sizeof(next[0]))) {
+        return false;
+    }
+    memcpy(s_list, next, n * sizeof(next[0]));
+    s_count = n;
+    s_sel = 0;
+    for (int i = 0; i < n; i++) {
+        if (s_list[i] == sel) {
+            s_sel = i;
+        }
+    }
+    return true;
+}
 
 static void style_tile(int slot, const os_app_t *app, bool focused)
 {
@@ -40,11 +74,11 @@ static void render(void)
         for (int i = 0; i < PER_PAGE; i++) {
             int idx = page * PER_PAGE + i;
             lv_obj_t *t = s_tiles[i];
-            if (idx >= os_app_count) {
+            if (idx >= s_count) {
                 lv_obj_set_hidden(t, true);
                 continue;
             }
-            const os_app_t *app = os_apps[idx];
+            const os_app_t *app = s_list[idx];
             lv_obj_set_hidden(t, false);
             lv_label_set_text(s_names[i], app->name);
             // Icons are either a symbol label or an image; swap the widget as needed.
@@ -59,7 +93,7 @@ static void render(void)
             }
             lv_obj_align(s_icons[i], LV_ALIGN_CENTER, 0, -12);
         }
-        int pages = (os_app_count + PER_PAGE - 1) / PER_PAGE;
+        int pages = (s_count + PER_PAGE - 1) / PER_PAGE;
         lv_obj_clean(s_dots);
         lv_obj_set_hidden(s_dots, pages < 2);
         for (int p = 0; p < pages; p++) {
@@ -73,8 +107,8 @@ static void render(void)
     }
     for (int i = 0; i < PER_PAGE; i++) {
         int idx = page * PER_PAGE + i;
-        if (idx < os_app_count) {
-            style_tile(i, os_apps[idx], idx == s_sel);
+        if (idx < s_count) {
+            style_tile(i, s_list[idx], idx == s_sel);
         }
     }
 }
@@ -83,7 +117,8 @@ static void enter(lv_obj_t *root)
 {
     s_root = root;
     s_page = -1;
-    if (s_sel >= os_app_count) {
+    collect();
+    if (s_sel >= s_count) {
         s_sel = 0;
     }
     for (int i = 0; i < PER_PAGE; i++) {
@@ -117,19 +152,30 @@ static bool key(os_key_t k, bool repeat)
     case OS_KEY_UP:    n -= COLS; break;
     case OS_KEY_DOWN:  n += COLS; break;
     case OS_KEY_SELECT:
-        os_launch(os_apps[s_sel]);
+        if (s_sel < s_count) {
+            os_launch(s_list[s_sel]);
+        }
         return true;
     default:
         return true;    // Back on the home screen does nothing
     }
     if (n < 0) {
-        n = repeat ? 0 : (k == OS_KEY_LEFT ? os_app_count - 1 : s_sel);
-    } else if (n >= os_app_count) {
-        n = repeat ? os_app_count - 1 : (k == OS_KEY_RIGHT ? 0 : os_app_count - 1);
+        n = repeat ? 0 : (k == OS_KEY_LEFT ? s_count - 1 : s_sel);
+    } else if (n >= s_count) {
+        n = repeat ? s_count - 1 : (k == OS_KEY_RIGHT ? 0 : s_count - 1);
     }
     s_sel = n;
     render();
     return true;
+}
+
+// An app showing up or going (a badge paired as a beacon) redraws the grid.
+static void tick(void)
+{
+    if (collect()) {
+        s_page = -1;
+        render();
+    }
 }
 
 const os_app_t os_launcher = {
@@ -137,4 +183,5 @@ const os_app_t os_launcher = {
     .name = "Apps",
     .on_enter = enter,
     .on_key = key,
+    .on_tick = tick,
 };

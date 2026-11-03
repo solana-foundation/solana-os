@@ -107,6 +107,21 @@ void os_mesh_release(void);
 // still open when the hold ends). Any task.
 void os_mesh_keep_wifi(bool keep);
 
+// tag(key, msg) under another 16-byte key (a beacon's scan key, MESH.md
+// "Scan codes").
+void os_mesh_tag(const uint8_t key[16], const char *msg, char out[OS_MESH_TAG_LEN + 1]);
+
+// Badge beacons (game/beacon.c, docs/MESH.md "Badge beacons"). While a beacon
+// id is set, every frame this badge sends carries it as src and the HELLO it
+// broadcasts is the beacon's (os_mesh_beacon_hello(); none until then), not
+// the badge's. Nearby and request toasts stop, the radio stays awake, and the
+// mesh channel follows the joined Wi-Fi network's, as a beacon's radio follows
+// its AP: Wi-Fi is never suspended for it. NULL or "" ends it. Don't mix it
+// with os_mesh_acquire() (the Beacon app is the only app open meanwhile).
+void os_mesh_beacon(const char *id);
+void os_mesh_beacon_hello(const char *json);    // <= 200 bytes, copied; NULL = silent
+bool os_mesh_beacon_on(void);
+
 typedef struct {
     char id[OS_MESH_ID_LEN + 1];
     char name[25];          // owner label, as a HELLO's "n"

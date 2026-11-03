@@ -12,6 +12,7 @@
 #include "core/os_data.h"
 #include "core/ui.h"
 #include "game.h"
+#include "beacon.h"
 
 static const char *TAG = "game";
 
@@ -49,6 +50,7 @@ static void tick(void *arg)
         os_cloud_get_info(in);
         strlcpy(s_id, in->id, sizeof(s_id));
         s_claimed = in->claimed;
+        beacon_cloud(in->beacon);
         portENTER_CRITICAL(&s_filter_mux);
         strlcpy(s_filter.id, s_id, sizeof(s_filter.id));
         portEXIT_CRITICAL(&s_filter_mux);
@@ -58,6 +60,7 @@ static void tick(void *arg)
     xdex_tick(now);
     trade_tick(now);
     quests_tick(now);
+    beacon_tick(now);
 }
 
 static void tick_timer(void *arg)
@@ -182,6 +185,7 @@ void game_init(void)
     xdex_init();
     trade_init();
     quests_init();
+    beacon_init();
     os_mesh_subscribe(OS_MESH_XDEX, on_mesh, NULL);
     os_mesh_subscribe(OS_MESH_TRADE, on_mesh, NULL);
     os_mesh_subscribe(OS_MESH_RELAY_RESP, on_mesh, NULL);

@@ -26,6 +26,7 @@ typedef struct {
     bool (*on_key)(os_key_t key, bool repeat);  // false = not handled (Back then exits)
     void (*on_tick)(void);          // every OS_TICK_MS
     void (*on_button)(uint32_t bit); // optional: raw presses instead of keys (calibration)
+    bool (*visible)(void);          // optional: in the launcher only while true (Beacon); "open <id>" works anyway
 } os_app_t;
 
 // apps/registry.c

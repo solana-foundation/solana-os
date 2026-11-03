@@ -123,6 +123,12 @@ static int s_level, s_channel;
 static bool s_has_key;
 static int s_server_ch, s_override;     // s_lock: the server's channel, and the user's choice (0 = none)
 
+// Badge beacon mode (os_mesh_beacon), s_lock: the id frames go out with and
+// the HELLO to broadcast ("" = none).
+#define BEACON_HELLO_MAX 200
+static char s_beacon[OS_MESH_ID_LEN + 1];
+static char s_beacon_hello[BEACON_HELLO_MAX + 1];
+
 static int s_acquired;
 static bool s_took_wifi;                // our acquire suspended Wi-Fi
 static bool s_keep_wifi;                // os_mesh_keep_wifi(): bridges need the network
@@ -278,6 +284,11 @@ static void tag_with(const uint8_t key[16], const char *msg, char out[OS_MESH_TA
     uint8_t mac[32];
     hmac_sha256(key, 16, msg, strlen(msg), mac);
     to_hex(mac, OS_MESH_TAG_LEN / 2, out);
+}
+
+void os_mesh_tag(const uint8_t key[16], const char *msg, char out[OS_MESH_TAG_LEN + 1])
+{
+    tag_with(key, msg ? msg : "", out);
 }
 
 bool os_mesh_sign(const char *msg, char out[OS_MESH_TAG_LEN + 1])
@@ -474,8 +485,17 @@ static void sync_cloud(void)
     if (s_override) {
         ch = s_override;
     }
+    bool beacon = s_beacon[0] != 0;
     xSemaphoreGive(s_lock);
     free(in);
+    if (beacon) {
+        // A beacon's radio follows its AP (MESH.md "Badge beacons").
+        os_wifi_info_t w;
+        os_wifi_get_info(&w);
+        if (w.state == OS_WIFI_CONNECTED && w.channel > 0) {
+            ch = w.channel;
+        }
+    }
     if (ch != s_channel) {
         ESP_LOGI(TAG, "mesh channel %d", ch);
         s_channel = ch;
@@ -543,6 +563,42 @@ void os_mesh_keep_wifi(bool keep)
     }
 }
 
+void os_mesh_beacon(const char *id)
+{
+    bool on = id && strlen(id) == OS_MESH_ID_LEN;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool was = s_beacon[0] != 0;
+    strlcpy(s_beacon, on ? id : "", sizeof(s_beacon));
+    s_beacon_hello[0] = 0;
+    xSemaphoreGive(s_lock);
+    if (on != was) {
+        if (on) {
+            ESP_LOGI(TAG, "playing beacon %s", id);
+        } else {
+            ESP_LOGI(TAG, "beacon mode off");
+        }
+        os_radio_stay_awake(on);            // modem sleep misses frames
+    }
+    if (s_task) {
+        xTaskNotifyGive(s_task);            // pick up the channel now
+    }
+}
+
+void os_mesh_beacon_hello(const char *json)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(s_beacon_hello, json && strlen(json) <= BEACON_HELLO_MAX ? json : "", sizeof(s_beacon_hello));
+    xSemaphoreGive(s_lock);
+}
+
+bool os_mesh_beacon_on(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool on = s_beacon[0] != 0;
+    xSemaphoreGive(s_lock);
+    return on;
+}
+
 void os_mesh_release(void)
 {
     bool resume = false, last = false;
@@ -573,7 +629,7 @@ static esp_err_t send_to(const uint8_t *mac, os_mesh_type_t type, const char *js
     }
     char id[OS_MESH_ID_LEN + 1];
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    strlcpy(id, s_id, sizeof(id));
+    strlcpy(id, s_beacon[0] ? s_beacon : s_id, sizeof(id));
     xSemaphoreGive(s_lock);
     if (!id[0]) {
         return ESP_ERR_INVALID_STATE;       // MESH.md: no server-assigned id, no transmit
@@ -652,6 +708,16 @@ static void send_hello(void)
 {
     char json[64];
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_beacon[0]) {
+        // Playing a beacon: its HELLO, or silence until it has one.
+        static char bj[BEACON_HELLO_MAX + 1];       // mesh task only
+        strlcpy(bj, s_beacon_hello, sizeof(bj));
+        xSemaphoreGive(s_lock);
+        if (bj[0] && send_to(NULL, OS_MESH_HELLO, bj) == ESP_OK) {
+            s_n.hello_tx++;
+        }
+        return;
+    }
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "k", "b");
     cJSON_AddStringToObject(j, "n", s_label);
@@ -823,7 +889,7 @@ static bool on_hello(const os_mesh_peer_t *heard, const char *json, int64_t now)
         clean_copy(p->nonce, sizeof(p->nonce), cJSON_GetStringValue(cJSON_GetObjectItem(j, "nonce")));
         p->color = col ? (uint32_t)strtoul(col, NULL, 16) & 0xFFFFFF : COL_TEXT;
         p->level = 0;
-        if (fresh && p->name[0] && now - s_last_beacon_toast > BEACON_GAP_MS && !app_open("quests") &&
+        if (fresh && p->name[0] && now - s_last_beacon_toast > BEACON_GAP_MS && !app_open("quests") && !s_beacon[0] &&
                 toast_due(p->character[0] ? p->character : p->id, BEACON_TOAST_MS, now)) {
             s_last_beacon_toast = now;
             snprintf(toast, sizeof(toast), "%s is nearby", p->name);
@@ -862,7 +928,7 @@ static void maybe_ask_toast(os_mesh_type_t type, const os_mesh_peer_t *from, con
     }
     bool mine = to && !strcmp(to, s_id);
     cJSON_Delete(j);
-    if (!mine || (!xdex && !trade) || app_open(xdex ? "xdex" : "trade")) {
+    if (!mine || (!xdex && !trade) || app_open(xdex ? "xdex" : "trade") || os_mesh_beacon_on()) {
         return;
     }
     char who[17];
@@ -1255,6 +1321,9 @@ static void print_status(void)
     if (s_override) {
         printf("  channel %d chosen on the badge; the server announced %d (\"mesh channel auto\" goes back)\n", s_override,
                s_server_ch);
+    }
+    if (s_beacon[0]) {
+        printf("  playing beacon %s: %s\n", s_beacon, s_beacon_hello[0] ? s_beacon_hello : "(silent)");
     }
     printf("  hello: '%s' Lv %d, %lu sent\n", s_label, s_level, (unsigned long)s_n.hello_tx);
     printf("  tx: %lu msgs, %lu frames, %lu errors\n", (unsigned long)s_n.tx_msgs, (unsigned long)s_n.tx_frames,
