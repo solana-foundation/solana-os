@@ -2,6 +2,7 @@
 // emulated hardware. Keep it in step with app_main.c when the boot sequence
 // changes (a new service to start, a new init step).
 
+#include <string.h>
 #include <emscripten.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,10 +21,39 @@
 
 static const char *TAG = "solana_os";
 
-// The emulated badge talks to the server that serves the page (server/API.md:
-// one origin in production, Vite proxies /api in dev). The page passes the site's
-// URL, base path included (solana.com/breakpoint/badge); else the page's origin.
+// The emulated badge talks to the server's own origin, as badges do (server/API.md:
+// device routes answer cross-origin; solana.com's firewall refuses POSTs with "/rpc"
+// in the path). The page passes it (`deviceUrl` from /api/config); else the site's
+// URL (dev: Vite proxies /api), else the page's origin.
 EM_JS(void, page_server, (char *out, int cap), { stringToUTF8(Module.server || location.origin, out, cap); });
+
+// Earlier addresses of that same server (`Module.serverAliases`: the site's URL, which
+// emulators used until the site moved them to the server's own origin). Trailing
+// slashes don't count.
+EM_JS(int, page_server_alias, (const char *url), {
+    const strip = (u) => { u = String(u); while (u.endsWith("/")) u = u.slice(0, -1); return u; };
+    return (Module.serverAliases || []).map(strip).includes(strip(UTF8ToString(url))) ? 1 : 0;
+});
+
+// os_cloud_set_server() treats a new address as a new server and forgets the badge's
+// ID, secret and owner. An alias is the same server: rewrite the saved address first,
+// so the emulated badge (and its claim) carries over.
+static void move_saved_server(const char *server)
+{
+    nvs_handle_t h;
+    char saved[96];
+    size_t n = sizeof(saved);
+    if (nvs_open("cloud", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_get_str(h, "server", saved, &n) == ESP_OK && saved[0] && strcmp(saved, server) != 0
+        && page_server_alias(saved)) {
+        if (nvs_set_str(h, "server", server) == ESP_OK && nvs_commit(h) == ESP_OK) {
+            ESP_LOGI(TAG, "server moved from '%s' to '%s'", saved, server);
+        }
+    }
+    nvs_close(h);
+}
 
 // Purple -> green sweep across the strip, then off (as in app_main.c).
 static void boot_sweep(void)
@@ -66,13 +96,14 @@ void app_main(void)
     if (os_wifi_init() != ESP_OK) {
         ESP_LOGE(TAG, "wifi unavailable");
     }
+    char server[96];
+    page_server(server, sizeof(server));
+    move_saved_server(server);      // before os_cloud_init reads it
     os_cloud_init();
     os_mesh_init();
     os_bridge_init();
     os_wifi_boot();     // after the mesh: the radio parks on its channel
     game_init();
-    char server[96];
-    page_server(server, sizeof(server));
     os_cloud_set_server(server);
     boot_sweep();
     lua_host_init();

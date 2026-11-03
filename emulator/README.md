@@ -40,7 +40,7 @@ firmware/emulator/
 | LVGL 9.6 | managed component, Kconfig | same sources; `LV_CONF_SKIP` + `LV_CONF_KCONFIG_EXTERNAL_INCLUDE="sdkconfig.h"` generated from the badge's sdkconfig |
 | `app_main.c` | boot order | `platform/app_main_emu.c` (same order, plus `os_cloud_set_server(location.origin)`) |
 | `core/os_wifi.c` | ESP-IDF Wi-Fi STA, joins the saved network at boot (`os_wifi_boot.c`, portable), parks the radio on the mesh channel | `platform/os_wifi_emu.c`: demo networks, joining always works, fake IP, same NVS keys, same channel rules |
-| `core/os_http.c` | esp_http_client (requests and streamed downloads) | `platform/os_http_emu.c`: `fetch()` against the page's origin; downloads land in the emulated SD card |
+| `core/os_http.c` | esp_http_client (requests and streamed downloads) | `platform/os_http_emu.c`: `fetch()` against the server's own origin (the page passes `deviceUrl`; its device routes answer cross-origin), no credentials; downloads land in the emulated SD card |
 | `core/os_ota_flash.c` | esp_ota_* (write the other OTA slot, confirm a new build) | `platform/os_ota_flash_emu.c`: refuses; the page always runs the site's build and the server never offers the emulator an update |
 | `lua/lua_xip.c` | store apps' compiled code copied into a flash slot of the `storage` partition and mapped (run in place) | `platform/lua_xip_emu.c`: read into memory and checked against its SHA-256; the Lua heap figures (`lua mem`) match the badge's |
 | `core/os_radio.c` (mesh) | ESP-NOW | `platform/os_radio_emu.c`: `BroadcastChannel("solana-os-mesh")` between tabs of one origin (docs/MESH.md "Emulator transport"), on the emulated radio's channel |

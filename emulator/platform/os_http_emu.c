@@ -1,8 +1,9 @@
 // Emulator counterpart of core/os_http.c: os_http_request() and
 // os_http_download() over the browser's fetch(). The request runs in JS while the calling task polls in
 // vTaskDelay, so the rest of the emulated badge keeps running (a blocking
-// call on the badge blocks only its own task, too). Same-origin requests
-// only need no CORS setup: the emulator talks to the server that serves it.
+// call on the badge blocks only its own task, too). The server is the badge
+// server's own origin, usually not the page's: its device routes answer
+// cross-origin (server/API.md), and requests carry no credentials.
 
 #include <stdio.h>
 #include <stdlib.h>
