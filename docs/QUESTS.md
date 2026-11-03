@@ -9,9 +9,8 @@ engine and validator; where this guide and the server's API contract (`server/AP
 
 It lives in the Solana OS repo next to the Lua app API (`docs/LUA_API.md`), and the badge
 site shows it at `/apps/docs/quests` (raw Markdown: `/docs/quests.md`). Paths like
-`/admin/quests` are pages of the badge site; `server/...` files are in the
-[solana-bp26-badges](https://github.com/spacemandev-git/solana-bp26-badges) repo, which
-holds the badge server.
+`/admin/quests` are pages of the badge site; `server/...` files are in the badge server's
+repo (solana-bp26-badges, private), and this guide says what you need from them.
 
 **Who builds quests:** organisers (the site's admins) and **QuestMakers**, people an admin
 gave that role in `/admin/admins` (Team). A QuestMaker gets the quest tools in `/admin`

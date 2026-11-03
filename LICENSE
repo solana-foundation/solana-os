@@ -20,4 +20,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Third-party code keeps its own license: Lua 5.4 (main/lua/vendor/LICENSE, MIT).
+Third-party code keeps its own license: Lua 5.5.1 (main/lua/vendor/LICENSE, MIT).
+
+Not covered by this license: the fonts and logos in main/assets/. The fonts
+(sol_font_*.c, sol_mono_*.c) are bitmaps rendered from the ABC Diatype and ABC
+Diatype Semi-Mono typefaces; the logos (img_*.c) are Solana Foundation brand
+assets (https://solana.com/brand). Both remain subject to their owners' terms
+and may not be reused outside this firmware without their permission.

@@ -55,10 +55,9 @@ idf.py -p /dev/cu.usbserial-110 -b 460800 flash
 
 ## Part of solana-bp26-badges
 
-This repo is a git submodule (at `firmware/`) of
-[solana-bp26-badges](https://github.com/spacemandev-git/solana-bp26-badges),
-which holds the server, website, beacon firmware and the protocol contracts
-(`docs/MESH.md`, `server/API.md`). The Lua app API (`docs/LUA_API.md`) lives
+This repo is a git submodule (at `firmware/`) of solana-bp26-badges, Solana
+Foundation's private repo for the server, website, beacon firmware and the
+protocol contracts (`docs/MESH.md`, `server/API.md`). The Lua app API (`docs/LUA_API.md`) lives
 here, next to the host that implements it; the site renders it at `/apps/docs`.
 So does the quest-building guide (`docs/QUESTS.md`, at `/apps/docs/quests`).
 A few tools assume that
@@ -72,6 +71,7 @@ The firmware itself builds standalone.
 
 ## License
 
-MIT (see `LICENSE`). The bundled fonts in `main/assets/` are rendered from
-ABC Diatype and the logos are Solana brand assets; both remain subject to
-their owners' terms.
+MIT (see `LICENSE`), except the fonts and logos in `main/assets/`, which the
+MIT license doesn't cover: the fonts are rendered from ABC Diatype and ABC
+Diatype Semi-Mono, and the logos are Solana Foundation brand assets. Both stay
+subject to their owners' terms; don't reuse them outside this firmware.
