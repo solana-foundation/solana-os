@@ -675,7 +675,7 @@ server first, then open the socket, and close it when you need the server again:
 connection to the badge server comes back by itself once the socket's `"close"` has
 run.
 
-**Memory.** Starting a secure connection takes up to about 33 KB for a moment (22 KB
+**Memory.** Starting a secure connection takes up to about 40 KB for a moment (22 KB
 to `echo.websocket.org`), and an open one keeps about 5 KB. The badge closes its server
 connection first, then starts the socket only with 56 KB free, the same rule as for
 its own connection, so other things don't run out meanwhile. With Wi-Fi joined, an app
@@ -1299,7 +1299,8 @@ end
   organiser; until then only you see the app, or the store keeps your previous version.
   An app with an award cap (`lamps.award`) waits for an organiser after every change to
   its code, files, permissions or hosts, even when the check passes; the store keeps
-  your previous version and its cap meanwhile.
+  your previous version and its cap meanwhile. An account (and an X account) has at
+  most 25 apps (an organiser can raise that), with 5 submits a minute and 20 versions a day.
   Each update is a new version; the badge offers it as an update and downloads only
   the files that changed. Once it's published, everyone's badge checks `http`, `ws` and
   `rpc` against the published version's permissions and hosts.
@@ -1307,7 +1308,7 @@ end
 ## Console (development)
 
 `lua list`, `lua run <id>`, `lua rm <id> [file]` on the badge console (and in the
-emulator via `emu_console`). The web submit page uses `lua run` to test an app in the
+emulator page's Console). The web submit page uses `lua run` to test an app in the
 emulator. `lua mem` shows the last run's peak heap and instruction count, and whether
 its code was the store's (run in place) or compiled on the badge; `lua
 install <id>` installs or updates an app from the App Store, as the store app does.
