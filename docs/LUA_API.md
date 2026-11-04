@@ -492,9 +492,10 @@ it is in the store: the permission, the hosts, and that the badge's owner may ru
 When you're signed in, Try in emulator and Run on badge start a *test run* of the app
 you're editing on that badge first (see "Develop and publish"): for 12 hours its
 requests are checked against your draft's permissions and hosts instead, and act for
-you, before the app is in the store or while a new version waits. Anywhere else, an
-app that isn't in the store gets `"denied"`, and the hosts in effect are the published
-version's.
+you, before the app is in the store or while a new version waits. A test run's `http`,
+`ws` and `rpc` need your account to have X linked (`"Link X at /profile to test http, ws
+and rpc before publishing"` otherwise). Anywhere else, an app that isn't in the store
+gets `"denied"`, and the hosts in effect are the published version's.
 
 **What your server receives.** Each request carries headers that say who is calling,
 signed by the badge server so nobody can fake them:
@@ -1283,14 +1284,15 @@ end
   later (it checks `info` first). It replaces an installed app with the same id.
 - **Test runs.** Signed in, both start a test run before the app does, so everything
   that goes through the badge server works with every permission the draft asks for:
-  `http`, `ws` and `rpc` with its hosts, !LAMPs, items, profile and quests, before you
-  publish. The emulator joins its demo Wi-Fi for this; a real badge needs Wi-Fi on and
+  `http`, `ws` and `rpc` with its hosts (once your account has X linked), !LAMPs,
+  items, profile and quests, before you publish. The emulator joins its demo Wi-Fi for this; a real badge needs Wi-Fi on and
   to be yours or unclaimed. It lasts 12 hours on that badge (Run again renews it with
   the draft as it is then) and acts for you with your real !LAMPs and items: a purchase
   in your own app pays you back, and `lamps.award` gives only what the published app's
   award limit allows (nothing for an app not in the store yet). Only the app's author
   can test an app id that's taken.
-- **Publish** puts it in the store, once every Lua file compiles with the badge's Lua
+- **Publish** needs an account with X linked (at `/profile`); building and trying an
+  app don't. It puts the app in the store, once every Lua file compiles with the badge's Lua
   (see "Compiled by the store") and an automatic check has read the code: it looks for
   apps that harm players (taking !LAMPs by deception, asking for passwords, sending
   data away, hiding what they do), usually within a minute. What it flags waits for an
