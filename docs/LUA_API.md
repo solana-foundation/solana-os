@@ -128,7 +128,9 @@ HOME always returns to the launcher. The screen below the status bar is
 | Numbers | 32-bit integers (they wrap at ±2^31) and 32-bit floats (about 7 digits) |
 
 A runtime error stops the app and shows the message with the line number. CANCEL
-returns to the launcher. `print(...)` goes to the badge's serial console.
+returns to the launcher. `print(...)` goes to the badge's serial console, each line
+tagged `[<app id>] ` and with control characters (CR, ESC, …) shown as `?` (0.5.7: an app can't
+write a line of the console's own, which tools such as Run on badge read).
 
 ### Callbacks and network calls
 

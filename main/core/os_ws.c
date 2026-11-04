@@ -27,6 +27,7 @@
 #include "esp_transport.h"
 #include "esp_transport_ssl.h"
 #include "lwip/netdb.h"
+#include "lwip/sockets.h"
 #include "mbedtls/base64.h"
 #include "psa/crypto.h"
 #include "os_ws.h"
@@ -141,8 +142,10 @@ static bool public_v4(uint32_t ip)
              (a == 198 && b == 51 && c == 100) || (a == 203 && b == 0 && c == 113));
 }
 
-// ESP_OK when every address host resolves to is public.
-static esp_err_t check_host(const char *host)
+// ESP_OK when every address host resolves to is public; ip gets the first, the
+// one to connect to: resolving the name again at connect time could answer
+// another (DNS rebinding), so the connection goes to the address checked here.
+static esp_err_t check_host(const char *host, char ip[INET_ADDRSTRLEN])
 {
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
     if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) {
@@ -154,6 +157,9 @@ static esp_err_t check_host(const char *host)
         if (a->ai_family != AF_INET || !public_v4(ntohl(in->sin_addr.s_addr))) {
             err = ESP_ERR_INVALID_ARG;
         }
+    }
+    if (err == ESP_OK && !inet_ntop(AF_INET, &((const struct sockaddr_in *)res->ai_addr)->sin_addr, ip, INET_ADDRSTRLEN)) {
+        err = ESP_FAIL;
     }
     freeaddrinfo(res);
     return err;
@@ -289,17 +295,20 @@ esp_err_t os_ws_connect(const char *url, const char *protocols)
     size_t free0 = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
     size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
     esp_err_t err = ESP_OK;
+    char ip[INET_ADDRSTRLEN] = "";
     if (free0 < TLS_MIN_FREE || block < TLS_MIN_BLOCK) {
         ESP_LOGW(TAG, "not enough heap for a TLS handshake (%u free, %u largest)", (unsigned)free0, (unsigned)block);
         err = ESP_ERR_NO_MEM;
-    } else if ((err = check_host(host)) != ESP_OK) {
+    } else if ((err = check_host(host, ip)) != ESP_OK) {
         ESP_LOGW(TAG, "%s: %s", host, err == ESP_ERR_INVALID_ARG ? "a private address" : "doesn't resolve");
     } else if (!(s_tls = esp_transport_ssl_init())) {
         err = ESP_ERR_NO_MEM;
     } else {
         esp_transport_ssl_crt_bundle_attach(s_tls, esp_crt_bundle_attach);
         esp_transport_ssl_set_addr_family(s_tls, ESP_TLS_AF_INET);
-        if (esp_transport_connect(s_tls, host, 443, TIMEOUT_MS) != 0) {
+        // To the checked address; SNI and the certificate check stay on the host's name.
+        esp_transport_ssl_set_common_name(s_tls, host);
+        if (esp_transport_connect(s_tls, ip, 443, TIMEOUT_MS) != 0) {
             ESP_LOGW(TAG, "%s: no TLS connection", host);
             err = ESP_FAIL;
         } else {

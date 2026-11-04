@@ -176,6 +176,16 @@ void lh_thread_new(lua_State *L1)
 // ---------------------------------------------------------------------------
 // Error screen
 
+// An app's text as one console line: control characters become spaces (l_print).
+static void one_line(char *t)
+{
+    for (; *t; t++) {
+        if ((unsigned char)*t < 0x20 || *t == 0x7f) {
+            *t = ' ';
+        }
+    }
+}
+
 static void show_error(lh_t *s, const char *title, const char *msg)
 {
     lh_ui_close_dialog(s);
@@ -245,7 +255,10 @@ static void fail(lh_t *s, int rc, const char *msg_in)
         }
     }
     lua_settop(L, 0);
-    printf("[lua:%s] %s: %s\n", s->pkg.id, title, msg);
+    char line[sizeof(msg)];                 // the console's copy on one line (l_print)
+    strlcpy(line, msg, sizeof(line));
+    one_line(line);
+    printf("[lua:%s] %s: %s\n", s->pkg.id, title, line);
     strlcpy(s->err, msg, sizeof(s->err));
     s->failed = true;
     lh_mesh_mute();
@@ -278,8 +291,11 @@ bool lh_callback(lh_t *s, lua_CFunction fn, void *arg)
     }
     if (rc != LUA_OK) {
         if (s->ui_off) {
-            // Already closing (on_exit or a finalizer failed): just log it.
-            printf("[lua:%s] %s\n", s->pkg.id, lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "error");
+            // Already closing (on_exit or a finalizer failed): just log it, on one line (l_print).
+            char line[160];
+            strlcpy(line, lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "error", sizeof(line));
+            one_line(line);
+            printf("[lua:%s] %s\n", s->pkg.id, line);
             lua_settop(L, 0);
             return false;
         }
@@ -305,6 +321,11 @@ static const char *read_chunk(lua_State *L, void *ud, size_t *size)
     return *size ? r->buf : NULL;
 }
 
+// What an app prints reaches the console, which the web's Run on badge and
+// badge beacon panels read (`cloud`, `beacon`). So every line it makes starts
+// with the app's tag and no control character passes (a CR would put the
+// cursor back to the start): an app can't write a line, or a prompt, of the
+// OS's own.
 static int l_print(lua_State *L)
 {
     luaL_Buffer b;
@@ -318,7 +339,23 @@ static int l_print(lua_State *L)
         luaL_addvalue(&b);
     }
     luaL_pushresult(&b);
-    printf("[%s] %s\n", lh_get(L)->pkg.id, lua_tostring(L, -1));
+    size_t len;
+    const char *text = lua_tolstring(L, -1, &len);
+    const char *id = lh_get(L)->pkg.id;
+    luaL_Buffer o;
+    luaL_buffinit(L, &o);
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '\n') {
+            luaL_addstring(&o, "\n[");
+            luaL_addstring(&o, id);
+            luaL_addstring(&o, "] ");
+        } else {
+            luaL_addchar(&o, (c < 0x20 && c != '\t') || c == 0x7f ? '?' : (char)c);
+        }
+    }
+    luaL_pushresult(&o);
+    printf("[%s] %s\n", id, lua_tostring(L, -1));
     return 0;
 }
 

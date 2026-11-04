@@ -228,8 +228,13 @@ static void toast_create(void)
 // Confirm dialog (OS task, LVGL locked)
 
 #define CONFIRM_W   280
+// SELECT answers yes only this long after the dialog shows: an app can open one
+// (a purchase, a transfer) just as the player presses SELECT for something else,
+// and that press mustn't count as reading and agreeing. CANCEL works at once.
+#define CONFIRM_ARM_MS  800
 
 static lv_obj_t *s_modal;
+static int64_t s_modal_armed;           // now_ms() from which SELECT counts
 static const char *s_hold;              // os_hold(): why the app can't be left now
 static os_confirm_cb_t s_modal_cb;
 static void *s_modal_ctx;
@@ -264,6 +269,7 @@ static void confirm_show(const char *text, os_confirm_cb_t done, void *ctx)
     }
     s_modal_cb = done;
     s_modal_ctx = ctx;
+    s_modal_armed = now_ms() + CONFIRM_ARM_MS;
     s_modal = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(s_modal);
     lv_obj_set_size(s_modal, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
@@ -327,11 +333,14 @@ void os_confirm_dismiss(os_confirm_cb_t done)
 }
 
 // The dialog takes SELECT and CANCEL; everything else is swallowed. HOME
-// answers no and goes home.
+// answers no and goes home. SELECT before CONFIRM_ARM_MS is swallowed too.
 static bool confirm_key(os_key_t key, bool repeat)
 {
     if (!s_modal) {
         return false;
+    }
+    if (key == OS_KEY_SELECT && now_ms() < s_modal_armed) {
+        return true;
     }
     if (!repeat && (key == OS_KEY_SELECT || key == OS_KEY_BACK || key == OS_KEY_HOME)) {
         confirm_close(key == OS_KEY_SELECT);

@@ -6,6 +6,25 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.7 (2026-11-04)
+
+Security fixes from a review.
+
+- **The confirm dialog takes SELECT only after 800 ms.** An app could open one (a purchase, a
+  transfer) just as the player pressed SELECT for something else, and that press answered
+  yes. CANCEL and HOME still answer at once. `core/os.c`.
+- **Lua `print()` and app errors can't write the console's own lines.** Every line an app
+  prints starts with `[<app id>] `, and control characters (CR, ESC, …) show as `?`; error
+  messages are logged on one line. An app could print `\rid=…` or a fake `sol> ` prompt, and
+  the site's Run on badge and badge-beacon panels read the console. `lua/lua_host.c`.
+- **Mesh peers:** one radio MAC holds at most 2 live ids (a badge and the beacon it turns
+  into), so a sender making up ids can't fill the 20-entry table and push real badges out;
+  a live id moves to a new MAC only after 3 HELLOs from it over at least 6 s, so a quick
+  burst between the real peer's HELLOs can't redirect its swaps and trades. `core/os_mesh.c`.
+- **App sockets connect to the address they checked.** `os_ws` resolved the host to check that
+  it's public, then the TLS connect resolved it again (DNS rebinding); it now connects to the
+  checked address, with SNI and the certificate check still on the host name. `core/os_ws.c`.
+
 ## 0.5.6 (2026-11-03)
 
 - **Badges as quest beacons** (docs in the parent repository: MESH.md "Badge beacons",
