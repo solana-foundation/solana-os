@@ -1297,6 +1297,9 @@ end
   apps that harm players (taking !LAMPs by deception, asking for passwords, sending
   data away, hiding what they do), usually within a minute. What it flags waits for an
   organiser; until then only you see the app, or the store keeps your previous version.
+  An app with an award cap (`lamps.award`) waits for an organiser after every change to
+  its code, files, permissions or hosts, even when the check passes; the store keeps
+  your previous version and its cap meanwhile.
   Each update is a new version; the badge offers it as an update and downloads only
   the files that changed. Once it's published, everyone's badge checks `http`, `ws` and
   `rpc` against the published version's permissions and hosts.
