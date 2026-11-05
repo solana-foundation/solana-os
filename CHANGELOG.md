@@ -6,6 +6,14 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.8 (2026-11-05)
+
+- **The built-in server is `https://badge-api.solana.com`**, the server's own address behind a
+  load balancer and Cloud Armor, instead of a Cloud Run URL tied to the hosting project
+  (`CONFIG_SOLANA_OS_SERVER_URL`). The old URL keeps forwarding for badges on earlier builds.
+  A badge on the build default (no `server` set on its console) keeps its ID, secret and owner
+  through the update: it's the same server. One set with `server <url>` keeps that address.
+
 ## 0.5.7 (2026-11-04)
 
 Security fixes from a review.

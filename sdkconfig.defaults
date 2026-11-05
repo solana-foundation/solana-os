@@ -7,14 +7,17 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 
-# The production badge server (deploy/: Cloud Run service bp26-badges, its
-# PUBLIC_URL), so a freshly flashed badge talks to it without a console
-# "server" command. "server <url>" still overrides it; "server clear" comes back.
-CONFIG_SOLANA_OS_SERVER_URL="https://bp26-badges-122982327899.us-central1.run.app"
+# The production badge server's device address (the parent repository's deploy/:
+# a load balancer with Cloud Armor in front of Cloud Run service bp26-badges), so
+# a freshly flashed badge talks to it without a console "server" command. Badges
+# built before 0.5.8 have the old Cloud Run URL, which forwards here; a badge on
+# the build default keeps its ID and secret across the change (NVS "cloud/server"
+# stays empty). "server <url>" still overrides it; "server clear" comes back.
+CONFIG_SOLANA_OS_SERVER_URL="https://badge-api.solana.com"
 
 # App metadata shown in About / info
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="0.5.7"
+CONFIG_APP_PROJECT_VER="0.5.8"
 
 # Over-the-air updates (core/os_ota.c): a new build boots on trial and the
 # bootloader goes back to the previous slot unless it confirms itself. This
