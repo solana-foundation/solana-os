@@ -142,6 +142,13 @@ badge has no owner, `"denied"` when the app lacks the permission or the user sai
 is open). Callbacks run like any other callback: between `on_tick`s, never
 concurrently.
 
+**The server's address.** The badge knows its server, so an app never names it. Your
+own servers do, when they pay out of an escrow or check a request's signature (`http`,
+`ws`): the API is at **`https://badge-api.solana.com/api/...`** (`/api/escrow`,
+`/api/escrow/ledger`, `/api/escrow/pay`, `/api/http/key`). Not the store's address
+(`https://solana.com/breakpoint/badge`): its firewall answers scripts with a browser
+challenge (429 and an HTML page), whatever their headers.
+
 ## Standard library
 
 Lua 5.5 (Solana OS 0.5.0; earlier badges ran 5.4). Available: `assert error ipairs next
@@ -390,9 +397,9 @@ themselves out of your escrow by tampering with a badge. The endpoints are in th
 server API (`/api/escrow`, `/api/escrow/ledger`, `/api/escrow/pay`):
 
 ```sh
-curl -H "Authorization: Bearer $ESCROW_KEY" "https://<server>/api/escrow/ledger?after=0"
+curl -H "Authorization: Bearer $ESCROW_KEY" "https://badge-api.solana.com/api/escrow/ledger?after=0"
 curl -H "Authorization: Bearer $ESCROW_KEY" -H "content-type: application/json" \
-  -d '{"to":"7K2Q9M","amount":100,"memo":"won round 42","key":"round-42"}' https://<server>/api/escrow/pay
+  -d '{"to":"7K2Q9M","amount":100,"memo":"won round 42","key":"round-42"}' https://badge-api.solana.com/api/escrow/pay
 ```
 
 Payouts show in the player's wallet as "Escrow payout" with your memo. `key` makes a
@@ -526,8 +533,8 @@ snake                                  X-Badge-App
 4c1f0e9a7b2d6e83                       X-Badge-Request
 ```
 
-The public key is at `GET <site>/api/http/key`, with `<site>` as in the address bar
-of the store (`https://solana.com/breakpoint/badge`):
+The public key is at `GET https://badge-api.solana.com/api/http/key` (the server's
+address, not the store's: see "The server's address" above):
 `{"id": "9d2b7e41c0a8f356", "alg": "Ed25519", "key": "<32 bytes, base64>", "pem":
 "-----BEGIN PUBLIC KEY-----..."}`. Keep it by `id`, and fetch it again when
 `X-Badge-Key` names one you don't have (the key may be replaced). To trust a request,
@@ -536,7 +543,7 @@ minute of your clock, and that you haven't seen its `X-Badge-Request` in that mi
 (a replay). In TypeScript (Bun, Node 20+, Deno, Cloudflare Workers):
 
 ```ts
-const SITE = 'https://solana.com/breakpoint/badge';
+const SERVER = 'https://badge-api.solana.com';
 const keys = new Map<string, CryptoKey>();
 const seen = new Map<string, number>(); // X-Badge-Request -> time
 let fetchedAt = 0;
@@ -544,7 +551,7 @@ let fetchedAt = 0;
 async function badgeKey(id: string): Promise<CryptoKey | null> {
   if (!keys.has(id) && Date.now() - fetchedAt > 60_000) { // at most once a minute
     fetchedAt = Date.now();
-    const k = await (await fetch(`${SITE}/api/http/key`)).json();
+    const k = await (await fetch(`${SERVER}/api/http/key`)).json();
     const raw = Uint8Array.from(atob(k.key), (c) => c.charCodeAt(0));
     keys.set(k.id, await crypto.subtle.importKey('raw', raw, 'Ed25519', false, ['verify']));
   }
@@ -697,7 +704,7 @@ snake.7K2Q9M.2f1c...-....1790000000000.4c1f0e9a7b2d6e83.9d2b7e41c0a8f356.Lw3n...
 
 The app id, the badge id (an emulator's starts with `e`), the owner's user id, unix
 ms, 16 random hex, the signing key's id, and an Ed25519 signature (base64url, no
-padding) by the same key as `http`'s (`GET <site>/api/http/key`) over these lines
+padding) by the same key as `http`'s (`GET https://badge-api.solana.com/api/http/key`) over these lines
 joined with `"\n"`:
 
 ```
