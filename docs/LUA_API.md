@@ -128,7 +128,9 @@ HOME always returns to the launcher. The screen below the status bar is
 | Numbers | 32-bit integers (they wrap at ±2^31) and 32-bit floats (about 7 digits) |
 
 A runtime error stops the app and shows the message with the line number. CANCEL
-returns to the launcher. `print(...)` goes to the badge's serial console.
+returns to the launcher. `print(...)` goes to the badge's serial console, each line
+tagged `[<app id>] ` and with control characters (CR, ESC, …) shown as `?` (0.5.7: an app can't
+write a line of the console's own, which tools such as Run on badge read).
 
 ### Callbacks and network calls
 
@@ -490,9 +492,10 @@ it is in the store: the permission, the hosts, and that the badge's owner may ru
 When you're signed in, Try in emulator and Run on badge start a *test run* of the app
 you're editing on that badge first (see "Develop and publish"): for 12 hours its
 requests are checked against your draft's permissions and hosts instead, and act for
-you, before the app is in the store or while a new version waits. Anywhere else, an
-app that isn't in the store gets `"denied"`, and the hosts in effect are the published
-version's.
+you, before the app is in the store or while a new version waits. A test run's `http`,
+`ws` and `rpc` need your account to have X linked (`"Link X at /profile to test http, ws
+and rpc before publishing"` otherwise). Anywhere else, an app that isn't in the store
+gets `"denied"`, and the hosts in effect are the published version's.
 
 **What your server receives.** Each request carries headers that say who is calling,
 signed by the badge server so nobody can fake them:
@@ -672,7 +675,7 @@ server first, then open the socket, and close it when you need the server again:
 connection to the badge server comes back by itself once the socket's `"close"` has
 run.
 
-**Memory.** Starting a secure connection takes up to about 33 KB for a moment (22 KB
+**Memory.** Starting a secure connection takes up to about 40 KB for a moment (22 KB
 to `echo.websocket.org`), and an open one keeps about 5 KB. The badge closes its server
 connection first, then starts the socket only with 56 KB free, the same rule as for
 its own connection, so other things don't run out meanwhile. With Wi-Fi joined, an app
@@ -1281,18 +1284,23 @@ end
   later (it checks `info` first). It replaces an installed app with the same id.
 - **Test runs.** Signed in, both start a test run before the app does, so everything
   that goes through the badge server works with every permission the draft asks for:
-  `http`, `ws` and `rpc` with its hosts, !LAMPs, items, profile and quests, before you
-  publish. The emulator joins its demo Wi-Fi for this; a real badge needs Wi-Fi on and
+  `http`, `ws` and `rpc` with its hosts (once your account has X linked), !LAMPs,
+  items, profile and quests, before you publish. The emulator joins its demo Wi-Fi for this; a real badge needs Wi-Fi on and
   to be yours or unclaimed. It lasts 12 hours on that badge (Run again renews it with
   the draft as it is then) and acts for you with your real !LAMPs and items: a purchase
   in your own app pays you back, and `lamps.award` gives only what the published app's
   award limit allows (nothing for an app not in the store yet). Only the app's author
   can test an app id that's taken.
-- **Publish** puts it in the store, once every Lua file compiles with the badge's Lua
+- **Publish** needs an account with X linked (at `/profile`); building and trying an
+  app don't. It puts the app in the store, once every Lua file compiles with the badge's Lua
   (see "Compiled by the store") and an automatic check has read the code: it looks for
   apps that harm players (taking !LAMPs by deception, asking for passwords, sending
   data away, hiding what they do), usually within a minute. What it flags waits for an
   organiser; until then only you see the app, or the store keeps your previous version.
+  An app with an award cap (`lamps.award`) waits for an organiser after every change to
+  its code, files, permissions or hosts, even when the check passes; the store keeps
+  your previous version and its cap meanwhile. An account (and an X account) has at
+  most 25 apps (an organiser can raise that), with 5 submits a minute and 20 versions a day.
   Each update is a new version; the badge offers it as an update and downloads only
   the files that changed. Once it's published, everyone's badge checks `http`, `ws` and
   `rpc` against the published version's permissions and hosts.
@@ -1300,7 +1308,7 @@ end
 ## Console (development)
 
 `lua list`, `lua run <id>`, `lua rm <id> [file]` on the badge console (and in the
-emulator via `emu_console`). The web submit page uses `lua run` to test an app in the
+emulator page's Console). The web submit page uses `lua run` to test an app in the
 emulator. `lua mem` shows the last run's peak heap and instruction count, and whether
 its code was the store's (run in place) or compiled on the badge; `lua
 install <id>` installs or updates an app from the App Store, as the store app does.

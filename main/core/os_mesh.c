@@ -56,7 +56,9 @@ static const char *TAG = "os_mesh";
 #define ASK_TOAST_MS    15000               // per peer, swap/trade requests
 #define ASK_GAP_MS      8000                // between any two swap/trade toasts
 #define NEST_MAX        8                   // deeper JSON is dropped before anyone parses it
-#define MAC_CHANGE_N    3                   // HELLOs in a row from a new MAC before an id moves
+#define MAC_CHANGE_N    3                   // HELLOs in a row from a new MAC before an id moves...
+#define MAC_CHANGE_MS   6000                // ...over at least this long (a real peer says hello every 1.5-2.5 s)
+#define MAC_IDS_MAX     2                   // live ids per radio MAC: a badge, and the beacon it turns into
 
 typedef struct {
     uint8_t mac[6];
@@ -107,6 +109,7 @@ static struct {
     bool bridged;                       // over a bridge: no radio frame speaks for it
     uint8_t next_mac[6];                // a different MAC claiming this id...
     uint8_t next_n;                     // ...in this many HELLOs in a row
+    int64_t next_ms;                    // ...since then
 } s_meta[PEER_MAX];
 static reasm_t s_reasm[REASM_SLOTS];
 static seen_t s_seen[DEDUP_N];
@@ -342,8 +345,10 @@ static bool live(const os_mesh_peer_t *p, int64_t now)
 
 // The entry for id, creating it if needed. A full table (a crowded hall)
 // gives up a silent entry first, else its weakest peer if the newcomer is
-// stronger: "nearby" means close. NULL when the newcomer loses.
-static os_mesh_peer_t *peer_slot_locked(const char *id, int rssi, bool *created)
+// stronger: "nearby" means close. NULL when the newcomer loses. A radio MAC
+// (mac non-NULL) gets at most MAC_IDS_MAX live ids: one sender making up ids
+// can't fill the table and push real badges out.
+static os_mesh_peer_t *peer_slot_locked(const char *id, const uint8_t *mac, int rssi, bool *created)
 {
     os_mesh_peer_t *p = find_peer_locked(id);
     *created = false;
@@ -351,6 +356,17 @@ static os_mesh_peer_t *peer_slot_locked(const char *id, int rssi, bool *created)
         return p;
     }
     int64_t now = now_ms();
+    if (mac) {
+        int same = 0;
+        for (int i = 0; i < PEER_MAX; i++) {
+            if (!s_meta[i].bridged && live(&s_peers[i], now) && !memcmp(s_peers[i].mac, mac, 6)) {
+                same++;
+            }
+        }
+        if (same >= MAC_IDS_MAX) {
+            return NULL;
+        }
+    }
     os_mesh_peer_t *silent = NULL, *weak = NULL;
     for (int i = 0; i < PEER_MAX && !p; i++) {
         os_mesh_peer_t *q = &s_peers[i];
@@ -824,8 +840,10 @@ static bool app_open(const char *id)
 }
 
 // Is this HELLO from the MAC we know for its id? A live id moves to another
-// MAC only after MAC_CHANGE_N HELLOs in a row from it (one forged frame can't
-// hijack a peer), and a live beacon id never turns into a badge.
+// MAC only after MAC_CHANGE_N HELLOs in a row from it over MAC_CHANGE_MS (one
+// forged frame, or a quick burst between the real peer's HELLOs, can't hijack
+// a peer: its next HELLO starts the count again), and a live beacon id never
+// turns into a badge.
 static bool hello_mac_ok_locked(os_mesh_peer_t *p, bool created, const uint8_t *mac, bool beacon, int64_t now)
 {
     int i = p - s_peers;
@@ -839,11 +857,15 @@ static bool hello_mac_ok_locked(os_mesh_peer_t *p, bool created, const uint8_t *
     if (p->kind == OS_PEER_BEACON && !beacon) {
         return false;
     }
-    if (memcmp(s_meta[i].next_mac, mac, 6)) {
+    if (memcmp(s_meta[i].next_mac, mac, 6) || !s_meta[i].next_n) {
         memcpy(s_meta[i].next_mac, mac, 6);
         s_meta[i].next_n = 0;
+        s_meta[i].next_ms = now;
     }
-    if (++s_meta[i].next_n < MAC_CHANGE_N) {
+    if (s_meta[i].next_n < UINT8_MAX) {
+        s_meta[i].next_n++;
+    }
+    if (s_meta[i].next_n < MAC_CHANGE_N || now - s_meta[i].next_ms < MAC_CHANGE_MS) {
         return false;
     }
     s_meta[i].next_n = 0;
@@ -867,7 +889,7 @@ static bool on_hello(const os_mesh_peer_t *heard, const char *json, int64_t now)
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool created;
-    os_mesh_peer_t *p = peer_slot_locked(heard->id, heard->rssi, &created);
+    os_mesh_peer_t *p = peer_slot_locked(heard->id, heard->mac, heard->rssi, &created);
     if (!p || !hello_mac_ok_locked(p, created, heard->mac, beacon, now)) {
         if (p && !created) {
             s_n.rx_spoof++;
@@ -1157,7 +1179,7 @@ void os_mesh_set_bridged(const os_mesh_bridged_t *list, int n)
     }
     for (int k = 0; k < n; k++) {
         bool created;
-        os_mesh_peer_t *p = peer_slot_locked(list[k].id, 0, &created);
+        os_mesh_peer_t *p = peer_slot_locked(list[k].id, NULL, 0, &created);
         if (!p) {
             continue;
         }

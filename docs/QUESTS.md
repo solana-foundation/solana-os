@@ -31,8 +31,8 @@ check" and "Checklist for AI agents" at the end before you answer.
   Saved with `"active": false` it isn't live: only the people testing it can play it
   (see "Testing a quest").
 - A quest is given by a **character** (Pip Thumbwell, Dr. Hexa Strain, ...). Characters
-  live on **beacons**: always-on ESP32 boards around the venue. One character can be on
-  several beacons; a beacon plays one character at a time.
+  live on **beacons**: always-on ESP32 boards around the venue, or badges running their
+  Beacon app. One character can be on several beacons; a beacon plays one character at a time.
 - A player opens **Quests** on their badge near a beacon. The badge talks to the beacon
   over ESP-NOW (short-range radio), and the beacon relays every request to the server.
   The badge's Wi-Fi can be off: the beacon is its link.
@@ -40,8 +40,9 @@ check" and "Checklist for AI agents" at the end before you answer.
   option can accept a quest, complete a step, give items, pay !LAMPs and so on.
 - Progress belongs to the **player's account**, not the badge. Rewards (!LAMPs, Guide
   pages, packs, items) land in the account at once and show on the web too
-  (`/quests`, `/wallet`, `/inventory`, `/guide`).
-- The web emulator can play quests too: a beacon with a screen shows a QR code, and
+  (`/quests`, `/wallet`, `/inventory`, `/guide`). The !LAMPs, pages and packs go only to
+  players who linked X (see "Rewards").
+- The web emulator can play quests too: a screen beacon or a badge beacon shows a QR code, and
   scanning it puts the emulated badge next to that beacon for 3 minutes.
 
 What players see:
@@ -80,7 +81,8 @@ A quest is one JSON object, a `QuestDef` (the comments mark what goes there; rea
 | `summary` | yes | ≤ 140 chars | One line on `/quests` and in the badge's quest list |
 | `giver` | yes | a character id | The quest is offered at that character's beacons |
 | `requires` | no | quest ids (not itself) | Quests the player must have completed once first. Until then the quest is `locked` |
-| `repeatable` | no | default `false` | Can be started again after completing; the reward pays every run |
+| `repeatable` | no | default `false` | Can be started again after completing (after its `cooldown`); the reward pays every run |
+| `cooldown` | no | seconds, 300-604,800, default 3,600 | For a repeatable quest: how long after each run before it's offered again. `/quests` shows when |
 | `active` | no | default `true` | Live for everyone. `false`: nobody new can start it, except the people testing it. Write new quests with `false`, test, then set `true` (see "Testing a quest" and "Editing live quests") |
 | `intro` | yes | 1-32 dialog nodes, at least one option with `"action": "accept"` | The offer conversation |
 | `steps` | yes | 1-20 steps, unique step ids | Done in order, one at a time |
@@ -157,7 +159,7 @@ Every step has:
 | `visit` | The player opens Quests at a beacon of `at`. No dialog: arriving is enough | `at` |
 | `deliver` | The player picks `complete` at `at` **and** has an item of `take.kind` that this quest gave; it's taken | `at`, `dialog`, `take: {kind}` |
 | `pay` | The player picks `complete` at `at` and has `amount` !LAMPs; they're charged | `at`, `dialog`, `amount` (1-1,000,000) |
-| `collect` | The player swaps X Dex cards with `count` different badges after the step started | `collect: {count, filter?}` |
+| `collect` | The player swaps X Dex cards with `count` different people after the step started | `collect: {count, filter?}` |
 | `item` | The player owns an item of `match.kind` whose `data` has the `match.where` values | `match: {kind, where?}` |
 | `app` | A quest app calls `quest.report(event)` with this step's `event` | `event` (≤ 32 chars) |
 
@@ -174,8 +176,8 @@ Details that matter:
 - **pay**: without enough !LAMPs the character says "You need 20 !LAMPs." and nothing
   changes. The charge shows in the player's wallet under the quest's title. Say the
   price in the option label ("Pay 20 !LAMPs"): people should know before they pick.
-- **collect**: counts unique badges whose X Dex swap with the player reaches the server
-  while the step is current (swaps sync when either badge is online). Only swaps with
+- **collect**: counts different people (badge owners: one friend's several badges count
+  once) whose X Dex swap with the player reaches the server while the step is current (swaps sync when either badge is online). Only swaps with
   people who linked X count (anti-farming), unless the server runs without X. `count` is
   1-100. A `filter` narrows which badges count:
   - `prefix`: badge ids starting with these characters (badge ids are 6 Crockford
@@ -250,8 +252,14 @@ Paid once when the last step completes, every run for a repeatable quest.
 When a quest completes, every item it gave becomes the player's for good: no later run
 or rollback removes it.
 
+With X linking on, only players who linked X get a quest's !LAMPs, pages and packs (from
+the reward and from `lamps` and `page` actions); everyone gets the items, and the badge
+says "Link X to earn quest rewards". And quests pay a player at most 1,000 !LAMPs a UTC
+day, all quests together: the rest of a payout over that is dropped ("Daily quest !LAMPs
+limit reached").
+
 Sizing rewards: the welcome is 100 !LAMPs, a Guide Pack costs 100, a category pack 150,
-and X Dex bounties are 10-100 per new badge. The seeded quests pay 15-75 !LAMPs, plus a
+and X Dex bounties are 10-100 per new person. The seeded quests pay 15-75 !LAMPs, plus a
 page, pack or item. A quest worth 30 minutes of walking is worth about a pack. Pages are
 the collectible: a rare page is a strong reward for a short quest. !LAMPs are a bounty
 (highest balance at the end wins a prize), so keep big payouts for hard quests, and keep
@@ -364,7 +372,7 @@ Guide page ids by category (C common, R rare, E epic, L legendary):
 | history | proof-of-history (L), tower-bft (E), turbine (R), gulf-stream (R), sealevel, loom-to-solana, mainnet-beta, tour-de-sol |
 | people | validators, rpc-providers, core-contributors, stakers, superteam (R), hackathon-builders (R), solana-foundation (E), founders (L) |
 
-Unmarked pages are common. Legendary pages are 1 % of pack draws: a quest that gives
+Unmarked pages are common. Legendary pages are about 0.7 % of pack draws: a quest that gives
 one is a big deal.
 
 ## Rules that the validator doesn't check
@@ -412,7 +420,8 @@ until part one is done, which teases it. Give part two to a different character 
 move players around the venue.
 
 **Repeatable errand.** `repeatable: true` with a small reward. The player can run it
-again right after finishing, so keep the reward small or the steps long.
+again an hour after finishing (or after its `cooldown`), so keep the reward small or the
+steps long.
 
 **Branching talk.** Lore nodes that loop back (`next` to an earlier node) are fine;
 make sure every path can reach the `accept` or `complete` option or an exit.
@@ -617,7 +626,7 @@ When asked to write a quest:
    organiser must create first.
 2. Output **one JSON object per quest**, valid JSON (no comments, no trailing commas),
    with keys in this order: `id`, `title`, `summary`, `giver`, `requires`, `repeatable`,
-   `active`, `intro`, `steps`, `reward`. Omit optional keys you don't use, but set
+   `cooldown`, `active`, `intro`, `steps`, `reward`. Omit optional keys you don't use, but set
    `"active": false` on a new quest so it can be tested before it goes live.
 3. Check the limits: title and step titles ≤ 48, summary ≤ 140, dialog text ≤ 400
    (aim for 250), labels ≤ 32, item names ≤ 40, ≤ 4 options per node, ≤ 20 steps,
