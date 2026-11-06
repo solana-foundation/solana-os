@@ -18,6 +18,15 @@ site changes that came with them live in the parent repository.
   digits are the first 4 bytes of the code's tag mod 1 000 000, so only the badge can make
   them, and the server caps the short codes tried against one badge. Console: `bridge code`
   prints `bridge short:`, and `bridge <id> <digits>` takes a short code. `core/os_bridge.c`.
+- **Images and animations, fixed** (from the 0.5.9 review): an image, canvas or animation
+  whose handle couldn't be made (the app at its heap limit, the error caught with `pcall`) no
+  longer stays on screen pointing at pixels the collector frees (the view is referenced before
+  LVGL gets it, and the object goes if its handle can't be made; `lua_ui.c`, `lua_img.c`). A
+  GIF frame must fit the image (a tiny GIF claiming a 65535 x 65535 frame made each step
+  decode billions of pixels under the LVGL lock); an animation's last frame stays even when
+  it says "restore to background"; disposal 2 in an opaque GIF goes back to the GIF's
+  background colour instead of leaving see-through holes; loop counts from 32768 to 65535
+  play that many times, not once (`lua_gif.c`). The decoder test fails on any UBSan report.
 
 ## 0.5.9 (2026-11-06)
 

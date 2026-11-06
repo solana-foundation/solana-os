@@ -28,6 +28,7 @@ def expected(im):
 def build(tmp):
     exe = os.path.join(tmp, "png")
     subprocess.run(["cc", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
+                    "-fno-sanitize-recover=undefined",  # a UBSan report fails the run, not just prints
                     "-o", exe, os.path.join(HERE, "main.c"), os.path.join(HERE, "..", "..", "lua_png.c"),
                     os.path.join(HERE, "..", "..", "lua_gif.c")], check=True)
     return exe
@@ -93,6 +94,37 @@ def raw_png(w, h, depth, color, rows, extra=b"", interlace=0):
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + extra + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
+def raw_gif(w, h, palette, frames, bg=0):
+    """A GIF built by hand: frames are (x, y, fw, fh, indices, disposal, transparent or None).
+    LZW without compression: literal codes, a clear before the table would grow."""
+    def lzw(idx, min_size=8):
+        clear, size, out, bits, n = 1 << min_size, min_size + 1, bytearray(), 0, 0
+        codes = [clear]
+        for k, v in enumerate(idx):
+            if k and k % (clear - 3) == 0:
+                codes.append(clear)
+            codes.append(v)
+        codes.append(clear + 1)
+        for c in codes:
+            bits |= c << n
+            n += size
+            while n >= 8:
+                out.append(bits & 255)
+                bits >>= 8
+                n -= 8
+        if n:
+            out.append(bits & 255)
+        blocks = b"".join(bytes([len(out[i:i + 255])]) + out[i:i + 255] for i in range(0, len(out), 255))
+        return bytes([min_size]) + blocks + b"\x00"
+    pal = bytes(palette) + bytes(768 - len(palette))
+    data = b"GIF89a" + struct.pack("<HHBBB", w, h, 0xF7, bg, 0) + pal
+    for x, y, fw, fh, idx, disposal, transparent in frames:
+        flags = (disposal << 2) | (1 if transparent is not None else 0)
+        data += b"\x21\xf9\x04" + struct.pack("<BHB", flags, 5, transparent or 0) + b"\x00"
+        data += b"\x2c" + struct.pack("<HHHHB", x, y, fw, fh, 0) + lzw(idx)
+    return data + b"\x3b"
+
+
 def decode_gif(exe, data, tmp):
     """(w, h), [(delay, pixels)...], loops; or the error and None."""
     p = os.path.join(tmp, "in.gif")
@@ -155,6 +187,7 @@ def gif_cases():
     yield "interlaced", frames[:2], {"interlace": True, "duration": 100}
     yield "not interlaced", frames, {"interlace": False, "duration": 100}
     yield "noise, not interlaced", noise, {"interlace": False}
+    yield "loop count over 32767", frames[:2], {"duration": 50, "loop": 40000}
 
 
 def main():
@@ -205,8 +238,27 @@ def main():
                     bad = [i for i, (a, b2) in enumerate(zip(f[1], w)) if a != b2]
                     if bad:
                         print(f"     frame {k}: {len(bad)} pixels differ, first {bad[0]}: {f[1][bad[0]]:04x} want {w[bad[0]]:04x}")
+            elif "loop" in kw and kw["loop"] and loops != kw["loop"]:
+                fails += 1
+                print(f"FAIL GIF {name}: loops {loops}, want {kw['loop']}")
             else:
                 print(f"ok   GIF {name} ({size[0]}x{size[1]}, {len(frames)} frames, delays {[f[0] for f in frames]}, loops {loops}, {len(data)} bytes)")
+
+        # Hand-built: an opaque GIF whose small frames go back to the background colour (disposal 2),
+        # with the last frame's disposal 2 never applied (it stays); and a transparent one, which clears.
+        pal = [20, 20, 30, 235, 84, 188, 100, 200, 50]
+        for name, transparent in (("opaque", None), ("transparent", 2)):
+            fr = [(0, 0, 24, 16, [0] * 384, 1, None)] + [(n * 5, 4, 6, 6, [1] * 36, 2, transparent) for n in range(4)]
+            data = raw_gif(24, 16, pal, fr)
+            size, frames, _ = decode_gif(exe, data, tmp)
+            want = gif_frames_expected(data)
+            back = rgb565(20, 20, 30) if transparent is None else CLEAR
+            # Pillow shows a cleared area of a transparent frame as its transparent index, opaque; browsers
+            # (and the badge) clear it, so only the opaque one is compared with Pillow pixel by pixel.
+            ok = frames is not None and len(frames) == 5 and (transparent is not None or all(f[1] == w for f, w in zip(frames, want)))
+            ok = ok and frames[2][1][4 * 24] == back and frames[-1][1][4 * 24 + 15] == rgb565(235, 84, 188)
+            print(f"ok   GIF {name} sprite, disposal 2" if ok else f"FAIL GIF {name} sprite, disposal 2")
+            fails += not ok
 
         # Broken files fail with a message, never a crash (ASan/UBSan watch).
         good = png_bytes(sample_image(30, 20, 4))
@@ -227,6 +279,14 @@ def main():
         good_gif = b.getvalue()
         bad_cases["gif truncated"] = good_gif[:len(good_gif) // 2]
         bad_cases["gif header only"] = good_gif[:13]
+        # A frame wider than the canvas (65535 x 65535 on a tiny screen) is refused, not decoded.
+        big = raw_gif(4, 4, [255, 0, 0], [(0, 0, 65535, 65535, [0] * 16, 0, None)])
+        msg, px, _ = decode_gif(exe, big, tmp)
+        if px is not None or msg != "a frame is bigger than the image":
+            fails += 1
+            print(f"FAIL GIF oversized frame: {msg}")
+        else:
+            print("ok   GIF oversized frame refused")
         rnd = random.Random(6)
         for i in range(300):
             b = bytearray(good_gif)

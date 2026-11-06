@@ -233,9 +233,11 @@ void lh_ui_close_dialog(lh_t *s);                       // ui.confirm / ui.input
 void lh_ui_release(lh_t *s);                            // forget LVGL pointers (OS cleaned them)
 lv_color_t lh_color(lua_State *L, int idx);
 // For lua_img.c: the session (NULL while shutting down: calls do nothing),
-// a new object in the pool (its handle pushed), the object behind handle 1.
+// a new object in the pool (its handle pushed; items_ref = ref, a registry
+// slot the caller reserved, freed with obj if it can't be made), the object
+// behind handle 1.
 lh_t *lh_ui_session(lua_State *L);
-lh_obj_t *lh_ui_new(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj);
+lh_obj_t *lh_ui_new_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref);
 lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what);
 
 // lua_img.c: ui.load, ui.image, ui.canvas

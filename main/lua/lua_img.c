@@ -473,12 +473,17 @@ static lh_view_t *new_view(lua_State *L, int scale)
 static void show_view(lua_State *L, lh_t *s, lh_kind_t kind, int x, int y)
 {
     lh_view_t *v = lua_touserdata(L, -1);
+    // The view is in the registry before LVGL gets a pointer to it, and stays
+    // until the object goes: nothing that can fail comes in between, so a
+    // script that catches an out-of-memory here can't collect a view LVGL
+    // draws (or an animation steps).
+    lua_pushvalue(L, -1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     lv_obj_t *img = lv_image_create(s->area);
     lv_image_set_src(img, &v->dsc);
     lv_obj_set_pos(img, x, y);
-    lh_obj_t *o = lh_ui_new(L, s, kind, img);       // pushes the handle
-    lua_insert(L, -2);
-    o->items_ref = luaL_ref(L, LUA_REGISTRYINDEX);  // the view, until the object goes
+    lh_ui_new_ref(L, s, kind, img, ref);            // pushes the handle; on failure deletes img, frees ref
+    lua_remove(L, -2);
 }
 
 static lh_view_t *view_of(const lh_obj_t *o)
@@ -654,7 +659,8 @@ int lh_anim_play(lua_State *L)
             a->ended = false;
             a->next = a->first;
             a->loops = a->loops_set;
-            a->gif.disposal = 2;                // clears the whole canvas first
+            a->gif.disposal = 2;                // clears the whole canvas once the first frame is found
+            a->gif.dispose_px = LH_PX_CLEAR;
             a->gif.fx = a->gif.fy = 0;
             a->gif.fw = a->gif.w;
             a->gif.fh = a->gif.h;

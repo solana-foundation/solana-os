@@ -314,6 +314,10 @@ Getting a quest app onto the server: either add it to the seed content
 or have its author submit it at `/apps/submit` and an organiser set its status to
 `quest` in `/admin/apps`. A `quest` app is never listed in the App Store.
 
+Its author can still update it at `/apps/submit`: it stays a quest app, takes `main.lua`
+only, and every change to its code, permissions or hosts waits for an organiser to
+approve it in `/admin/apps` (store details alone publish at once).
+
 ## Characters and beacons
 
 - Characters are made in `/admin/characters`: id, name, title, bio, colour (6 hex),

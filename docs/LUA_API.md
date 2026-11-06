@@ -274,7 +274,9 @@ dance:scale(3)  dance:pos(x, y)  dance:show(b)  dance:remove()
   what the file says (most loop forever); when it ends, the last frame stays. A
   106 × 72 GIF shown at 3× (the whole screen) takes about 20 ms a frame to decode;
   smaller ones less. Transparent pixels and the "restore to background" disposal
-  work; "restore to previous" is treated as "leave it".
+  work (see-through for a frame with transparency, else the GIF's background colour);
+  "restore to previous" is treated as "leave it". Every frame must fit inside the
+  GIF's size, or the animation stops with an error.
 - **Scale.** Integer only: each pixel becomes a `scale` × `scale` square, sharp
   edges, no smoothing. Memory is the image's own pixels, whatever the scale: a
   40 × 27 canvas shown at 8× fills the screen for 2 KB.

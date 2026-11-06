@@ -89,6 +89,8 @@ const char *lh_gif_open(lh_gif_t *g, lh_gif_work_t *w, lh_png_read_t read, void 
         return "too big (1024 x 1024 at most)";
     }
     g->loops = -1;
+    g->bg = h[11];
+    g->dispose_px = LH_PX_CLEAR;
     if (h[10] & 0x80) {
         g->ngct = (uint16_t)(2u << (h[10] & 7));
         if (!read_table(w, g->gct, g->ngct)) {
@@ -266,19 +268,11 @@ const char *lh_gif_frame(lh_gif_t *g, lh_gif_work_t *w, lh_png_read_t read, void
 {
     start(w, read, ud, *pos);
     *done = false;
-    if (g->disposal == 2) {                 // the last frame goes back to see-through
-        for (uint32_t y = g->fy; y < (uint32_t)g->fy + g->fh && y < g->h; y++) {
-            for (uint32_t x = g->fx; x < (uint32_t)g->fx + g->fw && x < g->w; x++) {
-                canvas[y * g->w + x] = LH_PX_CLEAR;
-            }
-        }
-    }
-    g->disposal = 0;
     unsigned disposal = 0, delay = 0;
     int transparent = -1;
     for (;;) {
         int b = rd_byte(w);
-        if (b < 0 || b == 0x3B) {           // end of file or trailer
+        if (b < 0 || b == 0x3B) {           // end of file or trailer: the last frame stays as it is
             *done = true;
             return NULL;
         }
@@ -307,7 +301,7 @@ const char *lh_gif_frame(lh_gif_t *g, lh_gif_work_t *w, lh_png_read_t read, void
                             return "the file ends early";
                         }
                         if (sub[1] == 1) {
-                            g->loops = (int16_t)(sub[2] | sub[3] << 8);
+                            g->loops = (int32_t)(sub[2] | sub[3] << 8);
                         }
                     } else if (sub[0] && !rd_bytes(w, NULL, sub[0])) {
                         return "the file ends early";
@@ -331,12 +325,25 @@ const char *lh_gif_frame(lh_gif_t *g, lh_gif_work_t *w, lh_png_read_t read, void
         if (!rd_bytes(w, d, 9)) {
             return "the file ends early";
         }
+        // Another frame: now the one drawn last goes (disposal 2), not before, so the last frame stays.
+        if (g->disposal == 2) {
+            for (uint32_t y = g->fy; y < (uint32_t)g->fy + g->fh && y < g->h; y++) {
+                for (uint32_t x = g->fx; x < (uint32_t)g->fx + g->fw && x < g->w; x++) {
+                    canvas[y * g->w + x] = g->dispose_px;
+                }
+            }
+        }
+        g->disposal = 0;
         frame_t f = {
             .g = g, .canvas = canvas, .transparent = transparent, .pal = g->gct,
             .fx = (uint16_t)(d[0] | d[1] << 8), .fy = (uint16_t)(d[2] | d[3] << 8),
             .fw = (uint16_t)(d[4] | d[5] << 8), .fh = (uint16_t)(d[6] | d[7] << 8),
             .interlaced = d[8] & 0x40,
         };
+        // Inside the canvas, or no frame: decoding costs a frame's pixels, so this bounds every step.
+        if ((uint32_t)f.fx + f.fw > g->w || (uint32_t)f.fy + f.fh > g->h) {
+            return "a frame is bigger than the image";
+        }
         if (d[8] & 0x80) {
             if (!read_table(w, w->lct, 2u << (d[8] & 7))) {
                 return "the file ends early";
@@ -360,6 +367,8 @@ const char *lh_gif_frame(lh_gif_t *g, lh_gif_work_t *w, lh_png_read_t read, void
             return err;
         }
         g->disposal = (uint8_t)(disposal == 2 ? 2 : 0);
+        // An opaque frame over a global background colour goes back to that colour; otherwise see-through.
+        g->dispose_px = transparent < 0 && g->bg < g->ngct ? g->gct[g->bg] : LH_PX_CLEAR;
         g->fx = f.fx;
         g->fy = f.fy;
         g->fw = f.fw;

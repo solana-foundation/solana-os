@@ -92,28 +92,52 @@ static void keep_dialogs_on_top(lh_t *s)
     }
 }
 
+static int alloc_handle(lua_State *L)
+{
+    lua_newuserdatauv(L, sizeof(lh_handle_t), 0);
+    return 1;
+}
+
+// Puts obj in the pool and pushes its handle. The handle is allocated (under
+// a protected call) before the slot is taken: at the heap limit, obj is
+// deleted and `ref` (a registry slot the caller reserved for it, or
+// LUA_NOREF) freed before the error goes on, so the pool never keeps an
+// object whose Lua side a script could catch the error and collect.
+static lh_obj_t *new_obj_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref)
+{
+    int i = 0;
+    while (i < LH_OBJ_MAX && s->objs[i].obj) {
+        i++;
+    }
+    if (i == LH_OBJ_MAX) {
+        lv_obj_delete(obj);
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        luaL_error(L, "too many UI objects (%d)", LH_OBJ_MAX);
+    }
+    lua_pushcfunction(L, alloc_handle);
+    if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+        lv_obj_delete(obj);
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        lua_error(L);
+    }
+    lh_obj_t *o = &s->objs[i];
+    o->obj = obj;
+    o->kind = kind;
+    o->order = ++s->obj_order;
+    o->list = NULL;
+    o->items_ref = ref;
+    o->select_ref = LUA_NOREF;
+    lh_handle_t *h = lua_touserdata(L, -1);
+    h->slot = i;
+    h->gen = o->gen;
+    luaL_setmetatable(L, s_meta[kind]);
+    keep_dialogs_on_top(s);
+    return o;
+}
+
 static lh_obj_t *new_obj(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj)
 {
-    for (int i = 0; i < LH_OBJ_MAX; i++) {
-        lh_obj_t *o = &s->objs[i];
-        if (o->obj) {
-            continue;
-        }
-        o->obj = obj;
-        o->kind = kind;
-        o->order = ++s->obj_order;
-        o->list = NULL;
-        o->items_ref = o->select_ref = LUA_NOREF;
-        lh_handle_t *h = lua_newuserdatauv(L, sizeof(*h), 0);
-        h->slot = i;
-        h->gen = o->gen;
-        luaL_setmetatable(L, s_meta[kind]);
-        keep_dialogs_on_top(s);
-        return o;
-    }
-    lv_obj_delete(obj);
-    luaL_error(L, "too many UI objects (%d)", LH_OBJ_MAX);
-    return NULL;
+    return new_obj_ref(L, s, kind, obj, LUA_NOREF);
 }
 
 static void free_obj(lua_State *L, lh_t *s, lh_obj_t *o)
@@ -193,9 +217,9 @@ lh_t *lh_ui_session(lua_State *L)
     return ui_session(L);
 }
 
-lh_obj_t *lh_ui_new(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj)
+lh_obj_t *lh_ui_new_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref)
 {
-    return new_obj(L, s, kind, obj);
+    return new_obj_ref(L, s, kind, obj, ref);
 }
 
 lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what)
