@@ -428,9 +428,20 @@ The server rate-limits grants (20 per user per app per hour) and caps an app at
 ### `profile` (permission `profile`)
 
 ```lua
-profile.me(cb)              -- {name=, x=, level=, lamps=, pages=, badge=}
-profile.get(badgeId, cb)    -- public profile of that badge's owner: {name=, x=, level=}
+profile.me(cb)              -- {name=, x=, xName=, solana=, level=, lamps=, pages=, badge=}
+profile.get(badgeId, cb)    -- public profile of that badge's owner: {name=, x=, xName=, solana=, level=}
 ```
+
+- `name`: the name people see: the X name when X is linked, else the name the person set
+  at `/profile` (nil if neither).
+- `x`: the X handle without the `@` (`"toly"`), `xName`: the X display name; both nil
+  without a linked X account.
+- `solana`: the Solana address (base58) the person linked at `/profile` by signing with
+  their wallet, nil without one. It's public (their profile page shows it); use it to look
+  up their balances with `rpc` or to pay them from your own server. The badge never holds
+  their key: anything to sign still goes to their phone ("Build on the badge, sign on a
+  phone").
+- Never an email.
 
 ### `quest` (permission `quest`)
 

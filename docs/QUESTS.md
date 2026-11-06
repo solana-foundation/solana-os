@@ -557,7 +557,9 @@ What's different in a test:
   quest's `item`, `take` or `deliver` step ignores them).
 - A test completion doesn't unlock other quests' `requires`.
 - Its events show in the activity log marked `test`; the dashboard, leaderboards and
-  funnels don't count them.
+  funnels don't count them. Every payout or charge the test skipped gets its own line,
+  `Withheld`: "500 !LAMPs, page towel not paid: test run", so a missing reward there is
+  the test, not a broken quest.
 
 Step by step:
 
@@ -612,8 +614,9 @@ items one test gives count for your other tests.
   **funnel**: how many players reached, finished and failed each step. A step where many
   fail or stall is too hard, too far, or badly explained. Test runs don't count.
 - `/admin/activity`: filter by quest for the live log of `quest.start`, `quest.step`,
-  `quest.fail` (with the reason: `time` or `left`) and `quest.complete`; test runs are
-  marked `test`. QuestMakers see the activity of their own quests here (players' names,
+  `quest.fail` (with the reason: `time` or `left`), `quest.complete` and `quest.withheld`
+  (what a run didn't pay or charge, and why: a test run, a player without X, or the daily
+  quest !LAMPs limit); test runs are marked `test`. QuestMakers see the activity of their own quests here (players' names,
   never their emails).
 - Beacon liveness is on `/admin/beacons`: a quest whose beacon is offline can't move.
 
