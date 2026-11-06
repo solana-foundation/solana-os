@@ -27,6 +27,13 @@ site changes that came with them live in the parent repository.
   it says "restore to background"; disposal 2 in an opaque GIF goes back to the GIF's
   background colour instead of leaving see-through holes; loop counts from 32768 to 65535
   play that many times, not once (`lua_gif.c`). The decoder test fails on any UBSan report.
+- **Canvas drawing and UI objects, hardened** (from the 0.5.9 review): `c:image`, `c:rect`,
+  `c:pixel` and `c:get` clamp coordinates before narrowing them, so a position near the
+  integer limits (`-2^31`) can no longer wrap the clip maths and copy heap memory past a small
+  source into the canvas (`lua_img.c`). A UI object's handle is allocated before its pool
+  slot is chosen, so a script's `__gc` that runs during that allocation and makes UI objects
+  of its own can't have them overwritten (two handles on one object, past the 64-object
+  limit; `lua_ui.c`). `tests/t-img` covers both.
 
 ## 0.5.9 (2026-11-06)
 

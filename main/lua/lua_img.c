@@ -792,6 +792,16 @@ int lh_ui_canvas(lua_State *L)
     return 1;
 }
 
+// A drawing coordinate or size, clamped to +-COORD_MAX before it becomes an
+// int: anything past that is off every canvas anyway, and the clip maths
+// (x + w, p->w - x, -x) can then never overflow.
+#define COORD_MAX (4 * LH_PNG_DIM_MAX)
+static int coord(lua_State *L, int i)
+{
+    lua_Integer v = luaL_checkinteger(L, i);
+    return v < -COORD_MAX ? -COORD_MAX : v > COORD_MAX ? COORD_MAX : (int)v;
+}
+
 static lh_pix_t *canvas(lua_State *L, lh_obj_t **out)
 {
     lh_obj_t *o = lh_ui_check(L, LH_CANVAS, "canvas");
@@ -839,7 +849,7 @@ int lh_cv_pixel(lua_State *L)
 {
     lh_obj_t *o;
     lh_pix_t *p = canvas(L, &o);
-    int x = luaL_checkinteger(L, 2), y = luaL_checkinteger(L, 3);
+    int x = coord(L, 2), y = coord(L, 3);
     uint16_t c = arg_px(L, 4);
     if (p && x >= 0 && y >= 0 && x < p->w && y < p->h) {
         p->px[y * p->w + x] = c;
@@ -852,8 +862,8 @@ int lh_cv_rect(lua_State *L)
 {
     lh_obj_t *o;
     lh_pix_t *p = canvas(L, &o);
-    int x = luaL_checkinteger(L, 2), y = luaL_checkinteger(L, 3);
-    int w = luaL_checkinteger(L, 4), h = luaL_checkinteger(L, 5);
+    int x = coord(L, 2), y = coord(L, 3);
+    int w = coord(L, 4), h = coord(L, 5);
     uint16_t c = arg_px(L, 6);
     if (p && w > 0 && h > 0) {
         fill(L, p, x, y, w, h, c);
@@ -939,7 +949,7 @@ int lh_cv_image(lua_State *L)
     lh_obj_t *o;
     lh_pix_t *p = canvas(L, &o);
     lh_pix_t *src = to_pix(L, 2, 5, "canvas:image");
-    int x = luaL_checkinteger(L, 3), y = luaL_checkinteger(L, 4);
+    int x = coord(L, 3), y = coord(L, 4);
     if (!p) {
         return 0;
     }
@@ -967,7 +977,7 @@ int lh_cv_get(lua_State *L)
 {
     lh_obj_t *o;
     lh_pix_t *p = canvas(L, &o);
-    int x = luaL_checkinteger(L, 2), y = luaL_checkinteger(L, 3);
+    int x = coord(L, 2), y = coord(L, 3);
     uint16_t c = p && x >= 0 && y >= 0 && x < p->w && y < p->h ? p->px[y * p->w + x] : LH_PX_CLEAR;
     if (c == LH_PX_CLEAR) {
         lua_pushnil(L);

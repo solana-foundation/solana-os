@@ -99,12 +99,20 @@ static int alloc_handle(lua_State *L)
 }
 
 // Puts obj in the pool and pushes its handle. The handle is allocated (under
-// a protected call) before the slot is taken: at the heap limit, obj is
+// a protected call) before a slot is chosen: at the heap limit, obj is
 // deleted and `ref` (a registry slot the caller reserved for it, or
 // LUA_NOREF) freed before the error goes on, so the pool never keeps an
-// object whose Lua side a script could catch the error and collect.
+// object whose Lua side a script could catch the error and collect. And the
+// allocation may run a script's __gc, which may make UI objects of its own:
+// the free slot is looked for only once nothing can allocate any more.
 static lh_obj_t *new_obj_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref)
 {
+    lua_pushcfunction(L, alloc_handle);
+    if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+        lv_obj_delete(obj);
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        lua_error(L);
+    }
     int i = 0;
     while (i < LH_OBJ_MAX && s->objs[i].obj) {
         i++;
@@ -113,12 +121,6 @@ static lh_obj_t *new_obj_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *ob
         lv_obj_delete(obj);
         luaL_unref(L, LUA_REGISTRYINDEX, ref);
         luaL_error(L, "too many UI objects (%d)", LH_OBJ_MAX);
-    }
-    lua_pushcfunction(L, alloc_handle);
-    if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-        lv_obj_delete(obj);
-        luaL_unref(L, LUA_REGISTRYINDEX, ref);
-        lua_error(L);
     }
     lh_obj_t *o = &s->objs[i];
     o->obj = obj;

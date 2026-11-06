@@ -9,6 +9,23 @@ local function kb() return ("%.1f KB"):format(collectgarbage("count")) end
 print("t-img start, heap " .. kb())
 ui.bg("bg")
 
+-- A __gc that makes UI objects while a handle is being allocated: every
+-- object keeps its own slot, the 64-object limit still holds.
+local made, fired = {}, 0
+local gcmt = {__gc = function() fired = fired + 1; made[#made + 1] = ui.label(0, 0, "gc") end}
+local ok, err = pcall(function()
+  for i = 1, 100 do
+    for _ = 1, 8 do setmetatable({}, gcmt) end
+    local _ = string.rep("g", 400 + i)       -- garbage, so collections run
+    made[#made + 1] = ui.label(0, 0, "x")
+  end
+end)
+-- Two handles on one slot would show as a remove that fails ("removed").
+local bad = 0
+for _, l in ipairs(made) do if not pcall(l.remove, l) then bad = bad + 1 end end
+print(("t-img gc labels %d (%d finalizers ran), %d shared, %s"):format(#made, fired, bad, ok and "FAIL no limit" or err))
+made = nil
+
 -- A PNG at 1x and 2x (one load, two views).
 local disc = ui.load("disc.png")
 local w, h = disc:size()
@@ -52,6 +69,19 @@ try("draw on image", function() c.rect(big, 0, 0, 1, 1, "green") end)
 c:line(-2000000000, -1000000000, 2000000000, 1000000000, "lime")
 c:line(-2000000000, 5000, 2000000000, 5000, "lime")
 print("t-img long lines ok")
+-- Coordinates that overflow an int once narrowed draw nothing (no heap read).
+local dot = ui.load({"m"})
+local probe = ui.canvas(0, 0, 40, 40)
+for _, v in ipairs({math.mininteger, math.maxinteger, -2147483647, 2147483647}) do
+  probe:image(dot, v, v)
+  probe:image(dot, v, 0)
+  probe:rect(v, v, math.maxinteger, math.maxinteger, "lime")
+  probe:pixel(v, v, "lime")
+end
+local seen = 0
+for yy = 0, 39 do for xx = 0, 39 do if probe:get(xx, yy) then seen = seen + 1 end end end
+print("t-img overflow coords, pixels drawn " .. seen)
+probe:remove()
 
 -- Swap and rescale a shown image.
 big:set(heart)
