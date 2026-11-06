@@ -1,9 +1,10 @@
 #pragma once
 
 // Bridges (docs/MESH.md "Bridges"): badges that share no radio, an emulator and
-// a badge or two emulators, meet through the server. This badge shows a bridge
-// code (os_bridge_show: a QR code that changes every 30 s), the other scans it
-// (os_bridge_scan, the emulator page's camera or paste); after that each is a
+// a badge or two emulators, or badges far apart, meet through the server. This
+// badge shows a bridge code (os_bridge_show: a QR code and a short code that
+// change every 30 s), the other scans it (os_bridge_scan: the emulator page's
+// camera or paste, or another badge's keyboard); after that each is a
 // peer of the other in os_mesh (bridged = true), and XDEX, TRADE and APP
 // messages between them go through POST /api/device/bridge/sync instead of the
 // air. Apps don't need to know: os_mesh_send() and the handlers work the same.
@@ -37,6 +38,8 @@ int os_bridge_list(os_bridge_t *out, int max);
 // code holds, "<site>/emulator?bridge=<code>". Any task.
 bool os_bridge_code(char *code, size_t n);
 bool os_bridge_url(char *url, size_t n);
+// The short code people type on another badge: "<id> <6 digits>" (MESH.md).
+bool os_bridge_short_code(char *code, size_t n);
 
 // Show the code over the current app (os_overlay; CANCEL closes it), or close
 // it. Any task.
@@ -44,7 +47,8 @@ void os_bridge_show(void);
 void os_bridge_hide(void);
 bool os_bridge_showing(void);
 
-// Bridge with the badge that shows `code` (the code, or a link holding it).
+// Bridge with the badge that shows `code` (the code, a link holding it, or
+// its short code as typed).
 // Offline, it waits up to 2 minutes for Wi-Fi. The outcome is a toast. Any task.
 esp_err_t os_bridge_scan(const char *code);
 

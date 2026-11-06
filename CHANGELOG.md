@@ -6,6 +6,19 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.10 (2026-11-06)
+
+- **Bridge two badges far apart by typing a code** (`docs/MESH.md` "Bridges"). The bridge
+  panel (X Dex or Trade: Bridge a badge; Lua `mesh.bridge()`; console `bridge show`) now
+  shows a **short code** under its QR code, the badge's id and 6 digits (`7K2Q9M 489433`),
+  which changes with the QR code every 30 s. SELECT on the same panel opens the keyboard to
+  type the other badge's short code (case, spaces and dashes don't matter); the bridge opens
+  as a scan does, and X Dex, Trade and Lua apps then work between the two as over the air.
+  Before, two badges could only meet over ESP-NOW, since neither can scan a QR code. The 6
+  digits are the first 4 bytes of the code's tag mod 1 000 000, so only the badge can make
+  them, and the server caps the short codes tried against one badge. Console: `bridge code`
+  prints `bridge short:`, and `bridge <id> <digits>` takes a short code. `core/os_bridge.c`.
+
 ## 0.5.9 (2026-11-06)
 
 - **Images for Lua apps** (`docs/LUA_API.md` "Images"): `ui.image(x, y, src, {scale})` shows a

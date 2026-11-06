@@ -388,10 +388,10 @@ mesh.send(to, msg)          -- to = badge id or "*"; msg = table (≤ 200 bytes 
 mesh.bridge()               -- show this badge's bridge code over the app (CANCEL closes it)
 ```
 
-**Bridged badges.** The emulator has no radio and the badge has no camera, so an
-emulated badge meets a real one (or another emulator in a different browser) over a
+**Bridged badges.** Badges out of radio range, and emulators (no radio), meet over a
 **bridge** through the server (docs/MESH.md "Bridges"). One badge shows its bridge
-code, the other scans it in the emulator page; after that each is in the other's
+code; another badge types its short code (SELECT on the code screen), or the emulator
+page scans or pastes it. After that each is in the other's
 `mesh.nearby()` with `bridged=true` and `rssi=0`, and `mesh.send` and `on_mesh` work
 exactly as over the air: a message to its id goes to it, and `"*"` reaches every badge
 in range *and* every bridged badge. The same app has to run on both. Your app doesn't
