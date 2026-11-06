@@ -116,6 +116,7 @@ HOME always returns to the launcher. The screen below the status bar is
 | Memory | 48 KB of Lua heap (the app is stopped with "Out of memory" beyond that). A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
 | UI objects | 64 at a time, one of them a QR code |
+| Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
 | Text | 200 bytes per label (longer text ends in "..."), 6 KB of label text on screen |
 | Timers | 8 at a time, ≥ 20 ms |
 | Storage | 16 KB per app (`storage.*`) |
@@ -211,6 +212,80 @@ not every scanner reads light-on-dark codes. One at a time: change what it shows
 `q:text()`. Text that doesn't fit at `size` is an error. Shorter text means bigger
 squares that scan from farther away: up to about 130 bytes at 180 px gives 3 px per
 square.
+
+#### Images
+
+Solana OS 0.5.9 (`nil` on older badges: check `if ui.image then`). Show PNGs and GIFs
+bundled with the app, play animated GIFs, write pixel art in Lua, or draw on a canvas.
+
+```lua
+local logo = ui.image(10, 10, "art/logo.png")         -- a bundled PNG, shown as it is
+local hero = ui.image(100, 60, {                      -- pixel art: one character per pixel
+  "..pp..",
+  ".pggp.",
+  "pggggp",
+  ".p..p.",
+}, {scale = 8})                                       -- each pixel 8 x 8 on screen
+hero:pos(x, y)  hero:show(b)  hero:remove()
+hero:set(other)                                       -- show another image (same sources as ui.image)
+hero:scale(4)                                         -- 1..16
+
+local ship = ui.load("ship.png")                      -- load once, show or draw it many times
+local w, h = ship:size()
+ui.image(0, 0, ship, {scale = 2})                     -- views share the pixels: no copy
+
+local c = ui.canvas(0, 0, 80, 54, {scale = 4, color = "bg"})   -- 80 x 54 pixels on 320 x 216 px
+c:clear()                     -- everything see-through (or c:clear("bg"))
+c:pixel(x, y, "green")
+c:rect(x, y, w, h, 0xFF754A)  -- filled
+c:line(x1, y1, x2, y2, "aqua")
+c:image(ship, x, y)           -- stamp an image (or a path, or rows); its see-through pixels leave the canvas as it was
+c:get(x, y)                   -- 0xRRGGBB, or nil where it's see-through or outside
+c:pos(x, y)  c:show(b)  c:remove()
+
+local dance = ui.anim(100, 40, "dance.gif", {scale = 2})   -- an animated GIF, playing
+local once = ui.anim(0, 0, "intro.gif", {loop = false})     -- loop: true, false, or a number of times
+dance:stop()  dance:play()  dance:playing()   -- play() after the end starts over
+dance:scale(3)  dance:pos(x, y)  dance:show(b)  dance:remove()
+```
+
+- **Sources.** Anywhere an image goes (`ui.image`, `image:set`, `ui.load`, `c:image`):
+  a `ui.load` result, the path of a PNG or GIF bundled with the app (as for `fs`; a GIF
+  gives its first frame), or a table of rows. A path is read and decoded each time it's given, so load what you draw
+  often with `ui.load` once. The `{palette = ...}` option, after the position, goes
+  with rows.
+- **Pixel art.** Each character is a pixel: `.` and space are see-through, `#` is the
+  theme's text colour, and `k` black, `w` white, `p` purple, `g` green, `m` pink,
+  `v` light purple, `b` blue, `a` aqua, `l` lime, `y` yellow, `o` orange are the
+  brand's. `{palette = {r = 0xFF0000, s = "dim", x = false}}` adds or changes
+  characters (`false`: see-through). Rows can differ in length; short ones end
+  see-through. A character not in the palette is an error.
+- **PNGs.** Any colour type and bit depth; not interlaced. A pixel less than half
+  opaque is see-through and the rest are solid (no blending). Loading needs the
+  picture's pixels plus its unpacked rows for a moment (about 4 bytes a pixel for
+  RGBA, 1 for a 256-colour palette, less for fewer colours), so save big pictures
+  with a palette. Reading costs instructions like `fs.read`.
+- **Animations.** `ui.anim` plays a GIF on its own, with the GIF's own timing (at
+  most 50 frames a second; a delay of 0 plays at 10), between your callbacks. It keeps
+  one frame in memory, whatever the length: the GIF's size × 2 bytes, plus 13 KB for
+  decoding that the app's first `ui.anim` reserves and keeps (`ui.load` of a GIF
+  borrows it then, or needs it for a moment). Frames are read from the card as they
+  play, so a long animation costs no more than a short one. Without `loop`, it does
+  what the file says (most loop forever); when it ends, the last frame stays. A
+  106 × 72 GIF shown at 3× (the whole screen) takes about 20 ms a frame to decode;
+  smaller ones less. Transparent pixels and the "restore to background" disposal
+  work; "restore to previous" is treated as "leave it".
+- **Scale.** Integer only: each pixel becomes a `scale` × `scale` square, sharp
+  edges, no smoothing. Memory is the image's own pixels, whatever the scale: a
+  40 × 27 canvas shown at 8× fills the screen for 2 KB.
+- **Colours** are the screen's 65,536 (RGB565): `c:get` gives back `0x9C45FF` for
+  `"purple"` (`0x9945FF`). Theme names are taken when the pixel is drawn or the art
+  loaded; they don't follow a later theme change.
+- **Drawing** off the canvas is clipped, not an error. Every pixel written costs
+  instructions (1 per 16), so redrawing a whole 80 × 54 canvas each `on_tick` is
+  fine; the canvas redraws on screen after the callback. Images and canvases are UI
+  objects (the 64), drawn in the order made, so a label made after a canvas sits on
+  top of it. So are animations.
 
 ### `led` (permission `led`)
 

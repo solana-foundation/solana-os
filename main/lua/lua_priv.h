@@ -47,12 +47,12 @@
 #define LH_READ_CHUNK       256         // compiling from the card, a piece at a time
 #define LH_WS_LATE          4           // sockets closing without a connection, per round
 
-typedef enum { LH_LABEL, LH_RECT, LH_BAR, LH_GRADIENT, LH_LIST, LH_QR, LH_KIND_COUNT } lh_kind_t;
+typedef enum { LH_LABEL, LH_RECT, LH_BAR, LH_GRADIENT, LH_LIST, LH_QR, LH_IMAGE, LH_CANVAS, LH_ANIM, LH_KIND_COUNT } lh_kind_t;
 
 typedef struct {
     lv_obj_t *obj;              // NULL: free slot
     ui_list_t *list;            // LH_LIST
-    int items_ref, select_ref;  // LH_LIST: registry refs
+    int items_ref, select_ref;  // LH_LIST: registry refs; LH_IMAGE, LH_CANVAS, LH_ANIM: the view in items_ref
     uint32_t order;             // creation order: the newest visible list gets Up/Down
     uint16_t gen;               // bumped when freed, so stale handles fail
     uint16_t text_len;          // LH_LABEL: bytes counted in lh_t.text_total
@@ -144,6 +144,7 @@ typedef struct lh {
     lh_obj_t objs[LH_OBJ_MAX];
     uint32_t obj_order;
     size_t text_total;          // label text bytes on screen
+    void *gif_work;             // ui.anim's decoding table (lua_img.c), a userdata kept for the app's life
     int key_refs[3];            // "title", "sub", "right": row lookups that never allocate
 
     // LEDs, shown at the end of each callback
@@ -231,6 +232,33 @@ void lh_ui_clear(lh_t *s);                              // delete every script o
 void lh_ui_close_dialog(lh_t *s);                       // ui.confirm / ui.input, without calling back
 void lh_ui_release(lh_t *s);                            // forget LVGL pointers (OS cleaned them)
 lv_color_t lh_color(lua_State *L, int idx);
+// For lua_img.c: the session (NULL while shutting down: calls do nothing),
+// a new object in the pool (its handle pushed), the object behind handle 1.
+lh_t *lh_ui_session(lua_State *L);
+lh_obj_t *lh_ui_new(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj);
+lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what);
+
+// lua_img.c: ui.load, ui.image, ui.canvas
+void lh_img_init(void);                                 // at boot, with the LVGL lock held
+void lh_open_img(lua_State *L);
+int lh_ui_load(lua_State *L);
+int lh_ui_image(lua_State *L);
+int lh_ui_canvas(lua_State *L);
+int lh_ui_anim(lua_State *L);
+int lh_anim_play(lua_State *L);
+int lh_anim_stop(lua_State *L);
+int lh_anim_playing(lua_State *L);
+int lh_anim_scale(lua_State *L);
+void lh_anims_run(lh_t *s);                             // Lua task, LVGL lock held: frames that are due
+int64_t lh_anims_next(const lh_t *s);                   // when the next is due, or INT64_MAX
+int lh_img_set(lua_State *L);
+int lh_img_scale(lua_State *L);
+int lh_cv_clear(lua_State *L);
+int lh_cv_pixel(lua_State *L);
+int lh_cv_rect(lua_State *L);
+int lh_cv_line(lua_State *L);
+int lh_cv_image(lua_State *L);
+int lh_cv_get(lua_State *L);
 
 // lua_sys.c: led, timer, sys, badge, json, storage, wifi
 void lh_open_sys(lua_State *L);
@@ -244,6 +272,8 @@ void lh_storage_flush(lh_t *s, bool force);
 // lua_fs.c: fs and require
 void lh_open_fs(lua_State *L);
 void lh_fs_close(lh_t *s);                              // the cached file, when the app stops
+void lh_fs_check_path(lua_State *L, int idx, char out[LUA_PKG_PATH_MAX + 1]);  // a bundled file's path argument
+FILE *lh_fs_fopen(lh_t *s, const char *rel, long *size);  // a file of the caller's own (not the cache); NULL: none
 
 // lua_code.c: the store's compiled code, run in place (code.bin)
 #define LH_CODE_NONE    (-1)

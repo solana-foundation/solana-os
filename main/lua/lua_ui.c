@@ -15,7 +15,8 @@ typedef struct {
     uint16_t slot, gen;
 } lh_handle_t;
 
-static const char *const s_meta[LH_KIND_COUNT] = {"ui.label", "ui.rect", "ui.bar", "ui.gradient", "ui.list", "ui.qr"};
+static const char *const s_meta[LH_KIND_COUNT] = {"ui.label", "ui.rect", "ui.bar", "ui.gradient", "ui.list", "ui.qr",
+                                                   "ui.image", "ui.canvas", "ui.anim"};
 
 static lh_t *s_ui;              // session whose lists call row_cb
 static lua_State *s_row_L;      // thread to read rows with (the caller's)
@@ -185,6 +186,21 @@ static lh_obj_t *check_kind(lua_State *L, lh_kind_t kind, const char *what)
         luaL_typeerror(L, 1, what);
     }
     return o;
+}
+
+lh_t *lh_ui_session(lua_State *L)
+{
+    return ui_session(L);
+}
+
+lh_obj_t *lh_ui_new(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj)
+{
+    return new_obj(L, s, kind, obj);
+}
+
+lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what)
+{
+    return check_kind(L, kind, what);
 }
 
 static lv_obj_t *base_obj(lv_obj_t *parent, int x, int y, int w, int h)
@@ -831,11 +847,17 @@ void lh_open_ui(lua_State *L)
     static const luaL_Reg list[] = {COMMON, {"items", m_items}, {"selected", m_selected}, {"select", m_select},
                                     {NULL, NULL}};
     static const luaL_Reg qr[] = {COMMON, {"text", m_qr_text}, {NULL, NULL}};
+    static const luaL_Reg image[] = {COMMON, {"set", lh_img_set}, {"scale", lh_img_scale}, {NULL, NULL}};
+    static const luaL_Reg canvas[] = {COMMON, {"clear", lh_cv_clear}, {"pixel", lh_cv_pixel}, {"rect", lh_cv_rect},
+                                      {"line", lh_cv_line}, {"image", lh_cv_image}, {"get", lh_cv_get}, {NULL, NULL}};
+    static const luaL_Reg anim[] = {COMMON, {"play", lh_anim_play}, {"stop", lh_anim_stop},
+                                    {"playing", lh_anim_playing}, {"scale", lh_anim_scale}, {NULL, NULL}};
 #undef COMMON
-    static const luaL_Reg *const methods[LH_KIND_COUNT] = {label, rect, bar, gradient, list, qr};
+    static const luaL_Reg *const methods[LH_KIND_COUNT] = {label, rect, bar, gradient, list, qr, image, canvas, anim};
     static const luaL_Reg fns[] = {
         {"label", l_label}, {"rect", l_rect}, {"bar", l_bar}, {"gradient", l_gradient}, {"list", l_list},
-        {"qr", l_qr}, {"bg", l_bg}, {"hint", l_hint}, {"toast", l_toast}, {"confirm", l_confirm}, {"input", l_input},
+        {"qr", l_qr}, {"load", lh_ui_load}, {"image", lh_ui_image}, {"canvas", lh_ui_canvas}, {"anim", lh_ui_anim},
+        {"bg", l_bg}, {"hint", l_hint}, {"toast", l_toast}, {"confirm", l_confirm}, {"input", l_input},
         {"clear", l_clear}, {NULL, NULL},
     };
     lh_t *s = lh_get(L);
@@ -852,6 +874,7 @@ void lh_open_ui(lua_State *L)
         lua_pushstring(L, keys[k]);
         s->key_refs[k] = luaL_ref(L, LUA_REGISTRYINDEX);
     }
+    lh_open_img(L);
     luaL_newlib(L, fns);
     lua_pushinteger(L, OS_ROOT_W);
     lua_setfield(L, -2, "W");

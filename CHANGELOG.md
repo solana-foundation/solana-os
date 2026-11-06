@@ -6,6 +6,39 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.9 (2026-11-06)
+
+- **Images for Lua apps** (`docs/LUA_API.md` "Images"): `ui.image(x, y, src, {scale})` shows a
+  PNG bundled with the app or pixel art written as rows of characters (a default palette of
+  the brand's colours, or the app's own), `ui.load()` loads one to show or draw many times, and
+  `ui.canvas(x, y, w, h, {scale})` is a surface to draw on: `pixel`, `rect`, `line`, `image`
+  (sprites), `clear`, `get`. Pixels are RGB565 on the app's own 48 KB (2 bytes each, whatever
+  the scale); an LVGL image decoder of our own draws them scaled a line at a time, so 8x pixel
+  art costs what its few pixels do. PNGs decode on the badge (`lua/lua_png.c`: every colour
+  type and bit depth, not interlaced; the file streams through a 256-byte buffer and the
+  scratch is freed before `ui.load` returns), checked against Pillow and fuzzed under ASan by
+  `lua/tests/png/png_test.py`. A long canvas line is clipped first, so one far off the canvas
+  costs only its visible part. `lua/lua_img.c`, `lua/lua_png.c`; test app `lua/tests/t-img`.
+- **Animated GIFs**: `ui.anim(x, y, "file.gif", {scale, loop})` plays one with its own timing,
+  between the app's callbacks (`play`, `stop`, `playing`, `scale`), and a GIF works anywhere a
+  PNG does (its first frame). One frame is kept, whatever the length: each frame is decoded
+  from the card onto the GIF's canvas when it's due (transparency and "restore to background"
+  composed as browsers do), so the file is reopened per frame and never held. The LZW table
+  (13 KB) is reserved by the app's first `ui.anim`. `lua/lua_gif.c`, checked frame by frame
+  against Pillow and fuzzed by `png_test.py`; test app `lua/tests/t-anim`.
+- **Memory stays in one piece between apps.** After the first app closed, the largest free
+  block fell from 72 KB to about 45 KB and stayed there (the total came back): LVGL 9.6 labels
+  add a display event callback whenever their text changes and remove it after layout, and
+  each removal shrinks the display's callback list to fit, so the next one reallocates it; mid-
+  app it landed in the middle of the app's memory and outlived it. The OS now moves that list
+  to a fresh allocation on every app switch, once the app's memory is free (`core/os.c`
+  `repin_display_events`). Measured on a badge: after Snake the 72 KB block is whole (it was
+  50 KB); after the image tests the only thing splitting it is the console's history (below).
+  Apps that use the network keep the HTTPS connection's memory for its idle time, as before.
+  (A fixed buffer for the list doesn't work: LVGL's cleanup relies on the
+  resize to set the list's size, and frees entries twice. When driving a badge over USB, the
+  console's command history also leaves small strings mid-heap; that's development only.)
+
 ## 0.5.8 (2026-11-05)
 
 - **The built-in server is `https://badge-api.solana.com`**, the server's own address behind a

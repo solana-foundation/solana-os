@@ -62,6 +62,21 @@ static void check_path(lua_State *L, int idx, char *out, bool dir)
     luaL_argcheck(L, lua_pkg_valid_path(out), idx, "paths are lowercase a-z 0-9 _ - . with / between folders");
 }
 
+void lh_fs_check_path(lua_State *L, int idx, char out[LUA_PKG_PATH_MAX + 1])
+{
+    check_path(L, idx, out, false);
+}
+
+FILE *lh_fs_fopen(lh_t *s, const char *rel, long *size)
+{
+    char path[160];
+    struct stat st;
+    full_path(s, rel, path, sizeof(path));
+    FILE *f = stat(path, &st) == 0 && S_ISREG(st.st_mode) ? fopen(path, "rb") : NULL;
+    *size = f ? (long)st.st_size : 0;
+    return f;
+}
+
 static int not_found(lua_State *L)
 {
     lua_pushnil(L);
