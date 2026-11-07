@@ -1,5 +1,9 @@
 // Bridges (docs/MESH.md "Bridges"), see os_bridge.h.
 //
+// The code panel shows the code twice: as a QR code (the emulator's camera) and
+// as the short code a person types (another badge's keyboard: SELECT on the
+// same panel). Both come from the same tag, so only this badge can make them.
+//
 // Everything but the send queue lives on the OS task: the bridges from the
 // last sync, the code panel, the sync schedule and a scan waiting for Wi-Fi. A
 // 250 ms timer posts a tick there. When a sync is due it goes out through
@@ -87,7 +91,8 @@ static int64_t s_scan_until, s_scan_at;
 static bool s_scanning, s_kept;
 
 static struct {
-    lv_obj_t *root, *plate, *qr, *code, *status, *hint;
+    lv_obj_t *root, *plate, *qr, *code, *status, *hint, *kb_box;
+    ui_kb_t *kb;                        // typing another badge's code
     long long window;
     int ticks;
 } s_ui;
@@ -134,7 +139,9 @@ static const char *label(const os_bridge_t *b)
 // ---------------------------------------------------------------------------
 // The code
 
-static bool make_code(char *out, size_t n, long long *window)
+// The code, and (short, if not NULL) the short code: "<id> <6 digits>", the
+// tag's first 4 bytes mod 1 000 000.
+static bool make_code_short(char *out, size_t n, long long *window, char *short_out, size_t short_n)
 {
     os_cloud_info_t *in = malloc(sizeof(*in));
     if (!in) {
@@ -159,7 +166,24 @@ static bool make_code(char *out, size_t n, long long *window)
     if (window) {
         *window = w;
     }
+    if (short_out) {
+        char head[9];
+        memcpy(head, tag, 8);
+        head[8] = 0;
+        snprintf(short_out, short_n, "%s %06lu", id, (unsigned long)(strtoul(head, NULL, 16) % 1000000UL));
+    }
     return true;
+}
+
+static bool make_code(char *out, size_t n, long long *window)
+{
+    return make_code_short(out, n, window, NULL, 0);
+}
+
+bool os_bridge_short_code(char *code, size_t n)
+{
+    char full[OS_BRIDGE_CODE_LEN];
+    return make_code_short(full, sizeof(full), NULL, code, n);
 }
 
 bool os_bridge_code(char *code, size_t n)
@@ -630,9 +654,38 @@ static void scan_tick(int64_t now)
     }
 }
 
-// The code from what was scanned or pasted: the code, or a link with bridge=<code>.
+// A typed short code: 6 letters or digits for the id, then 6 digits; spaces,
+// dashes and dots anywhere. Sent as "<id> <digits>", the id as typed (the
+// server reads it the way people type ids).
+static bool short_from(const char *in, char *out, size_t n)
+{
+    char c[13];
+    int len = 0;
+    for (const char *p = in; *p; p++) {
+        if (*p == ' ' || *p == '-' || *p == '.' || *p == '\r' || *p == '\n') {
+            continue;
+        }
+        bool digit = *p >= '0' && *p <= '9';
+        bool alnum = digit || (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z');
+        if (len == 12 || !alnum || (len >= OS_MESH_ID_LEN && !digit)) {
+            return false;
+        }
+        c[len++] = *p;
+    }
+    if (len != 12 || n < 14) {
+        return false;
+    }
+    snprintf(out, n, "%.6s %.6s", c, c + 6);
+    return true;
+}
+
+// The code from what was scanned, pasted or typed: the code, a link with
+// bridge=<code>, or the short code.
 static bool code_from(const char *in, char *out, size_t n)
 {
+    if (in && short_from(in, out, n)) {
+        return true;
+    }
     const char *p = in ? strstr(in, "bridge=") : NULL;
     p = p ? p + 7 : in;
     if (!p) {
@@ -732,8 +785,10 @@ static void panel_status(void)
     } else if (s_failing) {
         strlcpy(line, "Can't reach the server. Trying again...", sizeof(line));
         col = COL_WARN;
+    } else if (s_scan[0]) {
+        strlcpy(line, "Bridging...", sizeof(line));
     } else if (!s_count) {
-        strlcpy(line, "Waiting for a scan...", sizeof(line));
+        strlcpy(line, "Waiting for the other badge...", sizeof(line));
     } else {
         strlcpy(line, "Bridged: ", sizeof(line));
         for (int i = 0; i < s_count; i++) {
@@ -746,21 +801,22 @@ static void panel_status(void)
     }
     lv_label_set_text(s_ui.status, line);
     lv_obj_set_style_text_color(s_ui.status, ui_col(col), 0);
-    lv_label_set_text(s_ui.hint, s_count ? "CANCEL close   " LV_SYMBOL_LEFT " end bridges" : "CANCEL close");
+    lv_label_set_text(s_ui.hint, s_count ? "SELECT type a code  CANCEL close  " LV_SYMBOL_LEFT " end"
+                                         : "SELECT type a code   CANCEL close");
 }
 
 // Every 30 s a new code: the QR code and the text under it.
 static void panel_code(void)
 {
-    char code[OS_BRIDGE_CODE_LEN], site[96], url[160];
+    char code[OS_BRIDGE_CODE_LEN], short_code[16], site[96], url[160];
     long long w = 0;
-    bool ok = make_code(code, sizeof(code), &w) && site_of(site, sizeof(site));
+    bool ok = make_code_short(code, sizeof(code), &w, short_code, sizeof(short_code)) && site_of(site, sizeof(site));
     if (ok && w == s_ui.window) {
         return;
     }
     s_ui.window = ok ? w : 0;
     lv_obj_set_hidden(s_ui.plate, !ok);
-    lv_label_set_text(s_ui.code, ok ? code : "");
+    lv_label_set_text(s_ui.code, ok ? short_code : "");
     if (ok) {
         snprintf(url, sizeof(url), "%s/emulator?bridge=%s", site, code);
         lv_qrcode_update(s_ui.qr, url, strlen(url));
@@ -808,9 +864,58 @@ static void panel_close(void)
     update_keep();
 }
 
+static void kb_close(void)
+{
+    if (s_ui.kb_box) {
+        lv_obj_delete(s_ui.kb_box);         // and the keyboard in it
+    }
+    s_ui.kb_box = NULL;
+    s_ui.kb = NULL;
+}
+
+// Another badge's short code (or its full code), typed here.
+static void kb_open(void)
+{
+    s_ui.kb_box = lv_obj_create(s_ui.root);
+    lv_obj_remove_style_all(s_ui.kb_box);
+    lv_obj_set_size(s_ui.kb_box, OS_ROOT_W, OS_ROOT_H);
+    lv_obj_set_pos(s_ui.kb_box, 0, OS_STATUS_H);
+    lv_obj_set_scrollable(s_ui.kb_box, false);
+    s_ui.kb = ui_kb_create(s_ui.kb_box, "Other badge's code, e.g. 7K2Q9M 489433", OS_BRIDGE_CODE_LEN - 1);
+}
+
+static bool kb_key(os_key_t key, bool repeat)
+{
+    switch (ui_kb_key(s_ui.kb, key, repeat)) {
+    case UI_KB_DONE:
+        if (os_bridge_scan(ui_kb_text(s_ui.kb)) != ESP_OK) {
+            os_toast("That isn't a bridge code: 6 letters and digits, then 6 digits");
+            return true;
+        }
+        kb_close();
+        panel_status();
+        break;
+    case UI_KB_CANCEL:
+        kb_close();
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
 static bool panel_key(os_key_t key, bool repeat)
 {
-    if (key == OS_KEY_BACK || key == OS_KEY_SELECT) {
+    if (s_ui.kb) {
+        return kb_key(key, repeat);
+    }
+    if (key == OS_KEY_SELECT) {
+        if (!repeat) {
+            kb_open();
+        }
+        return true;
+    }
+    if (key == OS_KEY_BACK) {
         return repeat;                      // a press closes it
     }
     if (key == OS_KEY_LEFT && !repeat && s_count) {
@@ -873,21 +978,22 @@ static void panel_build(void)
     lv_obj_set_style_pad_row(col, 6, 0);
     lv_obj_set_scrollable(col, false);
     ui_label(col, &sol_font_20, COL_TEXT, "Bridge code");
-    lv_obj_t *t = ui_label(col, &sol_font_14, COL_DIM, "No radio between you? Scan it in the emulator at");
+    lv_obj_t *t = ui_label(col, &sol_font_14, COL_DIM, "Type the code below on the other badge, or scan it in the emulator at");
     lv_obj_set_width(t, COL_W);
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_WRAP);
     char host[128];
     host_lines(host, sizeof(host));
     ui_label(col, &sol_mono_12, COL_TEXT, host);
 
-    s_ui.code = ui_label(box, &sol_mono_12, COL_TEXT, "");
+    s_ui.code = ui_label(box, &sol_font_20, COL_TEXT, "");
     lv_obj_set_width(s_ui.code, BOX_W);
     lv_obj_set_style_text_align(s_ui.code, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(s_ui.code, 0, 8 + PLATE + 6);
+    lv_obj_set_style_text_letter_space(s_ui.code, 2, 0);
+    lv_obj_set_pos(s_ui.code, 0, 8 + PLATE + 2);
     s_ui.status = ui_label(box, &sol_font_14, COL_DIM, "");
     lv_obj_set_width(s_ui.status, BOX_W - 16);
     lv_label_set_long_mode(s_ui.status, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_pos(s_ui.status, 8, 8 + PLATE + 24);
+    lv_obj_set_pos(s_ui.status, 8, 8 + PLATE + 28);
     s_ui.hint = ui_label(box, &sol_mono_12, COL_DIM, "");
     lv_obj_set_pos(s_ui.hint, 8, BOX_H - 20);
 
@@ -1002,18 +1108,27 @@ static int cmd_bridge(int argc, char **argv)
     } else if (!strcmp(sub, "end")) {
         os_bridge_end_all();
     } else if (!strcmp(sub, "code")) {
-        char code[OS_BRIDGE_CODE_LEN], url[160];
-        if (!os_bridge_code(code, sizeof(code)) || !os_bridge_url(url, sizeof(url))) {
+        char code[OS_BRIDGE_CODE_LEN], short_code[16], url[160];
+        if (!os_bridge_code(code, sizeof(code)) || !os_bridge_short_code(short_code, sizeof(short_code)) ||
+            !os_bridge_url(url, sizeof(url))) {
             printf("bridge: no code yet (the badge needs its id and the server's clock: turn Wi-Fi on once)\n");
             return 1;
         }
-        printf("bridge code: %s\nbridge url: %s\n", code, url);
+        printf("bridge code: %s\nbridge short: %s\nbridge url: %s\n", code, short_code, url);
         os_post(code_shown, NULL);
     } else {
-        const char *text = !strcmp(sub, "scan") && argc > 2 ? argv[2] : sub;
+        // The code, a link, or the short code (which may come as two words).
+        int from = !strcmp(sub, "scan") && argc > 2 ? 2 : 1;
+        char text[OS_BRIDGE_CODE_LEN + 160] = "";
+        for (int i = from; i < argc; i++) {
+            if (i > from) {
+                strlcat(text, " ", sizeof(text));
+            }
+            strlcat(text, argv[i], sizeof(text));
+        }
         esp_err_t err = os_bridge_scan(text);
         if (err == ESP_ERR_INVALID_ARG) {
-            printf("usage: bridge [status|show|hide|code|end|<code or link>]\n");
+            printf("usage: bridge [status|show|hide|code|end|<code, link or short code>]\n");
             return 1;
         }
         printf("bridge: %s\n", err == ESP_OK ? "scanning" : esp_err_to_name(err));
@@ -1029,7 +1144,7 @@ void os_bridge_init(void)
     s_lock = xSemaphoreCreateMutex();
     s_token = os_api_token();
     s_out_next = esp_random();              // a reboot must not reuse numbers the server still holds
-    os_cmd_register("bridge", "bridge [status|show|hide|code|end|<code or link>]", cmd_bridge);
+    os_cmd_register("bridge", "bridge [status|show|hide|code|end|<code, link or short code>]", cmd_bridge);
     const esp_timer_create_args_t args = { .callback = tick_timer, .name = "bridge" };
     ESP_ERROR_CHECK(esp_timer_create(&args, &s_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(s_timer, TICK_MS * 1000));

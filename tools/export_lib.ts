@@ -32,7 +32,9 @@ export function exportBuild(opts: {
 	name: string;
 	/** Directory under web/static/firmware/ for the images, emptied first. */
 	dir: string;
-	/** Paths whose uncommitted changes mark the build "-dirty" (git pathspecs). */
+	/** The git checkout whose commit the manifest names (default: the parent repository). */
+	repo?: string;
+	/** Paths in `repo` whose uncommitted changes mark the build "-dirty" (git pathspecs). */
 	sources: string[];
 }): FirmwareManifest {
 	const { build } = opts;
@@ -69,7 +71,7 @@ export function exportBuild(opts: {
 			return { name, offset, file: `${opts.dir}/${name}`, size: data.length, sha256: sha256(data), md5: md5(data) };
 		});
 
-	const git = (...a: string[]) => Bun.spawnSync(['git', '-C', root, ...a]).stdout.toString().trim();
+	const git = (...a: string[]) => Bun.spawnSync(['git', '-C', opts.repo ?? root, ...a]).stdout.toString().trim();
 	return {
 		id: opts.id,
 		name: opts.name,
