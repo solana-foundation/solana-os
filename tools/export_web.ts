@@ -10,13 +10,16 @@ import { join } from 'node:path';
 import { describe, exportBuild, outRoot, root } from './export_lib';
 
 const ID = 'solana-os';
-// "-dirty": uncommitted changes to what goes into the badge build (not tools/ or emulator/).
+// The commit is solana-os's own (firmware/ is that repository), the one /stock and the
+// offline download name; "-dirty": uncommitted changes to what goes into the badge build
+// (not tools/ or emulator/).
 const manifest = exportBuild({
 	build: join(root, 'firmware/build'),
 	id: ID,
 	name: 'Solana OS',
 	dir: ID,
-	sources: ['firmware', ':!firmware/tools', ':!firmware/emulator']
+	repo: join(root, 'firmware'),
+	sources: ['.', ':!tools', ':!emulator']
 });
 writeFileSync(join(outRoot, `${ID}.json`), JSON.stringify(manifest, null, '\t') + '\n');
 console.log(describe(manifest, 'web/static/firmware/'));

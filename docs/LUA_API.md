@@ -514,8 +514,10 @@ profile.get(badgeId, cb)    -- public profile of that badge's owner: {name=, x=,
 - `x`: the X handle without the `@` (`"toly"`), `xName`: the X display name; both nil
   without a linked X account.
 - `solana`: the Solana address (base58) the person linked at `/profile` by signing with
-  their wallet, nil without one. It's public (their profile page shows it); use it to look
-  up their balances with `rpc` or to pay them from your own server. The badge never holds
+  their wallet, nil without one. `profile.me` always has it (the owner installed your
+  app); `profile.get` only when that person chose to make it public at `/profile`, else
+  nil, since anyone nearby can read a badge's id. Use it to look up their balances with
+  `rpc` or to pay them from your own server. The badge never holds
   their key: anything to sign still goes to their phone ("Build on the badge, sign on a
   phone").
 - Never an email.
