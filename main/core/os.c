@@ -581,8 +581,23 @@ static void handle(const os_event_t *ev, os_key_t *held, int64_t *next_repeat, u
     case EV_BUTTONS: {
         uint32_t down = ev->a & ev->b;
         if (*held_bit && !(ev->a & *held_bit)) {
+            // The repeating key let go: another one still held (a diagonal in a game)
+            // takes over at the repeat rate, rather than going quiet until pressed again.
             *held = OS_KEY_NONE;
             *held_bit = 0;
+            for (uint32_t bit = 1, rest = ev->a & ~down; rest && !s_app->on_button; bit <<= 1) {
+                if (!(rest & bit)) {
+                    continue;
+                }
+                rest &= ~bit;
+                os_key_t k = os_key_from_button(bit);
+                if (k != OS_KEY_NONE && k != OS_KEY_SELECT && k != OS_KEY_HOME) {
+                    *held = k;
+                    *held_bit = bit;
+                    *next_repeat = now_ms() + REPEAT_RATE_MS;
+                    break;
+                }
+            }
         }
         for (uint32_t bit = 1; down; bit <<= 1) {
             if (!(down & bit)) {

@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "bsp.h"
+#include "core/os.h"
 #include "core/os_api.h"
+#include "core/os_keys.h"
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "core/os_wifi.h"
@@ -232,6 +234,25 @@ static int l_battery(lua_State *L)
     return 1;
 }
 
+// The keys held right now, as a set: { up = true, left = true }. Raw buttons through
+// the calibrated map; empty while the OS has the keys (a confirm, the bridge panel).
+static int l_keys(lua_State *L)
+{
+    static const char *const names[] = {"up", "down", "left", "right", "select", "back"};
+    uint32_t pressed = bsp_buttons_get();
+    lua_createtable(L, 0, 2);
+    if (os_confirm_open() || os_overlay()) {
+        return 1;
+    }
+    for (int k = 0; k < (int)(sizeof(names) / sizeof(names[0])); k++) {
+        if (pressed & os_key_button(k)) {
+            lua_pushboolean(L, 1);
+            lua_setfield(L, -2, names[k]);
+        }
+    }
+    return 1;
+}
+
 static int l_exit(lua_State *L)
 {
     lh_get(L)->exit_req = true;
@@ -408,7 +429,7 @@ void lh_open_sys(lua_State *L)
     };
     static const luaL_Reg timer[] = {{"after", l_after}, {"every", l_every}, {"cancel", l_cancel}, {NULL, NULL}};
     static const luaL_Reg sys[] = {
-        {"millis", l_millis}, {"time", l_time}, {"battery", l_battery}, {"exit", l_exit}, {NULL, NULL},
+        {"millis", l_millis}, {"time", l_time}, {"battery", l_battery}, {"keys", l_keys}, {"exit", l_exit}, {NULL, NULL},
     };
     static const luaL_Reg badge[] = {
         {"id", l_badge_id}, {"owner", l_badge_owner}, {"online", l_badge_online}, {NULL, NULL},
