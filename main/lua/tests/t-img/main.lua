@@ -1,0 +1,104 @@
+-- Regression test (not shipped): ui.load / ui.image / ui.canvas, their limits
+-- and errors, and memory. SELECT exits.
+local function try(name, f)
+  local ok, err = pcall(f)
+  print(("t-img %s: %s"):format(name, ok and "FAIL no error" or err))
+end
+local function kb() return ("%.1f KB"):format(collectgarbage("count")) end
+
+print("t-img start, heap " .. kb())
+ui.bg("bg")
+
+-- A __gc that makes UI objects while a handle is being allocated: every
+-- object keeps its own slot, the 64-object limit still holds.
+local made, fired = {}, 0
+local gcmt = {__gc = function() fired = fired + 1; made[#made + 1] = ui.label(0, 0, "gc") end}
+local ok, err = pcall(function()
+  for i = 1, 100 do
+    for _ = 1, 8 do setmetatable({}, gcmt) end
+    local _ = string.rep("g", 400 + i)       -- garbage, so collections run
+    made[#made + 1] = ui.label(0, 0, "x")
+  end
+end)
+-- Two handles on one slot would show as a remove that fails ("removed").
+local bad = 0
+for _, l in ipairs(made) do if not pcall(l.remove, l) then bad = bad + 1 end end
+print(("t-img gc labels %d (%d finalizers ran), %d shared, %s"):format(#made, fired, bad, ok and "FAIL no limit" or err))
+made = nil
+
+-- A PNG at 1x and 2x (one load, two views).
+local disc = ui.load("disc.png")
+local w, h = disc:size()
+print(("t-img disc %dx%d, heap %s"):format(w, h, kb()))
+ui.image(4, 4, disc)
+local big = ui.image(56, 4, disc, {scale = 2})
+
+-- Pixel art, default palette and a custom one.
+local heart = ui.load({
+  ".mm.mm.",
+  "mmmmmmm",
+  "mmmmmmm",
+  ".mmmmm.",
+  "..mmm..",
+  "...m...",
+})
+ui.image(160, 4, heart, {scale = 6})
+ui.image(210, 4, {"rgr", "g.g", "rgr"}, {scale = 8, palette = {r = 0xFF0000, g = "green"}})
+
+-- A canvas: 80 x 40 pixels shown 3x (240 x 120 on screen, 6.4 KB).
+local c = ui.canvas(4, 100, 80, 36, {scale = 3, color = "panel"})
+c:rect(0, 30, 80, 6, "purple")
+c:line(0, 0, 79, 29, "aqua")
+c:line(79, 0, 0, 29, "yellow")
+for i = 0, 79, 4 do c:pixel(i, 2, "text") end
+local ship = ui.load("ship.png")
+c:image(ship, 34, 12)
+print("t-img get " .. tostring(c:get(0, 31)) .. " " .. tostring(c:get(-1, 0)) .. " " .. tostring(c:get(0, 0)))
+print("t-img canvas, heap " .. kb())
+
+-- Errors
+try("missing", function() ui.load("nope.png") end)
+try("not png", function() ui.load("main.txt") end)
+try("bad char", function() ui.load({"..x.."}) end)
+try("bad scale", function() ui.image(0, 0, heart, {scale = 17}) end)
+try("too big", function() ui.canvas(0, 0, 200, 200) end)
+try("bad src", function() ui.image(0, 0, 42) end)
+try("set on canvas", function() big.set(c, heart) end)
+try("draw on image", function() c.rect(big, 0, 0, 1, 1, "green") end)
+-- Far off the canvas costs only the visible part (clipped, no "too long").
+c:line(-2000000000, -1000000000, 2000000000, 1000000000, "lime")
+c:line(-2000000000, 5000, 2000000000, 5000, "lime")
+print("t-img long lines ok")
+-- Coordinates that overflow an int once narrowed draw nothing (no heap read).
+local dot = ui.load({"m"})
+local probe = ui.canvas(0, 0, 40, 40)
+for _, v in ipairs({math.mininteger, math.maxinteger, -2147483647, 2147483647}) do
+  probe:image(dot, v, v)
+  probe:image(dot, v, 0)
+  probe:rect(v, v, math.maxinteger, math.maxinteger, "lime")
+  probe:pixel(v, v, "lime")
+end
+local seen = 0
+for yy = 0, 39 do for xx = 0, 39 do if probe:get(xx, yy) then seen = seen + 1 end end end
+print("t-img overflow coords, pixels drawn " .. seen)
+probe:remove()
+
+-- Swap and rescale a shown image.
+big:set(heart)
+big:scale(4)
+big:set(disc)
+big:scale(2)
+
+-- Animation: the ship flies across the canvas.
+local x, frames, t0 = 0, 0, sys.ms and sys.ms() or 0
+function on_tick(ms)
+  c:rect(0, 8, 80, 22, "panel")
+  c:image(ship, x, 12)
+  x = (x + 1) % 80
+  frames = frames + 1
+  if frames == 100 then print("t-img 100 frames, heap " .. kb()) end
+end
+ui.label(100, 160, "t-img done", {size = 12})
+ui.hint("SELECT exits")
+print("t-img done, heap " .. kb())
+function on_key(k) if k == "select" then sys.exit() end return true end

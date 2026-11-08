@@ -389,6 +389,8 @@ static bool overlay_key(os_key_t key, bool repeat)
 // ---------------------------------------------------------------------------
 // App switching (OS task, LVGL locked)
 
+static void repin_display_events(void);
+
 static void switch_to(const os_app_t *app)
 {
     if (app == s_app) {
@@ -405,6 +407,7 @@ static void switch_to(const os_app_t *app)
     }
     lv_obj_clean(s_root);
     lv_obj_scroll_to(s_root, 0, 0, LV_ANIM_OFF);
+    repin_display_events();         // the app's memory is free now
     s_app = app;
     lv_label_set_text(s_title, app == &os_launcher ? "Solana OS" : app->name);
     ESP_LOGI(TAG, "app: %s", app->id);
@@ -521,6 +524,32 @@ static void capture_done(lv_event_t *e)
     printf("SHOT-END\n");
     fflush(stdout);
     esp_log_level_set("*", ESP_LOG_INFO);
+}
+
+// Moves the display's event callback list to a fresh allocation, between
+// apps. LVGL 9.6 labels add a display callback each time their text or style
+// changes and remove it once layout is done (lv_label.c), and every removal
+// shrinks the list to fit (lv_array_resize), so the next one reallocates it:
+// mid-app it lands wherever the heap has room, often the middle of the app's
+// memory, and stayed there after the app closed: the largest free block went
+// from 72 KB to ~45 KB after the first app, for good. Allocated again once the
+// app's memory is free, it goes at the start of a free block (TLSF), and its
+// old place joins the free space around it. (A buffer LVGL didn't allocate
+// isn't an option: its cleanup counts on the resize to set the list's size.)
+static void repin_display_events(void)
+{
+    lv_display_t *d = lv_display_get_default();
+    lv_array_t *a = &d->event_list.array;
+    if (!a->inner_alloc || !a->data || !a->capacity || d->event_list.is_traversing) {
+        return;
+    }
+    size_t bytes = (size_t)a->capacity * a->element_size;
+    uint8_t *p = lv_malloc(bytes);
+    if (p) {
+        memcpy(p, a->data, (size_t)a->size * a->element_size);
+        lv_free(a->data);
+        a->data = p;
+    }
 }
 
 // OS task (LVGL locked): arm the capture; the LVGL task renders it next.

@@ -62,6 +62,32 @@ static void check_path(lua_State *L, int idx, char *out, bool dir)
     luaL_argcheck(L, lua_pkg_valid_path(out), idx, "paths are lowercase a-z 0-9 _ - . with / between folders");
 }
 
+void lh_fs_check_path(lua_State *L, int idx, char out[LUA_PKG_PATH_MAX + 1])
+{
+    check_path(L, idx, out, false);
+}
+
+// Opens first and checks what was opened (fstat), so the file read is the one
+// checked: no window between a stat and the open for the path to change.
+static FILE *open_regular(lh_t *s, const char *rel, long *size)
+{
+    char path[160];
+    struct stat st;
+    full_path(s, rel, path, sizeof(path));
+    FILE *f = fopen(path, "rb");
+    if (f && (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode))) {
+        fclose(f);
+        f = NULL;
+    }
+    *size = f ? (long)st.st_size : 0;
+    return f;
+}
+
+FILE *lh_fs_fopen(lh_t *s, const char *rel, long *size)
+{
+    return open_regular(s, rel, size);
+}
+
 static int not_found(lua_State *L)
 {
     lua_pushnil(L);
@@ -87,13 +113,11 @@ static FILE *fs_open(lua_State *L, lh_t *s, const char *rel)
     }
     lh_fs_close(s);
     lh_charge_steps(L, LH_FS_OPEN_STEPS);
-    char path[160];
-    struct stat st;
-    full_path(s, rel, path, sizeof(path));
-    FILE *f = stat(path, &st) == 0 && S_ISREG(st.st_mode) ? fopen(path, "rb") : NULL;
+    long size;
+    FILE *f = open_regular(s, rel, &size);
     if (f) {
         s->fs_file = f;
-        s->fs_size = st.st_size;
+        s->fs_size = size;
         strlcpy(s->fs_path, rel, sizeof(s->fs_path));
     }
     return f;

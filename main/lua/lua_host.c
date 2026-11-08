@@ -221,6 +221,7 @@ static void close_state(lh_t *s)
         s->steps = 0;
         lua_close(s->L);
         s->L = NULL;
+        s->gif_work = NULL;                 // it was a userdata
     }
     lh_fs_close(s);
     lh_code_close(s);                       // nothing points into it now
@@ -518,6 +519,9 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
     if (s->L && !s->failed) {
         lh_timers_run(s);
     }
+    if (s->L && !s->failed) {
+        lh_anims_run(s);
+    }
     if (s->exit_req && !s->failed) {
         s->exit_req = false;
         os_launch(&os_launcher);
@@ -527,6 +531,10 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
 static TickType_t wait_ticks(lh_t *s)
 {
     int64_t wake = s->next_tick, t = lh_timers_next(s), now = lh_now();
+    if (t < wake) {
+        wake = t;
+    }
+    t = lh_anims_next(s);
     if (t < wake) {
         wake = t;
     }
@@ -839,4 +847,8 @@ void lua_host_init(void)
     s_q = xQueueCreate(LH_QUEUE_LEN, sizeof(lh_ev_t));
     lua_install_init();
     lh_cmd_register();
+    if (lvgl_port_lock(0)) {
+        lh_img_init();
+        lvgl_port_unlock();
+    }
 }
