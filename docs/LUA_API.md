@@ -106,6 +106,12 @@ function on_exit()           -- the app is closing (HOME, CANCEL, sys.exit, erro
 end
 ```
 
+Up, down, left, right and CANCEL auto-repeat while held (`rep` true: after 400 ms, then
+every 90 ms); SELECT doesn't. One key repeats at a time, the last one pressed; when it's
+released, another direction still held takes over (0.5.11). `on_key` has no release event:
+for games that need several keys at once (diagonals, hold to charge), read `sys.keys()` in
+`on_tick`.
+
 HOME always returns to the launcher. The screen below the status bar is
 **320 × 218** pixels (`ui.W`, `ui.H`), with (0, 0) at the top-left.
 
@@ -315,11 +321,29 @@ timer.cancel(id)
 sys.millis()                -- ms since the app started
 sys.time()                  -- unix seconds from the server clock, or nil if never synced
 sys.battery()               -- percent, or nil on USB / unknown
+sys.keys()                  -- the keys held now, e.g. { up = true, left = true } (0.5.11)
 sys.exit()                  -- close the app
 badge.id()                  -- "7K2Q9M", or nil before the first hello
 badge.owner()               -- "@toly", or nil while unclaimed
 badge.online()              -- Wi-Fi joined and registered with the server (false while a ws socket is open)
 json.encode(value)  json.decode(text)   -- nil plus an error message on bad input
+```
+
+`sys.keys()` names `up`, `down`, `left`, `right`, `select` and `back` (CANCEL), never HOME,
+and is empty while the badge is asking something (a confirm, the bridge panel). It reads the
+buttons themselves, so a focused `ui.list` doesn't hide its keys. Solana OS before 0.5.11
+has no `sys.keys` (`if sys.keys then`):
+
+```lua
+local x, y = 160, 109
+local dot = ui.rect(x, y, 8, 8, {color="green"})
+function on_tick(ms)
+  local k = sys.keys and sys.keys() or {}
+  local d = ms // 10                 -- 100 px a second
+  if k.left then x = x - d elseif k.right then x = x + d end
+  if k.up then y = y - d elseif k.down then y = y + d end
+  dot:pos(x, y)
+end
 ```
 
 ### `storage` (always allowed)
