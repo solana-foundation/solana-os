@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_ili9341.h"
@@ -44,16 +45,70 @@ static bool flush_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data
     return woken == pdTRUE;
 }
 
+// The backlight pin is PWM'd by LEDC so the screen can dim (Settings >
+// Brightness). 5 kHz is far above visible flicker and slow enough for the
+// backlight's switch transistor; 10 bits leave fine steps at the dim end.
+#define BL_MODE     LEDC_LOW_SPEED_MODE
+#define BL_TIMER    LEDC_TIMER_0
+#define BL_CHANNEL  LEDC_CHANNEL_0
+#define BL_BITS     LEDC_TIMER_10_BIT
+#define BL_MAX      ((1u << 10) - 1)
+
+static uint8_t s_bl_pct = 100;  // the level "on" means
+static bool s_bl_on;
+static bool s_bl_ready;
+
+static void bl_apply(void)
+{
+    if (!s_bl_ready) {
+        return;
+    }
+    uint32_t duty = s_bl_on ? (BL_MAX * s_bl_pct + 50) / 100 : 0;
+    ledc_set_duty(BL_MODE, BL_CHANNEL, duty);
+    ledc_update_duty(BL_MODE, BL_CHANNEL);
+}
+
+static void bl_init(void)
+{
+    const ledc_timer_config_t timer = {
+        .speed_mode = BL_MODE,
+        .duty_resolution = BL_BITS,
+        .timer_num = BL_TIMER,
+        .freq_hz = 5000,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&timer));
+    const ledc_channel_config_t ch = {
+        .gpio_num = BOARD_LCD_BL,
+        .speed_mode = BL_MODE,
+        .channel = BL_CHANNEL,
+        .timer_sel = BL_TIMER,
+        .duty = 0,      // dark until the panel has been initialised
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ch));
+    s_bl_ready = true;
+}
+
 void bsp_backlight(bool on)
 {
-    gpio_set_level(BOARD_LCD_BL, on);
+    s_bl_on = on;
+    bl_apply();
+}
+
+void bsp_backlight_level(uint8_t pct)
+{
+    s_bl_pct = pct < 1 ? 1 : pct > 100 ? 100 : pct;
+    bl_apply();
+}
+
+uint8_t bsp_backlight_get_level(void)
+{
+    return s_bl_pct;
 }
 
 lv_display_t *bsp_display_start(void)
 {
-    gpio_config_t bl = { .pin_bit_mask = BIT64(BOARD_LCD_BL), .mode = GPIO_MODE_OUTPUT };
-    ESP_ERROR_CHECK(gpio_config(&bl));
-    bsp_backlight(false);
+    bl_init();
     ESP_ERROR_CHECK(bsp_spi_bus_init());
 
     esp_lcd_panel_io_spi_config_t io_cfg = {

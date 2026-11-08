@@ -17,6 +17,7 @@
 #include "bsp.h"
 #include "os.h"
 #include "os_wifi.h"
+#include "os_settings.h"
 #include "ui.h"
 
 static const char *TAG = "os";
@@ -698,8 +699,22 @@ static void os_task(void *arg)
     }
 }
 
+// Brightness levels as backlight PWM duty: perceived brightness follows duty
+// roughly as a power curve, so the steps are spaced to look even.
+static const uint8_t s_bright_pct[OS_BRIGHTNESS_MAX] = {6, 15, 30, 55, 100};
+
+void os_brightness_apply(void)
+{
+    int level = os_setting(OS_SET_BRIGHTNESS);
+    if (level < OS_BRIGHTNESS_MIN || level > OS_BRIGHTNESS_MAX) {
+        level = OS_BRIGHTNESS_MAX;
+    }
+    bsp_backlight_level(s_bright_pct[level - 1]);
+}
+
 void os_splash(void)
 {
+    os_brightness_apply();
     lvgl_port_lock(0);
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);

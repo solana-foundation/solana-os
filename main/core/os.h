@@ -86,5 +86,9 @@ void os_hold(const char *why);
 // Rebuild the UI in the current theme (OS task, LVGL locked; the Settings app).
 void os_theme_apply(void);
 
+// Set the backlight from the Brightness setting (any task; at boot and when
+// Settings changes it).
+void os_brightness_apply(void);
+
 // Screenshot of the live screen over the console, see tools/badge.py.
 void os_screenshot(void);

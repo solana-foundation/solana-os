@@ -6,6 +6,14 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.12 (2026-11-08)
+
+- **Screen brightness** (Settings > Brightness): five levels, LEFT dimmer, RIGHT brighter
+  (SELECT goes round), saved in NVS `settings/bright` and applied from the splash on. The
+  backlight pin is now PWM'd by LEDC (5 kHz, 10 bits; `bsp_backlight_level()`), with the
+  levels spaced to look even (6, 15, 30, 55, 100 % duty). The brightest level is the old
+  always-on backlight and stays the default. The emulator dims its screen to match.
+
 ## 0.5.11 (2026-11-08)
 
 - **Lua `sys.keys()`**: the keys held right now, as a set (`{ up = true, left = true }`),

@@ -1,5 +1,6 @@
 // Settings: user preferences (core/os_settings) plus shortcuts to system
 // tools. One row per item; SELECT (or LEFT/RIGHT on a choice) changes it.
+// Brightness steps with LEFT/RIGHT (SELECT goes round from brightest to dimmest).
 // Software update opens the update screen (apps/update). Factory reset asks
 // again in an OS confirm dialog (SELECT twice).
 
@@ -12,7 +13,7 @@
 #include "core/os_settings.h"
 #include "core/ui.h"
 
-enum { ROW_THEME, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
+enum { ROW_THEME, ROW_BRIGHTNESS, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
 
 static ui_list_t *s_list;
 
@@ -25,6 +26,21 @@ static void row(int i, ui_row_t *r, void *ctx)
         strlcpy(r->sub, light ? "Black on white, QR code included" : "White on black, QR code included",
                 sizeof(r->sub));
         strlcpy(r->right, light ? "Light" : "Dark", sizeof(r->right));
+        r->right_color = COL_TEXT;
+        break;
+    }
+    case ROW_BRIGHTNESS: {
+        int level = os_setting(OS_SET_BRIGHTNESS);
+        strlcpy(r->title, "Brightness", sizeof(r->title));
+        strlcpy(r->sub, LV_SYMBOL_LEFT " dimmer  " LV_SYMBOL_RIGHT " brighter; dimmer saves battery",
+                sizeof(r->sub));
+        // A bar of filled and empty blocks: "#####" reads on both themes.
+        char bar[OS_BRIGHTNESS_MAX + 1];
+        for (int b = 0; b < OS_BRIGHTNESS_MAX; b++) {
+            bar[b] = b < level ? '#' : '-';
+        }
+        bar[OS_BRIGHTNESS_MAX] = 0;
+        strlcpy(r->right, bar, sizeof(r->right));
         r->right_color = COL_TEXT;
         break;
     }
@@ -83,6 +99,22 @@ static void ask_reset(void)
     os_confirm(text, reset_answer, NULL);
 }
 
+// LEFT/RIGHT step (and repeat), stopping at either end; SELECT goes round.
+static void set_brightness(os_key_t k)
+{
+    int level = os_setting(OS_SET_BRIGHTNESS);
+    int next = k == OS_KEY_LEFT ? level - 1 : level + 1;
+    if (k == OS_KEY_SELECT && next > OS_BRIGHTNESS_MAX) {
+        next = OS_BRIGHTNESS_MIN;
+    }
+    if (next < OS_BRIGHTNESS_MIN || next > OS_BRIGHTNESS_MAX) {
+        return;
+    }
+    os_setting_set(OS_SET_BRIGHTNESS, next);
+    os_brightness_apply();
+    ui_list_refresh(s_list);
+}
+
 static void enter(lv_obj_t *root)
 {
     s_list = ui_list_create(root, 4, OS_ROOT_H - 4 - UI_HINT_H, row, NULL);
@@ -96,6 +128,10 @@ static bool on_key(os_key_t k, bool repeat)
         return true;
     }
     int i = ui_list_selected(s_list);
+    if (i == ROW_BRIGHTNESS && (k == OS_KEY_LEFT || k == OS_KEY_RIGHT || (k == OS_KEY_SELECT && !repeat))) {
+        set_brightness(k);
+        return true;
+    }
     bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && i == ROW_THEME);
     if (!change || repeat) {
         return k != OS_KEY_BACK;
