@@ -575,14 +575,35 @@ void os_screenshot(void)
 
 // ---------------------------------------------------------------------------
 
+// The repeating key let go: another one still held in `pressed` (a diagonal in a
+// game) takes over at the repeat rate, rather than going quiet until pressed again.
+// Called from the release event and from the repeat check, whichever sees it first.
+static void take_over_repeat(uint32_t pressed, os_key_t *held, int64_t *next_repeat, uint32_t *held_bit)
+{
+    *held = OS_KEY_NONE;
+    *held_bit = 0;
+    for (uint32_t bit = 1; pressed && !s_app->on_button; bit <<= 1) {
+        if (!(pressed & bit)) {
+            continue;
+        }
+        pressed &= ~bit;
+        os_key_t k = os_key_from_button(bit);
+        if (k != OS_KEY_NONE && k != OS_KEY_SELECT && k != OS_KEY_HOME) {
+            *held = k;
+            *held_bit = bit;
+            *next_repeat = now_ms() + REPEAT_RATE_MS;
+            return;
+        }
+    }
+}
+
 static void handle(const os_event_t *ev, os_key_t *held, int64_t *next_repeat, uint32_t *held_bit)
 {
     switch (ev->kind) {
     case EV_BUTTONS: {
         uint32_t down = ev->a & ev->b;
         if (*held_bit && !(ev->a & *held_bit)) {
-            *held = OS_KEY_NONE;
-            *held_bit = 0;
+            take_over_repeat(ev->a & ~down, held, next_repeat, held_bit);
         }
         for (uint32_t bit = 1; down; bit <<= 1) {
             if (!(down & bit)) {
@@ -648,12 +669,12 @@ static void os_task(void *arg)
         }
         now = now_ms();
         if (held != OS_KEY_NONE && now >= next_repeat) {
-            if (bsp_buttons_get() & held_bit) {
+            uint32_t pressed = bsp_buttons_get();
+            if (pressed & held_bit) {
                 dispatch(held, true);
                 next_repeat = now + REPEAT_RATE_MS;
             } else {
-                held = OS_KEY_NONE;
-                held_bit = 0;
+                take_over_repeat(pressed, &held, &next_repeat, &held_bit);
             }
         }
         if (now >= next_tick) {
