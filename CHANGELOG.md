@@ -10,11 +10,11 @@ site changes that came with them live in the parent repository.
 
 - **Lua `sys.keys()`**: the keys held right now, as a set (`{ up = true, left = true }`),
   so games can move diagonally and see a key let go: read it in `on_tick`. Raw buttons
-  through the calibrated map, never HOME, empty while a confirm or the bridge panel has the
-  keys (`lua_sys.c`, `docs/LUA_API.md` "sys").
+  through the calibrated map, never HOME, empty while a dialog has the keys (the app's
+  `ui.confirm` or `ui.input`, the OS's confirm or bridge panel) (`lua_sys.c`, `docs/LUA_API.md` "sys").
 - **Auto-repeat hands over**: when the repeating direction is released while another is
-  still held, that one repeats at once instead of going quiet until pressed again
-  (`core/os.c`). Every app, built-in ones too.
+  still held, that one repeats at once instead of going quiet until pressed again, whether
+  the release event or the repeat timer sees it first (`core/os.c`). Every app, built-in ones too.
 
 ## 0.5.10 (2026-11-06)
 

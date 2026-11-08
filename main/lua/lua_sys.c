@@ -235,13 +235,15 @@ static int l_battery(lua_State *L)
 }
 
 // The keys held right now, as a set: { up = true, left = true }. Raw buttons through
-// the calibrated map; empty while the OS has the keys (a confirm, the bridge panel).
+// the calibrated map; empty while a dialog has the keys: the app's own ui.confirm or
+// ui.input, or the OS's (a confirm, the bridge panel).
 static int l_keys(lua_State *L)
 {
     static const char *const names[] = {"up", "down", "left", "right", "select", "back"};
+    lh_t *s = lh_get(L);
     uint32_t pressed = bsp_buttons_get();
     lua_createtable(L, 0, 2);
-    if (os_confirm_open() || os_overlay()) {
+    if (s->modal || s->kb || os_confirm_open() || os_overlay()) {
         return 1;
     }
     for (int k = 0; k < (int)(sizeof(names) / sizeof(names[0])); k++) {

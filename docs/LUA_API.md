@@ -330,9 +330,9 @@ json.encode(value)  json.decode(text)   -- nil plus an error message on bad inpu
 ```
 
 `sys.keys()` names `up`, `down`, `left`, `right`, `select` and `back` (CANCEL), never HOME,
-and is empty while the badge is asking something (a confirm, the bridge panel). It reads the
-buttons themselves, so a focused `ui.list` doesn't hide its keys. Solana OS before 0.5.11
-has no `sys.keys` (`if sys.keys then`):
+and is empty while a dialog has the keys (your `ui.confirm` or `ui.input`, or the badge's own
+confirm or bridge panel). It reads the buttons themselves, so a focused `ui.list` doesn't hide
+its keys. Solana OS before 0.5.11 has no `sys.keys` (`if sys.keys then`):
 
 ```lua
 local x, y = 160, 109
