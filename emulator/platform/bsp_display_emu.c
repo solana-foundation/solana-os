@@ -22,6 +22,7 @@ static uint32_t s_fb[BOARD_LCD_H_RES * BOARD_LCD_V_RES];   // RGBA, as ImageData
 static uint8_t s_buf[2][BUF_PX * 2] __attribute__((aligned(4)));
 static volatile uint32_t s_frame;       // bumped on every flush; the page redraws when it changes
 static bool s_backlight;
+static uint8_t s_bl_pct = 100;
 static int s_next_ms = 5;
 
 // esp_lvgl_port's lock is a recursive mutex; lvgl_port_lock(0) waits forever.
@@ -94,6 +95,16 @@ void bsp_backlight(bool on)
     s_backlight = on;
 }
 
+void bsp_backlight_level(uint8_t pct)
+{
+    s_bl_pct = pct < 1 ? 1 : pct > 100 ? 100 : pct;
+}
+
+uint8_t bsp_backlight_get_level(void)
+{
+    return s_bl_pct;
+}
+
 lv_display_t *bsp_display_start(void)
 {
     bsp_backlight(false);
@@ -134,7 +145,8 @@ EMSCRIPTEN_KEEPALIVE uint32_t emu_frame(void)
     return s_frame;
 }
 
+// 0 (off) .. 100: the page dims the canvas to match (Settings > Brightness).
 EMSCRIPTEN_KEEPALIVE int emu_backlight(void)
 {
-    return s_backlight;
+    return s_backlight ? s_bl_pct : 0;
 }

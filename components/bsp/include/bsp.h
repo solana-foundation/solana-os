@@ -42,6 +42,10 @@ void bsp_sd_print_card(void);
 // ---- Display (ILI9341 + LVGL) ----
 lv_display_t *bsp_display_start(void);
 void bsp_backlight(bool on);
+// Backlight level while on, 1..100 % PWM duty (default 100). Safe before or
+// after bsp_display_start(); the level is kept across off/on.
+void bsp_backlight_level(uint8_t pct);
+uint8_t bsp_backlight_get_level(void);
 
 // ---- Buttons ----
 #define BSP_BTN_PB(n)   (1u << ((n) - 1))   // n = 1..6
