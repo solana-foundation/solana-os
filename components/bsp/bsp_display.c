@@ -144,7 +144,10 @@ lv_display_t *bsp_display_start(void)
     lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io,
         .panel_handle = panel,
-        .buffer_size = BOARD_LCD_H_RES * 24,     // 2 x 15 KB DMA; RAM is tight
+        // 2 x 7.5 KB of DMA memory (12 rows; 24 rows took 30 KB, 0.5.13). The
+        // second buffer renders while the first flushes, so a full frame is
+        // 20 flushes of ~3 ms at 20 MHz instead of 10 of ~6 ms.
+        .buffer_size = BOARD_LCD_H_RES * 12,
         .double_buffer = true,
         .hres = BOARD_LCD_H_RES,
         .vres = BOARD_LCD_V_RES,

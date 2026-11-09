@@ -6,6 +6,37 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.13 (2026-11-09)
+
+- **About 40 KB more free heap, and 96 KB of Lua heap per app** (was 48 KB;
+  `LUA_HOST_HEAP_MAX`, `docs/LUA_API.md` "Limits"). The Lua allocator also keeps the
+  badge's own share: it refuses growth that would leave the system heap below 32 KB
+  (`LUA_HOST_SYS_RESERVE`; Lua collects garbage and retries, then the app stops with
+  "The badge is low on memory"), so an app can take what is free without starving the
+  OS, mesh and cloud tasks. Measured on a badge at the launcher on USB: 157 KB free and
+  a 139 KB largest block with the radio on and no network joined (0.5.11: 116 KB and
+  90 KB), 149 KB and 125 KB with Wi-Fi joined; with Wi-Fi joined an app with one label
+  reaches ~103 KB of Lua heap before the reserve stops it (`tests/t-heap`), and a TLS
+  resumption, a store install and its first launch (the compiled code copied into a flash
+  slot) all worked meanwhile. Where it comes from:
+  - LVGL's two draw buffers are 320x12 (15 KB together) instead of 320x24 (30 KB): a
+    frame is 20 flushes of ~3 ms instead of 10 of ~6 ms, one rendering while the other
+    flushes as before (`bsp_display.c`).
+  - Code out of IRAM, which shares the SRAM with the heap (`sdkconfig.defaults`): the
+    ROM's esp_flash driver instead of ESP-IDF's (`CONFIG_SPI_FLASH_ROM_IMPL`), and the
+    SPI master ISR, the ring buffer's ISR functions, heap_caps, the libc locks and the
+    I2C ISR in flash. IRAM went from 66.7 KB to 45.0 KB. None of it runs while the cache
+    is off, so an LCD flush or a button read that lands on a flash write finishes a few
+    ms later.
+  - lwIP without IPv6, the DHCP server and loopback, 4 sockets, TIME_WAIT 10 s; the TLS
+    handshake's TX buffer 2 KB (was 4 KB); the FreeRTOS timer task's stack 1.5 KB and the
+    button task's 2 KB.
+  - **The console starts on USB power** (`os_on_usb_power()`, the status bar's rule: over
+    4.3 V on the battery sense, checked every second): the REPL task, UART driver and
+    command table, about 8 KB, exist only while the badge is plugged in, from boot or from
+    the moment it is. On battery that heap goes to apps too.
+- `heap stacks` lists the button task.
+
 ## 0.5.12 (2026-11-08)
 
 - **Screen brightness** (Settings > Brightness): five levels, LEFT dimmer, RIGHT brighter

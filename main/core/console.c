@@ -305,7 +305,7 @@ static int cmd_heap(int argc, char **argv)
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
     if (argc > 1 && !strcmp(argv[1], "stacks")) {
         // Bytes each task has never touched since boot (its worst case so far).
-        static const char *const names[] = {"taskLVGL", "os", "mesh", "cloud", "lua", "console_repl", "lua_inst"};
+        static const char *const names[] = {"taskLVGL", "os", "mesh", "cloud", "lua", "console_repl", "lua_inst", "buttons"};
         for (int i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
             TaskHandle_t t = xTaskGetHandle(names[i]);
             if (t) {
@@ -334,7 +334,7 @@ int console_stream_read(void *buf, size_t n, int timeout_ms)
     return got < 0 ? -1 : got;
 }
 
-void console_start(void)
+static void start_now(void)
 {
     esp_console_repl_t *repl;
     esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
@@ -373,4 +373,12 @@ void console_start(void)
     esp_console_register_help_command();
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGI(TAG, "console ready, type 'help'");
+}
+
+// The REPL task, the UART driver and the command table hold ~8 KB of heap
+// that a badge on battery has no one to talk to with: they start when USB
+// power is present (the status bar's rule), at boot or once plugged in.
+void console_start(void)
+{
+    os_on_usb_power(start_now);
 }

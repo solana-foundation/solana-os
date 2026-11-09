@@ -2,7 +2,7 @@
 // ui.anim.
 //
 // Pixels are RGB565, two bytes each, with LH_PX_CLEAR for see-through, and
-// live in Lua userdata ("ui.img"), so they count against the app's 48 KB like
+// live in Lua userdata ("ui.img"), so they count against the app's 96 KB like
 // anything else it keeps; PNG decoding's scratch goes through the same
 // allocator and is freed before ui.load returns. Nothing is ever drawn at the
 // size it is shown: a view (an lv_image_dsc_t of our own, flagged

@@ -142,7 +142,7 @@
 */
 /*
 ** Solana OS: on (32-bit TValues halve table and stack memory under the
-** 48 KB script cap, and the C5 has no FPU; see lua_host.c). The store's
+** 96 KB script cap, and the C5 has no FPU; see lua_host.c). The store's
 ** compiler (tools/luac) is built the same way, so its chunks load here.
 */
 #if !defined(LUA_32BITS)

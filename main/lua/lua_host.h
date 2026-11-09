@@ -13,7 +13,12 @@
 #include <stddef.h>
 #include "core/os.h"
 
-#define LUA_HOST_HEAP_MAX   (48 * 1024)     // Lua heap per app (LUA_API.md "Limits")
+// Lua heap per app (LUA_API.md "Limits"; 48 KB before 0.5.13), and the system
+// heap an app may never take: the OS, mesh and cloud tasks' share while it
+// runs. Measured on 0.5.13 with Wi-Fi joined: an app with one label reaches
+// ~103 KB of Lua heap before the reserve stops it (tests/t-heap).
+#define LUA_HOST_HEAP_MAX    (96 * 1024)
+#define LUA_HOST_SYS_RESERVE (32 * 1024)
 #define LUA_HOST_STEPS_MAX  200000          // VM instructions per callback
 
 // Hidden system app; its title is the running script's name.

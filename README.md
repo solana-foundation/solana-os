@@ -10,8 +10,9 @@ Stack: ESP-IDF v6.0.1, C, LVGL 9, Lua 5.5. What changed in each release: [CHANGE
 
 ## Lua apps and memory
 
-The badge has no PSRAM, so a Lua app has to share ~90 KB of free heap with
-Wi-Fi, TLS and the mesh. Since 0.5.0:
+The badge has no PSRAM, so a Lua app (96 KB of heap since 0.5.13, 48 KB before)
+shares the free heap with Wi-Fi, TLS and the mesh: ~156 KB at the launcher on
+0.5.13, ~116 KB before (CHANGELOG.md says where it came from). Since 0.5.0:
 
 - Store apps arrive compiled: the App Store compiles them with this firmware's
   own Lua (`tools/luac/`, the same `main/lua/vendor/` built to wasm) and the

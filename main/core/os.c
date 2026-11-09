@@ -41,6 +41,8 @@ static TaskHandle_t s_task;
 static const os_app_t *s_app;
 static lv_obj_t *s_root, *s_title, *s_wifi, *s_batt, *s_toast;
 static int64_t s_toast_until;
+static void (*s_usb_cb)(void);          // os_on_usb_power: waiting for USB power
+static bool s_usb;                      // the last battery reading said USB (or no sense)
 
 static int64_t now_ms(void)
 {
@@ -146,9 +148,20 @@ static void status_create(lv_obj_t *scr)
     lv_obj_set_style_radius(line, 0, 0);
 }
 
+static void usb_fire(void)
+{
+    if (s_usb && s_usb_cb) {
+        void (*cb)(void) = s_usb_cb;
+        s_usb_cb = NULL;
+        cb();
+    }
+}
+
 static void status_update(void)
 {
     int mv = bsp_battery_mv();
+    s_usb = mv < 0 || mv > 4300;
+    usb_fire();
     if (mv < 0) {
         lv_label_set_text(s_batt, LV_SYMBOL_BATTERY_EMPTY " --");
     } else if (mv > 4300) {
@@ -439,6 +452,18 @@ static void dispatch(os_key_t key, bool repeat)
 static bool post(os_event_t ev)
 {
     return s_q && xQueueSend(s_q, &ev, 0) == pdTRUE;
+}
+
+static void usb_arm(void *arg)
+{
+    (void)arg;
+    usb_fire();
+}
+
+void os_on_usb_power(void (*cb)(void))
+{
+    s_usb_cb = cb;
+    os_post(usb_arm, NULL);     // checked on the OS task, which reads the battery every second
 }
 
 bool os_post(void (*fn)(void *arg), void *arg)
