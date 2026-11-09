@@ -129,7 +129,8 @@ side is `web/src/lib/components/emulator/emulator.ts`.
 ## Limitations
 
 - Radios are simulated demo data (browsers
-  can't sniff Wi-Fi). Wi-Fi joins any demo network with any password. The
+  can't sniff Wi-Fi). Wi-Fi finds one open network, Emulator Guest, on
+  the mesh channel (no password). The
   mesh is real between tabs of one origin, but has no range or packet loss.
 - The SD card is in memory and resets on reload. The battery is a fake.
 - No real heap limit: the badge has ~125 KB free, the wasm heap has megabytes,
