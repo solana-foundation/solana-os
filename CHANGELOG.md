@@ -6,6 +6,17 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.14 (2026-11-09)
+
+- The Lua allocator's 32 KB reserve holds for small allocations too. 0.5.13 reset its
+  per-KB check counter before refusing, so Lua's retry of the same allocation after a
+  collection, and the small allocations after it, went unchecked until the next KB: an app
+  built of small strings or tables could creep under the reserve. Now the counter only
+  resets when a check passes, so from a refusal every growth is checked until one does
+  (Greptile on solana-os#9). `tests/t-heap` makes 60 labels and then fills the heap with
+  200-byte strings: on a badge with Wi-Fi joined it stopped at 80 KB of Lua heap with
+  32.4 KB of system heap left, the badge working.
+
 ## 0.5.13 (2026-11-09)
 
 - **About 40 KB more free heap, and 96 KB of Lua heap per app** (was 48 KB;
@@ -15,8 +26,10 @@ site changes that came with them live in the parent repository.
   "The badge is low on memory"), so an app can take what is free without starving the
   OS, mesh and cloud tasks. Measured on a badge at the launcher on USB: 157 KB free and
   a 139 KB largest block with the radio on and no network joined (0.5.11: 116 KB and
-  90 KB), 149 KB and 125 KB with Wi-Fi joined; with Wi-Fi joined an app with one label
-  reaches ~103 KB of Lua heap before the reserve stops it (`tests/t-heap`), and a TLS
+  90 KB), 149 KB and 125 KB with Wi-Fi joined. Which limit an app meets first depends on
+  its UI and the badge: with Wi-Fi joined and the cap lifted to 128 KB, an app with one
+  label reached 103 KB of Lua heap before the reserve stopped it (`tests/t-heap`), so under
+  the cap a light app meets the cap and one with many objects the reserve; a TLS
   resumption, a store install and its first launch (the compiled code copied into a flash
   slot) all worked meanwhile. Where it comes from:
   - LVGL's two draw buffers are 320x12 (15 KB together) instead of 320x24 (30 KB): a
