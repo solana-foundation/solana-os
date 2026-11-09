@@ -15,8 +15,12 @@
 
 // Lua heap per app (LUA_API.md "Limits"; 48 KB before 0.5.13), and the system
 // heap an app may never take: the OS, mesh and cloud tasks' share while it
-// runs. Measured on 0.5.13 with Wi-Fi joined: an app with one label reaches
-// ~103 KB of Lua heap before the reserve stops it (tests/t-heap).
+// runs. An app's other memory (12 KB task stack, host state, LVGL objects)
+// counts against the badge's heap too, so which limit an app meets first
+// depends on its UI and on the badge: measured on 0.5.13 with Wi-Fi joined
+// and the cap lifted to 128 KB, an app with one label reached 103 KB of Lua
+// heap before the reserve stopped it, so under the 96 KB cap a light app
+// meets the cap and one with many objects the reserve (tests/t-heap).
 #define LUA_HOST_HEAP_MAX    (96 * 1024)
 #define LUA_HOST_SYS_RESERVE (32 * 1024)
 #define LUA_HOST_STEPS_MAX  200000          // VM instructions per callback
