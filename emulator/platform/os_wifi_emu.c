@@ -1,6 +1,6 @@
 // Emulator counterpart of core/os_wifi.c: the same os_wifi.h service over a
 // simulated radio. Scans find one open network, "Emulator Guest" (no password to
-// type; any other name isn't found), on the mesh channel, so joining it never
+// type; any other name isn't found), on the server's mesh channel, so joining it never
 // takes the radio off the mesh; joining hands out a fake private IP. Credentials
 // use the badge's NVS keys ("wifi/ssid|pass"), saved only once "connected".
 // Like the badge, Wi-Fi starts off (os_wifi_boot.c joins the saved one), and the emulated radio
@@ -16,6 +16,7 @@
 #include "esp_random.h"
 #include "esp_wifi.h"
 #include "nvs.h"
+#include "core/os_mesh.h"
 #include "core/os_wifi.h"
 #include "emu.h"
 
@@ -73,10 +74,14 @@ static void save_creds(const char *ssid, const char *pass)
     }
 }
 
-// The network sits on the mesh channel (the park channel; 1 until the mesh sets one).
+// The network sits on the channel the server announces for the mesh (before the first
+// hello, the park channel; 1 until the mesh sets one). Not the park channel itself: a
+// badge beacon's mesh follows its network's channel (os_mesh.c), so a network that
+// followed the park channel would hold a beacon on the old channel forever.
 static int ap_channel(void)
 {
-    return s_park ? s_park : 1;
+    int ch = os_mesh_server_channel();
+    return ch ? ch : s_park ? s_park : 1;
 }
 
 static bool known(const char *ssid)
@@ -296,8 +301,8 @@ void os_wifi_set_park_channel(int channel)
 {
     s_park = channel;
     park();
-    // The network follows the mesh channel, so a joined badge moves with it.
-    if (s_park && !s_suspended && s_state == OS_WIFI_CONNECTED) {
-        esp_wifi_set_channel(s_park, WIFI_SECOND_CHAN_NONE);
+    // The network follows the server's mesh channel, so a joined badge moves with it.
+    if (!s_suspended && s_state == OS_WIFI_CONNECTED) {
+        esp_wifi_set_channel(ap_channel(), WIFI_SECOND_CHAN_NONE);
     }
 }
