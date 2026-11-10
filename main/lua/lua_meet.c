@@ -11,8 +11,9 @@
 // The host builds every signed string and puts the app's id in it, so a script
 // can't get a tag that counts anywhere else (X Dex, trades, relays). Everything
 // here runs on the Lua task: the mesh task only queues the message (lua_net.c).
-// Frames get lost, so B repeats "req", A answers a repeated "req" with the
-// same "ok", and B a repeated "ok" with the same "fin".
+// Frames get lost, so B repeats "req" until it hears back, A repeats "ok"
+// until "fin" arrives (and answers a repeated "req" with it), and B answers a
+// repeated "ok" with the same "fin". A waits for one "fin" at a time.
 
 #include <inttypes.h>
 #include <stdlib.h>
@@ -48,11 +49,12 @@ struct lh_meet {
     // The last ask that finished: a repeated "ok" gets the same "fin".
     bool finned;
     char fin_peer[OS_MESH_ID_LEN + 1], fin_nr[NONCE_LEN + 1], fin_tag[OS_MESH_TAG_LEN + 1];
-    // The last meet accepted: a repeated "req" gets the same "ok"; "fin" brings the peer's tag.
+    // The last meet accepted: "ok" repeats until "fin" brings the peer's tag
+    // (uploaded: nothing more to do for it), for MEET_WAIT_MS at most.
     bool accepted, uploaded;
     meet_t in;
     char in_tag[OS_MESH_TAG_LEN + 1];
-    int64_t last_accept;
+    int64_t in_at, in_sent, last_accept;
 };
 
 static bool is_hex16(const char *s)
@@ -239,10 +241,18 @@ static void asked_done(lh_t *s, const char *data, const char *err)
 void lh_meet_run(lh_t *s)
 {
     struct lh_meet *m = s->meet;
-    if (!m || !m->asking) {
+    if (!m) {
         return;
     }
     int64_t now = lh_now();
+    // Our "ok" or their "fin" got lost: without the peer's tag only they can upload the meet.
+    if (m->accepted && !m->uploaded && now - m->in_at < MEET_WAIT_MS && now - m->in_sent >= MEET_RESEND_MS) {
+        m->in_sent = now;
+        send_ok(s, &m->in, m->in_tag);
+    }
+    if (!m->asking) {
+        return;
+    }
     if (now - m->started >= MEET_WAIT_MS) {
         asked_done(s, NULL, "no answer");
     } else if (now - m->sent >= MEET_RESEND_MS) {
@@ -353,13 +363,17 @@ static void on_req(lh_t *s, const char *me, const char *from, const cJSON *j)
             || t->valuedouble < 0 || t->valuedouble > UINT32_MAX || !v) {
         return;
     }
+    int64_t now = lh_now();
     if (m->accepted && !strcmp(m->in.peer, from) && !strcmp(m->in.nr, n)) {
+        m->in_sent = now;
         send_ok(s, &m->in, m->in_tag);          // our "ok" got lost
         return;
     }
-    int64_t now = lh_now();
-    if (m->last_accept && now - m->last_accept < MEET_GAP_MS) {
-        return;                                 // it asks again
+    // A new one would take the place of a meet still waiting for its "fin", and
+    // that "fin" would then find nothing: this badge asks again.
+    if ((m->accepted && !m->uploaded && now - m->in_at < MEET_WAIT_MS)
+            || (m->last_accept && now - m->last_accept < MEET_GAP_MS)) {
+        return;
     }
     m->last_accept = now;
     accept_t a = { .from = from, .data = d, .out = { .max = LH_MEET_MAX } };
@@ -378,6 +392,7 @@ static void on_req(lh_t *s, const char *me, const char *from, const cJSON *j)
         strlcpy(in->da, a.out.p, sizeof(in->da));
         m->accepted = sign(s, me, false, in, m->in_tag);
         m->uploaded = false;
+        m->in_at = m->in_sent = now;
         if (m->accepted) {
             send_ok(s, in, m->in_tag);
         }
@@ -455,8 +470,9 @@ void lh_meet_event(lh_t *s, const char *data)
         const char *tag = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(j, "tag"));
         if (m->accepted && !m->uploaded && r && is_hex16(tag) && !strcmp(m->in.peer, from) && !strcmp(m->in.nr, r)) {
             // The requester queued it too; whichever upload arrives first stores it.
-            m->uploaded = true;
-            upload(s, me, false, &m->in, tag);
+            // With the outbox full theirs is the one. A save that fails is tried
+            // again when "fin" comes back for our next "ok".
+            m->uploaded = os_outbox_count() >= MEET_BOX_MAX || upload(s, me, false, &m->in, tag);
         }
     }
     cJSON_Delete(j);

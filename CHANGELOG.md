@@ -19,7 +19,10 @@ site changes that came with them live in the parent repository.
   signed string with the app's id in it, so a script can't get a tag that counts for X
   Dex, a trade or a quest. The messages ride in the app's own mesh messages (`m` in
   place of `d`), so badges on older builds ignore them. `mesh.meets` lists what the
-  server holds. `main/lua/lua_meet.c`; `tests/t-meet`.
+  server holds. `main/lua/lua_meet.c`; `tests/t-meet`. Frames get lost: the asker repeats
+  its request for 12 s, the accepter repeats its answer until the asker's last message
+  arrives (it waits for one at a time, so a second request can't push an unfinished meet
+  out), and a copy that couldn't be saved is tried again (Greptile on solana-os#10).
 - `mesh.pause()` and `mesh.resume()`: an app with `mesh` can hand the radio back to
   Wi-Fi and take it again, to sync without closing (X Dex's "sync first").
 - `mesh selftest` checks the meet tag's test vector.
