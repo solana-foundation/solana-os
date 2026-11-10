@@ -80,17 +80,63 @@ All of it works the same in the emulator, which makes Wi-Fi the easiest path to 
 
 ## Choosing
 
-| You want | Use | Memory | What to know |
-|---|---|---|---|
-| **Badge to badge in the same room** | the mesh: `mesh.send` / `on_mesh`; `mesh.meet` when your server must trust it | nothing beyond your app | Messages get lost: repeat them. All badges must be on the mesh channel. A `mesh` app takes the radio from Wi-Fi joined on another channel while it's open ([One radio](#one-radio-shared)). |
-| **Badge to badge across the venue, or with an emulator** | a bridge (same `mesh` code, `mesh.bridge()`), or a `ws` room on your server | bridge: nothing beyond your app. `ws`: 56 KB free to start, about 5 KB while open | Both need Wi-Fi. A bridged message takes about 1 to 3 seconds: turn-based games work, fast action doesn't. With `ws`, other server calls wait while the socket is open, and your server must be up. |
-| **Badge to your own gadget** | Bluetooth: `ble.scan` + `ble.connect` to talk to one; `ble.scan` alone to hear many that advertise | about 30 KB while Bluetooth is on | One connection at a time; for several gadgets, have them advertise their state and just scan. The emulator can't reach a gadget: test with Run on badge. Anyone can build a gadget that looks like yours. |
-| **Badge to a phone** | Bluetooth: `ble.serve` (the phone connects; a Nordic UART layout works with common phone apps). Or a QR code (`ui.qr`) to a page on your server, which both sides reach | about 26 KB for Bluetooth; a QR code is one UI object | The phone needs an app that speaks Bluetooth LE. Phones change their Bluetooth address every few minutes: find them by service, not by address. To sign a transaction, use a phone wallet (LUA_API.md "Build on the badge, sign on a phone"). |
-| **A room where only Wi-Fi works** (its access points aren't on the mesh channel, or the organisers want everything through the server) | a `ws` room on your host, or `http` | 56 KB free to start a secure connection | Everything depends on the venue's Wi-Fi and your server. While a socket is open, `lamps`, `items`, `http` and the rest answer `"socket open"`: call them before `ws.open`. 20 socket opens a minute per badge. |
+Find what your app needs below; each says what to use, what it costs in memory and what
+to know.
 
-Two badges that both stay on Wi-Fi joined on a channel that isn't the mesh channel can
-still talk directly over Bluetooth ([`ble-link`](examples/ble-link/)): it doesn't take the
-radio from Wi-Fi the way a `mesh` app does.
+### Badge to badge in the same room
+
+- **Use:** the mesh, `mesh.send` / `on_mesh`; `mesh.meet` when your server must trust it.
+- **Memory:** nothing beyond your app.
+- **Know:** messages get lost: repeat them. All badges must be on the mesh channel. A
+  `mesh` app takes the radio from Wi-Fi joined on another channel while it's open
+  ([One radio](#one-radio-shared)).
+
+### Badge to badge across the venue, or with an emulator
+
+- **Use:** a bridge (same `mesh` code, `mesh.bridge()`), or a `ws` room on your server.
+- **Memory:** bridge: nothing beyond your app. `ws`: 56 KB free to start, about 5 KB while
+  open.
+- **Know:** both need Wi-Fi. A bridged message takes about 1 to 3 seconds: turn-based games
+  work, fast action doesn't. With `ws`, other server calls wait while the socket is open,
+  and your server must be up.
+
+### Badge to your own gadget
+
+- **Use:** Bluetooth, `ble.scan` + `ble.connect` to talk to one; `ble.scan` alone to hear
+  many that advertise.
+- **Memory:** about 30 KB while Bluetooth is on.
+- **Know:** one connection at a time; for several gadgets, have them advertise their state
+  and just scan. The emulator can't reach a gadget: test with Run on badge. Anyone can
+  build a gadget that looks like yours.
+
+### Badge to a phone
+
+- **Use:** Bluetooth, `ble.serve` (the phone connects; a Nordic UART layout works with
+  common phone apps). Or a QR code (`ui.qr`) to a page on your server, which both sides
+  reach.
+- **Memory:** about 26 KB for Bluetooth; a QR code is one UI object.
+- **Know:** the phone needs an app that speaks Bluetooth LE. Phones change their Bluetooth
+  address every few minutes: find them by service, not by address. To sign a transaction,
+  use a phone wallet ([Build on the badge, sign on a phone](LUA_API.md#build-on-the-badge-sign-on-a-phone)).
+
+### A room where only Wi-Fi works
+
+Its access points aren't on the mesh channel, or the organisers want everything through
+the server.
+
+- **Use:** a `ws` room on your host, or `http`.
+- **Memory:** 56 KB free to start a secure connection.
+- **Know:** everything depends on the venue's Wi-Fi and your server. While a socket is
+  open, `lamps`, `items`, `http` and the rest answer `"socket open"`: call them before
+  `ws.open`. 20 socket opens a minute per badge.
+
+### Two badges that both stay on Wi-Fi
+
+Joined on a channel that isn't the mesh channel.
+
+- **Use:** Bluetooth, as [`ble-link`](examples/ble-link/) does: the two badges still talk
+  directly, and it doesn't take the radio from Wi-Fi the way a `mesh` app does.
+- **Memory:** about 30 KB while Bluetooth is on.
 
 ## One radio, shared
 
