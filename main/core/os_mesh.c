@@ -1285,6 +1285,8 @@ static int selftest(void)
         {"trade|7K2Q9M|3f2a9c1e00b14d77|7K2Q9M|9XQ3TT|50|it_8f2k,it_k2m1||0||p007,p013", "cfa9b760dfdf0de4"},
         {"relay|7K2Q9M|BCN001|a1b2c3d4e5f60718|17|{\"op\":\"open\"}", "81402ef7e089ca97"},
         {"bridge|7K2Q9M|58000000", "2870ed5904c344a1"},
+        {"meet|7K2Q9M|tag-game|9XQ3TT|7K2Q9M|0011223344556677|8899aabbccddeeff|1790000000|1790000002|rr|9|{\"it\":42}|8|{\"ok\":1}",
+         "156320afbc968b8a"},
     };
     uint8_t key[16], digest[32];
     char hex[65];

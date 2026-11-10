@@ -36,6 +36,7 @@
 #define LH_STORAGE_SAVE_MS  1000        // storage.set writes at most this often
 #define LH_MESH_PER_S       4
 #define LH_MESH_MAX         200         // bytes of JSON per mesh.send
+#define LH_MEET_MAX         100         // bytes of JSON per side of a mesh.meet
 #define LH_CALLS_MAX        16          // server calls waiting or in flight per app
 #define LH_CALLS_SENT       3           // at once in os_api, whose queue the OS shares
 #define LH_JSON_DEPTH       16          // nesting; bounds the decoder's recursion
@@ -171,6 +172,7 @@ typedef struct lh {
     // mesh
     int mesh_sub;
     int64_t mesh_sent[LH_MESH_PER_S];
+    struct lh_meet *meet;       // mesh.meet's handshakes (lua_meet.c), made on first use
 
     // Server calls
     lh_call_t *calls;
@@ -195,14 +197,14 @@ typedef struct {
 extern lh_stats_t lh_stats;
 
 // Events for the Lua task.
-typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_QUIT } lh_ev_kind_t;
+typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_MEET, LH_EV_QUIT } lh_ev_kind_t;
 
 typedef struct {
     uint8_t kind;
     uint8_t key;
     bool repeat;
     uint32_t gen;
-    char *data;                 // LH_EV_MESH: "<from id>\0<json>", freed by the receiver
+    char *data;                 // LH_EV_MESH, LH_EV_MEET: "<from id>\0<json>", freed by the receiver
 } lh_ev_t;
 
 extern SemaphoreHandle_t lh_mx;     // guards call records, the mesh filter, lh_cur
@@ -303,6 +305,13 @@ void lh_mesh_event(lh_t *s, char *data);
 void lh_mesh_start(lh_t *s);                            // OS task
 void lh_mesh_mute(void);                                // stop queueing messages
 void lh_mesh_stop(void);                                // OS task
+void lh_mesh_me(char out[7]);                           // this badge's id when the app started, "" without one
+
+// lua_meet.c: mesh.meet, a statement two badges sign (docs/MESH.md "Meets")
+int lh_mesh_meet(lua_State *L);
+void lh_meet_event(lh_t *s, const char *data);          // Lua task: a meet message, "<from id>\0<json>"
+void lh_meet_run(lh_t *s);                              // Lua task: repeats and the timeout of an ask
+void lh_meet_free(lh_t *s);                             // after the Lua task ended
 
 // lua_json.c: JSON <-> Lua. Encoding never raises Lua errors (it may run
 // with C memory to free); decoding may (out of memory).

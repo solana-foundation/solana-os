@@ -102,6 +102,8 @@ function on_tick(ms)         -- every 50 ms, ms = time since the last tick
 end
 function on_mesh(from, msg)  -- a message from the same app on another badge (needs "mesh")
 end
+function on_meet(from, data) -- another badge asks for a signed meet (needs "mesh", 0.5.15):
+end                          -- return a table to sign it ("Meets")
 function on_exit()           -- the app is closing (HOME, CANCEL, sys.exit, error)
 end
 ```
@@ -128,7 +130,7 @@ HOME always returns to the launcher. The screen below the status bar is
 | Storage | 16 KB per app (`storage.*`) |
 | Files | 64 bundled files, ≤ 256 KB each, ≤ 1 MB together, read-only (`fs`, `require`) |
 | Reads | ≤ 16 KB per `fs.read` and `fs.json`, lines ≤ 512 bytes. Card reads count toward the instruction budget: 500 per file opened or looked up (`fs.exists`, `fs.size`, `fs.list`), 1 per 4 bytes read or compiled |
-| Mesh | 4 messages per second, ≤ 200 bytes each |
+| Mesh | 4 messages per second, ≤ 200 bytes each. Meets: one asked and one accepted a second, ≤ 100 bytes of data a side, 300 per badge a day, 40 waiting to upload |
 | HTTP | 60 requests a minute per badge, ≤ 2 KB sent, ≤ about 3.5 KB of answer, 6 s to answer |
 | RPC | 30 calls a minute per badge (6 of them `sendTransaction`), ≤ 2 KB of params, ≤ about 3.5 KB of answer, 6 s to answer |
 | WebSocket | one at a time, 20 opens a minute per badge, ≤ 4 KB per message either way, 8 waiting to go |
@@ -412,6 +414,9 @@ mesh.nearby()               -- { {id="7K2Q9M", name="@toly", level=12, rssi=-48,
 mesh.send(to, msg)          -- to = badge id or "*"; msg = table (≤ 200 bytes as JSON)
 -- received by on_mesh(from_id, msg) on badges running the same app
 mesh.bridge()               -- show this badge's bridge code over the app (CANCEL closes it)
+mesh.meet(id, data, cb)     -- a meet both badges sign, for your server to trust ("Meets", 0.5.15)
+mesh.meets([after,] cb)     -- the meets the server holds for this badge's owner
+mesh.pause()                -- give the radio back to Wi-Fi, mesh.resume() takes it again (0.5.15)
 ```
 
 **Bridged badges.** Badges out of radio range, and emulators (no radio), meet over a
@@ -461,6 +466,132 @@ function on_mesh(from, msg)
   if msg.ping then ui.toast(from .. " says hi") end
 end
 ```
+
+#### Meets: prove that two badges met (Solana OS 0.5.15)
+
+`mesh.send` messages are unsigned. What your app says it heard from another badge is
+only that badge's word, and a badge's owner can change the Lua on it, so a server
+can't believe "I met 7K2Q9M" in an `http` body. A **meet** is the way around that, and
+it is how X Dex swaps cards with Wi-Fi off:
+
+1. Two badges running your app exchange three short messages over the mesh. No Wi-Fi
+   is involved.
+2. Both sign one statement with their **mesh key**, which only that badge and the badge
+   server know: your app's id, both badge ids, a fresh random number from each, each
+   badge's clock and each side's data. The OS builds the statement, so a script can't
+   sign anything else.
+3. Each badge keeps the *other* badge's signature and puts the meet in the badge's
+   outbox, on the card. The OS uploads it the next time the badge has Wi-Fi, also after
+   your app has closed or the badge restarted.
+4. The badge server checks the signature and stores the meet once, whichever badge
+   uploads it first. Your own server reads the meets with your app's key.
+
+A badge can only upload a meet with a signature it could not have made itself, so
+changing the code on one badge isn't enough to invent one.
+
+```lua
+ok, err = mesh.meet(id, data, cb)
+-- Ask badge `id` (from mesh.nearby) for a meet. data: a table of named fields,
+-- at most 100 bytes as JSON, plain ASCII.
+-- Returns true when the request is on its way (cb follows), else nil and why:
+--   "busy" (one ask at a time), "too fast: one meet a second", "not nearby",
+--   "the mesh is off", "outbox full" (40 uploads waiting), "data over 100 bytes"
+-- cb(true, {peer = id, data = <their table>})   both signed; the upload is queued
+-- cb(false, "refused" | "no answer" | "outbox full")
+
+function on_meet(from, data)    -- another badge asks. Return a table (your side's
+  return { ok = true }          -- data) to sign, anything else to refuse
+end
+
+mesh.meets([after,] cb)
+-- What the server holds for this badge's owner, oldest first:
+-- cb(true, {items = { {id=, peer=, asked=, mine={...}, theirs={...}, bridged=, at=}, ... }, next = id or nil})
+-- at: unix seconds. Pass `next` as `after` for more.
+
+mesh.pause()                    -- give the radio back to Wi-Fi
+mesh.resume()                   -- take it for the mesh again
+```
+
+**One radio.** Wi-Fi and the mesh share the badge's radio. While an app with `mesh`
+runs, a Wi-Fi network on another channel is paused: server calls answer `"offline"`
+and meets wait in the outbox. They upload when your app closes. To sync without
+leaving, do what X Dex does and switch: `mesh.pause()` lets Wi-Fi rejoin (a few
+seconds; `badge.online()` turns true), the outbox empties and `mesh.meets`,
+`http` and the rest work; `mesh.resume()` goes back to the mesh. While paused,
+messages and meets don't arrive and nearby badges drop out of `mesh.nearby()` after
+30 seconds. With Wi-Fi off, meets wait until the owner turns it on. Over a bridge, or
+on a network that is on the mesh channel, both work at once and there is nothing to
+switch.
+
+**What a meet proves.** Both badges' keys signed that statement: both owners' badges
+took part, in your app, with that data. It does **not** prove two people stood
+together: two owners who cooperate can pass messages along, and a bridge does exactly
+that (`bridged` says so, when the badges are honest). A badge's clock is its own word
+too. So let a meet earn what cooperation between two people is worth, count a pair of
+people once, and keep anything valuable behind your own server's rules.
+
+**Your side decides.** `on_meet` runs for any badge nearby that runs your app and
+asks, as often as once a second. Refuse what makes no sense for your game (a tag from
+someone who isn't "it", a second meet with the same badge), and check on your server
+again: the other badge's script may have been changed.
+
+```lua
+-- Tag: whoever is "it" tags a badge nearby; the server keeps score from the meets.
+local it = storage.get("it") or false
+local label = ui.label(8, 8, it and "You're it. SELECT tags the nearest badge" or "Run!")
+
+function on_key(k)
+  if k ~= "select" or not it then return false end
+  local near = mesh.nearby()[1]                 -- strongest signal first
+  if not near or near.kind ~= "badge" then ui.toast("Nobody in range") return true end
+  local ok, err = mesh.meet(near.id, { tag = 1 }, function(ok, res)
+    if not ok then ui.toast("Missed: " .. res) return end
+    it = false
+    storage.set("it", false)
+    label:text("Tagged " .. res.peer .. ". Run!")
+  end)
+  if not ok then ui.toast(err) end
+  return true
+end
+
+function on_meet(from, data)
+  if it or not data.tag then return nil end     -- only someone who isn't "it" can be tagged
+  it = true
+  storage.set("it", true)
+  label:text("Tagged by " .. from .. ". You're it")
+  return { caught = 1 }
+end
+```
+
+**Your server** reads the meets with the app's key: make one in **My apps**
+(`/apps/mine`, *Server key*; it is shown once, and making a new one retires the old).
+Poll with the last `id` you saw, at the API's address (not the store's):
+
+```sh
+curl -H "Authorization: Bearer $APP_KEY" "https://badge-api.solana.com/api/app/meets?after=0"
+```
+
+```json
+{ "app": "tag",
+  "items": [
+    { "id": 812, "at": 1790000123000, "by": "9XQ3TT", "bridged": false,
+      "req": { "badge": "9XQ3TT", "user": "2f1c...", "t": 1790000061, "data": { "tag": 1 } },
+      "acc": { "badge": "7K2Q9M", "user": "8e40...", "t": 1790000063, "data": { "caught": 1 } } } ] }
+```
+
+`req` is the badge that asked, `acc` the one whose app accepted. `user` is the owner's
+id, the same one escrow ledgers and the signed `http` headers carry (null for a badge
+nobody claimed yet): count people, not badges. `at` is when the server got the meet
+(unix ms) and `by` the badge that uploaded it; `t` is each badge's clock at the meet
+(unix seconds), null when it didn't know the time. A meet reaches you once, however
+many times the badges upload it. From there it's yours: keep a score, or pay players
+from an escrow.
+
+A badge takes part in at most 300 meets per app a day. Test runs (Try in emulator,
+Run on badge) make real meets too; those of an app you have never submitted stay on
+the badges' side (`mesh.meets`) and never reach a server. Solana OS before 0.5.15 has
+no meets: check `if mesh.meet then`, and a badge on an older build never answers
+(`"no answer"`).
 
 ### `lamps` (permission `lamps`)
 

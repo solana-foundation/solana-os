@@ -6,6 +6,31 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 0.5.15 (2026-11-10)
+
+- **Meets: Lua apps can prove two badges met** (`docs/LUA_API.md` "Meets",
+  `docs/MESH.md` "Meets"), the way X Dex swaps cards with Wi-Fi off. `mesh.meet(id,
+  data, cb)` asks a nearby badge running the same app; its `on_meet(from, data)`
+  returns its own data to accept. Both badges then sign one statement with their mesh
+  keys (app id, both badge ids, a nonce and a clock each, each side's data, radio or
+  bridge), each queues it in the outbox with the *other* badge's tag, and the OS uploads
+  it when the badge next has Wi-Fi, after the app closed too. The server stores it once
+  for the app's author, who reads the meets with the app's key. The host builds every
+  signed string with the app's id in it, so a script can't get a tag that counts for X
+  Dex, a trade or a quest. The messages ride in the app's own mesh messages (`m` in
+  place of `d`), so badges on older builds ignore them. `mesh.meets` lists what the
+  server holds. `main/lua/lua_meet.c`; `tests/t-meet`.
+- `mesh.pause()` and `mesh.resume()`: an app with `mesh` can hand the radio back to
+  Wi-Fi and take it again, to sync without closing (X Dex's "sync first").
+- `mesh selftest` checks the meet tag's test vector.
+- Measured: two emulated badges meet, with Wi-Fi on (both uploads answer 200, the server
+  keeps one meet) and with Wi-Fi off (one upload waiting in each outbox; the asker's, once
+  it has Wi-Fi again, settles the meet for both). On a badge (USB, Wi-Fi joined): 149 KB
+  free at the launcher as on 0.5.13, 110 KB with `tests/t-meet` running (20 KB of Lua
+  heap), the self-test passes, and with the mesh on channel 1 and the network on channel 6
+  `mesh.pause()` brought Wi-Fi back for a server call and `mesh.resume()` suspended it
+  again. Not measured: a meet between two badges over the air, or over a bridge.
+
 ## 0.5.14 (2026-11-09)
 
 - The Lua allocator's 32 KB reserve holds for small allocations too. 0.5.13 reset its

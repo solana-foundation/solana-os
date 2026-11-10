@@ -25,6 +25,7 @@ typedef enum {
     OP_ME, OP_PROFILE,
     OP_REPORT, OP_ACTIVE,
     OP_HTTP, OP_RPC,
+    OP_MEETS,
 } op_t;
 
 // Permission per op, and the field of the answer the callback gets (NULL = all of it).
@@ -40,6 +41,7 @@ static const struct {
     [OP_ME] = {LUA_PERM_PROFILE, NULL}, [OP_PROFILE] = {LUA_PERM_PROFILE, NULL},
     [OP_REPORT] = {LUA_PERM_QUEST, NULL}, [OP_ACTIVE] = {LUA_PERM_QUEST, "items"},
     [OP_HTTP] = {LUA_PERM_HTTP, NULL}, [OP_RPC] = {LUA_PERM_RPC, "result"},
+    [OP_MEETS] = {LUA_PERM_MESH, NULL},
 };
 
 static uint32_t s_token;
@@ -326,6 +328,7 @@ void lh_net_stop(lh_t *s)
 void lh_calls_free(lh_t *s)
 {
     lh_ws_free(s);
+    lh_meet_free(s);
     while (s->calls) {
         lh_call_t *c = s->calls;
         s->calls = c->next;
@@ -729,7 +732,8 @@ static int l_http_request(lua_State *L)
 
 // ---------------------------------------------------------------------------
 // mesh: APP messages {"app":id,"to":to,"d":msg} (docs/MESH.md), only between
-// badges running the same app.
+// badges running the same app. A meet's messages carry "m" for "d", to this
+// badge alone (lua_meet.c).
 
 static int s_mesh_sub = -1;
 static bool s_mesh_acquired;
@@ -744,20 +748,22 @@ static void mesh_handler(os_mesh_type_t type, const os_mesh_peer_t *from, const 
     const cJSON *app = cJSON_GetObjectItemCaseSensitive(m, "app");
     const cJSON *to = cJSON_GetObjectItemCaseSensitive(m, "to");
     const cJSON *d = cJSON_GetObjectItemCaseSensitive(m, "d");
+    const cJSON *meet = cJSON_GetObjectItemCaseSensitive(m, "m");
     char *text = NULL;
     xSemaphoreTake(lh_mx, portMAX_DELAY);
-    bool mine = s_mesh_app[0] && cJSON_IsString(app) && !strcmp(app->valuestring, s_mesh_app)
-                && cJSON_IsString(to) && (!strcmp(to->valuestring, "*") || !s_mesh_me[0]
-                                          || !strcmp(to->valuestring, s_mesh_me));
+    bool app_ok = s_mesh_app[0] && cJSON_IsString(app) && !strcmp(app->valuestring, s_mesh_app) && cJSON_IsString(to);
+    bool to_me = app_ok && s_mesh_me[0] && !strcmp(to->valuestring, s_mesh_me);
+    bool mine = app_ok && (to_me || !strcmp(to->valuestring, "*") || !s_mesh_me[0]);
     uint32_t gen = s_mesh_gen;
     xSemaphoreGive(lh_mx);
-    if (mine && cJSON_IsObject(d) && (text = cJSON_PrintUnformatted(d))) {
+    bool is_meet = !d && to_me && cJSON_IsObject(meet);
+    if (((mine && cJSON_IsObject(d)) || is_meet) && (text = cJSON_PrintUnformatted(is_meet ? meet : d))) {
         size_t idn = strlen(from->id), n = strlen(text);
         char *data = malloc(idn + 1 + n + 1);
         if (data) {
             memcpy(data, from->id, idn + 1);
             memcpy(data + idn + 1, text, n + 1);
-            lh_ev_t ev = { .kind = LH_EV_MESH, .gen = gen, .data = data };
+            lh_ev_t ev = { .kind = is_meet ? LH_EV_MEET : LH_EV_MESH, .gen = gen, .data = data };
             if (!lh_post(&ev)) {
                 free(data);
             }
@@ -779,6 +785,13 @@ void lh_mesh_start(lh_t *s)
     os_mesh_acquire();
     s_mesh_acquired = true;
     s_mesh_sub = os_mesh_subscribe(OS_MESH_APP, mesh_handler, NULL);
+}
+
+void lh_mesh_me(char out[OS_MESH_ID_LEN + 1])
+{
+    xSemaphoreTake(lh_mx, portMAX_DELAY);
+    strlcpy(out, s_mesh_me, OS_MESH_ID_LEN + 1);
+    xSemaphoreGive(lh_mx);
 }
 
 void lh_mesh_mute(void)
@@ -897,6 +910,54 @@ static int l_mesh_send(lua_State *L)
     return 1;
 }
 
+// mesh.pause() / mesh.resume(): the app hands the radio back to Wi-Fi (server
+// calls work and the outbox uploads, as X Dex syncs before it takes the radio)
+// or takes it for the mesh again. On the OS task, where lh_mesh_start and
+// lh_mesh_stop hold and release it. arg: the launch number, and what to do.
+static void mesh_hold(void *arg)
+{
+    uintptr_t a = (uintptr_t)arg;
+    bool want = a & 1;
+    if (s_mesh_sub < 0 || (s_mesh_gen & 0x7fffffff) != a >> 1 || want == s_mesh_acquired) {
+        return;         // that app has closed, or nothing to change
+    }
+    if (want) {
+        os_mesh_acquire();
+    } else {
+        os_mesh_release();
+    }
+    s_mesh_acquired = want;
+}
+
+static int mesh_hold_post(lua_State *L, bool want)
+{
+    lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    os_post(mesh_hold, (void *)(uintptr_t)((lh_get(L)->gen & 0x7fffffff) << 1 | want));
+    return 0;
+}
+
+static int l_mesh_pause(lua_State *L)
+{
+    return mesh_hold_post(L, false);
+}
+
+static int l_mesh_resume(lua_State *L)
+{
+    return mesh_hold_post(L, true);
+}
+
+// mesh.meets([after], cb): this owner's meets in the app, as the server holds
+// them (server/API.md "App meets"): {items = {...}, next = id or nil}.
+static int l_mesh_meets(lua_State *L)
+{
+    int cb = lua_gettop(L) >= 2 ? 2 : 1;
+    lua_Integer after = cb == 2 ? luaL_optinteger(L, 1, 0) : 0;
+    luaL_argcheck(L, after >= 0, 1, "after: the next of an earlier answer");
+    char path[64 + LUA_PKG_ID_MAX];
+    snprintf(path, sizeof(path), "/api/device/apps/%s/meets?after=%ld", lh_get(L)->pkg.id, (long)after);
+    return start(L, OP_MEETS, "GET", path, 0, cb, NULL);
+}
+
 // ---------------------------------------------------------------------------
 // rpc: Solana JSON-RPC through the badge server (server/API.md "App RPC"),
 // which holds the nodes' URLs, checks the method and params and answers
@@ -969,7 +1030,8 @@ void lh_open_net(lua_State *L)
     static const luaL_Reg profile[] = {{"me", l_me}, {"get", l_profile_get}, {NULL, NULL}};
     static const luaL_Reg quest[] = {{"report", l_report}, {"active", l_active}, {NULL, NULL}};
     static const luaL_Reg mesh[] = {{"nearby", l_mesh_nearby}, {"send", l_mesh_send}, {"bridge", l_mesh_bridge},
-                                    {NULL, NULL}};
+                                    {"meet", lh_mesh_meet}, {"meets", l_mesh_meets}, {"pause", l_mesh_pause},
+                                    {"resume", l_mesh_resume}, {NULL, NULL}};
     static const luaL_Reg http[] = {{"get", l_http_get}, {"post", l_http_post}, {"request", l_http_request},
                                     {NULL, NULL}};
     static const luaL_Reg rpc[] = {{"call", l_rpc_call}, {NULL, NULL}};

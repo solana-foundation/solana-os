@@ -523,10 +523,15 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
             lh_callback(s, key_cb, (void *)ev);
         } else if (ev->kind == LH_EV_MESH) {
             lh_mesh_event(s, ev->data);
+        } else if (ev->kind == LH_EV_MEET) {
+            lh_meet_event(s, ev->data);
         }
     }
     lh_calls_run(s);
     lh_ws_run(s);
+    if (s->L && !s->failed) {
+        lh_meet_run(s);
+    }
     int64_t now = lh_now();
     if (s->L && !s->failed && now >= s->next_tick) {
         int64_t ms = now - s->next_tick + LH_TICK_MS;
