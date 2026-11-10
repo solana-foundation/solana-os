@@ -1027,22 +1027,39 @@ address, not the store's: see "The server's address" above):
 `X-Badge-Key` names one you don't have (the key may be replaced). To trust a request,
 check the signature, that `X-Badge-App` is your app, that `X-Badge-Time` is within a
 minute of your clock, and that you haven't seen its `X-Badge-Request` in that minute
-(a replay). In TypeScript (Bun, Node 20+, Deno, Cloudflare Workers):
+(a replay). Check and remember the request in one step, after the signature and with no
+`await` in between, or two copies arriving together both pass. In TypeScript (Bun,
+Node 20+, Deno, Cloudflare Workers):
 
 ```ts
 const SERVER = 'https://badge-api.solana.com';
 const keys = new Map<string, CryptoKey>();
 const seen = new Map<string, number>(); // X-Badge-Request -> time
+let fetching: Promise<void> | null = null; // the key fetch in flight: every request waits for the same one
 let fetchedAt = 0;
 
 async function badgeKey(id: string): Promise<CryptoKey | null> {
-  if (!keys.has(id) && Date.now() - fetchedAt > 60_000) { // at most once a minute
+  if (!keys.has(id) && !fetching && Date.now() - fetchedAt > 60_000) { // at most once a minute
     fetchedAt = Date.now();
-    const k = await (await fetch(`${SERVER}/api/http/key`)).json();
-    const raw = Uint8Array.from(atob(k.key), (c) => c.charCodeAt(0));
-    keys.set(k.id, await crypto.subtle.importKey('raw', raw, 'Ed25519', false, ['verify']));
+    fetching = (async () => {
+      const k = await (await fetch(`${SERVER}/api/http/key`)).json();
+      const raw = Uint8Array.from(atob(k.key), (c) => c.charCodeAt(0));
+      keys.set(k.id, await crypto.subtle.importKey('raw', raw, 'Ed25519', false, ['verify']));
+    })()
+      .catch(() => { fetchedAt = 0; }) // failed: the next request tries again
+      .finally(() => { fetching = null; });
   }
+  if (!keys.has(id) && fetching) await fetching;
   return keys.get(id) ?? null;
+}
+
+/** True the first time `id` comes, false again until a minute after `time`. The check and
+ *  the claim are one step, so call it after your last `await`. Old ids go as it runs. */
+function once(id: string, time: number): boolean {
+  for (const [k, t] of seen) if (Date.now() - t > 60_000) seen.delete(k);
+  if (seen.has(id)) return false;
+  seen.set(id, time);
+  return true;
 }
 
 /** The badge and player behind a request from your app, or null. `body`: the raw body. */
@@ -1050,7 +1067,7 @@ export async function fromBadge(req: Request, body: string, app: string) {
   const h = (n: string) => req.headers.get(n) ?? '';
   const time = Number(h('x-badge-time'));
   const id = h('x-badge-request');
-  if (h('x-badge-app') !== app || !(Math.abs(Date.now() - time) < 60_000) || !id || seen.has(id)) return null;
+  if (h('x-badge-app') !== app || !(Math.abs(Date.now() - time) < 60_000) || !id) return null;
   const key = await badgeKey(h('x-badge-key'));
   if (!key) return null;
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)));
@@ -1058,8 +1075,7 @@ export async function fromBadge(req: Request, body: string, app: string) {
     app, h('x-badge-id'), h('x-badge-user'), h('x-badge-time'), id].join('\n');
   const sig = Uint8Array.from(atob(h('x-badge-signature')), (c) => c.charCodeAt(0));
   if (!(await crypto.subtle.verify('Ed25519', key, sig, new TextEncoder().encode(signed)))) return null;
-  seen.set(id, time);
-  for (const [k, t] of seen) if (Date.now() - t > 60_000) seen.delete(k);
+  if (!once(id, time)) return null; // a replay
   return { badge: h('x-badge-id'), user: h('x-badge-user') };
 }
 ```
@@ -1207,21 +1223,22 @@ snake                                  the app
 
 Check it when the connection opens, as for a request: the signature, that it names
 your app, that the time is within a minute of your clock and that you haven't seen the
-request in that minute. With `badgeKey()` and `seen` from the `http` example:
+request in that minute, the last in one step after the signature (one ticket, one
+socket). With `badgeKey()` and `once()` from the `http` example:
 
 ```ts
 /** The badge and player opening a socket to your app, or null. host: your wss host name. */
 export async function fromBadgeSocket(req: Request, app: string, host: string) {
   const ticket = new URL(req.url).searchParams.get('badge_ticket') ?? '';
   const [a, badge, user, time, request, keyId, sig, extra] = ticket.split('.');
-  if (extra !== undefined || a !== app || !sig || !request || seen.has(request) ||
+  if (extra !== undefined || a !== app || !sig || !request ||
       !(Math.abs(Date.now() - Number(time)) < 60_000)) return null;
   const key = await badgeKey(keyId);
   if (!key) return null;
   const signed = ['badge-ws-v1', host, app, badge, user, time, request].join('\n');
   const raw = Uint8Array.from(atob(sig.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
   if (!(await crypto.subtle.verify('Ed25519', key, raw, new TextEncoder().encode(signed)))) return null;
-  seen.set(request, Number(time));
+  if (!once(request, Number(time))) return null; // a ticket used already
   return { badge, user };
 }
 
@@ -1249,8 +1266,10 @@ local function connect()
     if event == "open" then
       add("Connected")
     elseif event == "message" then
-      local m = json.decode(data)
-      if m then add(m.from .. ": " .. m.text) end
+      local m = json.decode(data)              -- check what arrives: it may not be what you expect
+      if type(m) == "table" and type(m.from) == "string" and type(m.text) == "string" then
+        add(m.from .. ": " .. m.text)
+      end
     else
       add("Closed: " .. data)
       timer.after(5000, connect)               -- and again in 5 s
@@ -1583,6 +1602,12 @@ const RPC = 'https://api.devnet.solana.com';
 const PROGRAMS = new Set(['11111111111111111111111111111111', 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr']);
 const pending = new Map<string, { message: Uint8Array; badge: string; at: number }>();
 
+/** A badge's transaction while it's under 5 minutes old, else undefined. Drops the old ones. */
+function live(id: string) {
+  for (const [k, p] of pending) if (Date.now() - p.at > 300_000) pending.delete(k);
+  return pending.get(id);
+}
+
 /** A legacy message with the wallet as its one signer, calling only PROGRAMS; else null. */
 function read(m: Uint8Array) {
   let i = 0;
@@ -1611,13 +1636,19 @@ function read(m: Uint8Array) {
   }
 }
 
-async function latestBlockhash() {
-  const res = await fetch(RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'confirmed' }] }),
-  });
-  return bs58.decode((await res.json()).result.value.blockhash);
+/** 32 bytes, or null when the node is down or says no (the wallet can ask again). */
+async function latestBlockhash(): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'confirmed' }] }),
+    });
+    const hash = bs58.decode(String((await res.json()).result.value.blockhash));
+    return hash.length === 32 ? hash : null;
+  } catch {
+    return null;
+  }
 }
 
 Bun.serve({
@@ -1636,7 +1667,7 @@ Bun.serve({
         if (message.length > 1100 || message.length * 2 !== hex.length || !read(message)) {
           return Response.json({ error: 'not a transaction this server serves' }, { status: 400 });
         }
-        for (const [id, p] of pending) if (Date.now() - p.at > 300_000) pending.delete(id);
+        live(''); // drops the expired ones
         const id = Buffer.from(crypto.getRandomValues(new Uint8Array(9))).toString('base64url');
         pending.set(id, { message, badge: from.badge, at: Date.now() });
         return Response.json({ url: `solana:${ORIGIN}/tx/${id}` });
@@ -1645,25 +1676,27 @@ Bun.serve({
     // The wallet (Solana Pay): first who's asking, then the transaction for its account.
     '/tx/:id': {
       GET: (req) =>
-        pending.has(req.params.id)
+        live(req.params.id)
           ? Response.json({ label: 'Badge payment', icon: `${ORIGIN}/icon.png` })
           : Response.json({ error: 'expired' }, { status: 404 }),
       POST: async (req) => {
-        const p = pending.get(req.params.id);
-        if (!p) return Response.json({ error: 'expired' }, { status: 404 });
         let wallet: Uint8Array;
         try {
           wallet = bs58.decode(String((await req.json()).account));
         } catch {
           wallet = new Uint8Array();
         }
+        const p = live(req.params.id); // after the body: it may have expired meanwhile
+        if (!p) return Response.json({ error: 'expired' }, { status: 404 });
         const m = p.message.slice(); // a copy: the wallet may ask again
         const { keys, blockhash } = read(m)!;
         if (wallet.length !== 32 || keys.some((k) => Buffer.compare(k, wallet) === 0)) {
           return Response.json({ error: 'this wallet cannot pay this' }, { status: 400 });
         }
         keys[0].set(wallet); // the wallet signs and pays the fee
-        m.set(await latestBlockhash(), blockhash);
+        const hash = await latestBlockhash();
+        if (!hash) return Response.json({ error: 'the network is busy: try again' }, { status: 503 });
+        m.set(hash, blockhash);
         const tx = new Uint8Array(1 + 64 + m.length); // 1 signature, still empty, then the message
         tx[0] = 1;
         tx.set(m, 65);
