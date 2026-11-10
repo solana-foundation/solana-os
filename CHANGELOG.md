@@ -72,6 +72,18 @@ site changes that came with them live in the parent repository.
   `mesh.pause()` Wi-Fi rejoined the same network on 149, so `mesh.info()` read `online =
   true` on 5 GHz. Beacon firmware 0.4.0 follows a 5 GHz channel on the ESP32-C5 and says
   why it can't on the other chips (built, not run on a beacon).
+- Review fixes (Greptile on solana-os#11). Bluetooth: a subscription now outlives the
+  lookup caches (its handles live in a table of their own, 8 a link; on a badge the
+  pushes stopped after the ninth characteristic looked up, and now keep coming through 25
+  lookups until the unsubscribe); `ble.notify` asks the radio instead of a flag that a
+  dropped `"subscribe"` event left false; callbacks owed by callbacks wait for the next
+  round, so a reconnect in a `"busy"` callback can't starve keys and timers (`tests/t-ble-busy`);
+  the emulator stops a connectable advertisement when it connects out and drops what
+  peers send past 8 waiting events, as the badge does. The example server (`wifi-room`)
+  and the server snippets in `docs/LUA_API.md`: a request or ticket is claimed once, in
+  one step after its signature is checked; requests that arrive during the first key
+  fetch share it; a batch of cheers has an id, is sent at most 1,000 at a time, and counts
+  once however often it is resent.
 - **`mesh.info()`**: `{channel, band, online, paused}`. `online` is true when Wi-Fi is
   joined on the mesh channel, so the app is on the mesh and the server at once and never
   pauses Wi-Fi; `paused` between `mesh.pause()` and `mesh.resume()`.

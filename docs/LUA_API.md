@@ -747,7 +747,9 @@ link closes).
   lower case). A device that refuses just never pushes: there is no answer to wait for.
 
 Each returns `true` when it was queued, or `nil` and `"not open"` or `"busy"` (4 already
-wait for their answer). The answers' reasons: `"no such characteristic"`, `"not allowed"`
+wait for their answer, or a subscribe when 8 characteristics are subscribed on the link).
+A subscription lasts until you unsubscribe or the link closes, whatever else the app
+reads or writes meanwhile. The answers' reasons: `"no such characteristic"`, `"not allowed"`
 (the device refused), `"timeout"`, `"lost"` (the link ended first). The first use of a
 characteristic looks it up on the device, which takes a few tenths of a second.
 
