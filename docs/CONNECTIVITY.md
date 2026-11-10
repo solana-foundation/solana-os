@@ -114,7 +114,7 @@ to know.
 - **Use:** Bluetooth, `ble.serve` (the phone connects; a Nordic UART layout works with
   common phone apps). Or a QR code (`ui.qr`) to a page on your server, which both sides
   reach.
-- **Memory:** about 26 KB for Bluetooth; a QR code is one UI object.
+- **Memory:** about 30 KB while Bluetooth is on; a QR code is one UI object.
 - **Know:** the phone needs an app that speaks Bluetooth LE. Phones change their Bluetooth
   address every few minutes: find them by service, not by address. To sign a transaction,
   use a phone wallet ([Build on the badge, sign on a phone](LUA_API.md#build-on-the-badge-sign-on-a-phone)).
