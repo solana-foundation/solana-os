@@ -114,6 +114,23 @@ static void *lh_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
         s->mem_hit = true;
         return NULL;    // Lua collects garbage and retries, then fails with "not enough memory"
     }
+    if (nsize > old) {
+        // The badge's own share: no growth that would leave the system heap
+        // below LUA_HOST_SYS_RESERVE (the OS task, mesh and cloud allocate
+        // while an app runs). Lua collects garbage and retries; if that's not
+        // enough the app stops with "The badge is low on memory". Checked once
+        // per KB of growth while there is room (the emulator's free-size call
+        // walks its heap), and at every growth once a check has failed: the
+        // counter only resets when one passes, so the retry and the small
+        // allocations after a refusal can't slip under the reserve.
+        s->grown += nsize - old;
+        if (s->grown >= 1024) {
+            if (heap_caps_get_free_size(MALLOC_CAP_DEFAULT) < LUA_HOST_SYS_RESERVE + (nsize - old)) {
+                return NULL;
+            }
+            s->grown = 0;
+        }
+    }
     void *p = realloc(ptr, nsize);
     if (p) {
         s->mem = s->mem - old + nsize;

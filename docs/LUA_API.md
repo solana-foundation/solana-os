@@ -119,7 +119,7 @@ HOME always returns to the launcher. The screen below the status bar is
 
 | | |
 |---|---|
-| Memory | 48 KB of Lua heap (the app is stopped with "Out of memory" beyond that). A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
+| Memory | 96 KB of Lua heap (badges below Solana OS 0.5.13: 48 KB). Past it the app stops with "Out of memory: the app needs more than 96 KB". The badge also keeps 32 KB of its own heap free, and the app's other memory (its 12 KB task stack, its UI objects) counts against that, so an app with many objects, or on a badge that is busy, can be stopped earlier with "The badge is low on memory": with Wi-Fi joined, around 80 KB of Lua heap for an app with 60 labels, the full 96 KB for one with a few. Plan for 64 KB, and keep big images and tables for when you need them. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
 | UI objects | 64 at a time, one of them a QR code |
 | Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
@@ -384,7 +384,7 @@ one stops the app like any other error; wrap it in `pcall` to handle it. A missi
 file is an error for `fs.lines` too, while `fs.read`, `fs.json` and `fs.load` return
 `nil` and a message. A bad path, or asking for more than 16 KB at once, is an error.
 
-Everything you read lands in the app's 48 KB heap, so keep only what you use: read
+Everything you read lands in the app's 96 KB heap, so keep only what you use: read
 big files in pieces (offsets or `fs.lines`), and load data when the app needs it.
 `require` keeps a module until the app exits. For code you need only for a while (a
 level, a scene), use `fs.load` and drop the function and what it returned once you're
@@ -1313,7 +1313,7 @@ Bun.serve({
 - **Scan in the wallet app**, with its own scan button. A phone's camera app may not
   open `solana:` links, or may open them in whichever wallet was installed first.
 - **Memory:** while it waits, the example holds about 25 KB of Lua heap. Compiled on
-  the badge (Run on badge) it peaks at 36 KB of the 48 KB; installed from the store it
+  the badge (Run on badge) it peaks at 36 KB of the 96 KB; installed from the store it
   runs from flash and needs less.
 - The message travels as hex, which keeps the Lua short: messages up to about 1,000
   bytes fit in `http`'s 2 KB. A transfer is limited to 2,147,483,647 lamports, because

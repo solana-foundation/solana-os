@@ -90,7 +90,7 @@ esp_err_t bsp_buttons_start(bsp_btn_cb_t cb)
     ESP_RETURN_ON_ERROR(gpio_isr_handler_add(BOARD_TCA9534_INT, tca_isr, NULL), TAG, "isr");
 
     s_pressed = read_buttons();
-    xTaskCreate(button_task, "buttons", 3072, NULL, 5, NULL);
+    xTaskCreate(button_task, "buttons", 2048, NULL, 5, NULL);    // an I2C read and a callback: ~600 B used
     return ESP_OK;
 }
 

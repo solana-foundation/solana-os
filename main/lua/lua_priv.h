@@ -121,6 +121,7 @@ typedef struct lh {
 
     // Limits
     size_t mem, mem_peak;
+    size_t grown;               // growth since the last system-heap check (lh_alloc)
     bool mem_hit;               // the allocator refused to go over the cap
     uint32_t steps, steps_peak;
     bool killed;                // over the instruction budget

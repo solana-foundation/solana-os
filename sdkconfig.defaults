@@ -17,7 +17,7 @@ CONFIG_SOLANA_OS_SERVER_URL="https://badge-api.solana.com"
 
 # App metadata shown in About / info
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="0.5.12"
+CONFIG_APP_PROJECT_VER="0.5.14"
 
 # Over-the-air updates (core/os_ota.c): a new build boots on trial and the
 # bootloader goes back to the previous slot unless it confirms itself. This
@@ -43,6 +43,30 @@ CONFIG_LWIP_TCP_WND_DEFAULT=2880
 
 # Wi-Fi: keep buffers modest
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+
+# RAM (0.5.13): IRAM and DRAM share the one SRAM, so code kept out of IRAM is
+# heap. The ROM's esp_flash driver instead of ESP-IDF's (~9 KB; the ROM lacks
+# only auto-suspend, unused here), and the SPI master ISR, the ring buffer's
+# ISR functions (the UART ISR, their only user, is in flash as well), heap_caps,
+# the libc locks and the I2C ISR in flash. None of it runs while the cache is
+# off: an LCD flush or a button read that lands on a flash write finishes a
+# few ms later.
+CONFIG_SPI_FLASH_ROM_IMPL=y
+CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_LIBC_LOCKS_PLACE_IN_IRAM=n
+CONFIG_I2C_MASTER_ISR_HANDLER_IN_IRAM=n
+# Nothing makes a FreeRTOS software timer (esp_timer does that work).
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=1536
+# lwIP: the badge speaks IPv4 to one server (os_ws resolves AF_INET only), has
+# no soft-AP, needs no loopback and never holds more than one socket; a closed
+# connection's TIME_WAIT lasts 10 s instead of 2 min.
+CONFIG_LWIP_IPV6=n
+CONFIG_LWIP_DHCPS=n
+CONFIG_LWIP_MAX_SOCKETS=4
+CONFIG_LWIP_NETIF_LOOPBACK=n
+CONFIG_LWIP_TCP_MSL=5000
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
@@ -80,6 +104,10 @@ CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
 # GlobalSign Root CA, which ESP-IDF 6's bundle no longer has: verify the chain
 # through the bundle's own GTS Root R1 instead (~700 B of heap).
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+# The handshake's TX buffer is this big; the client's largest message is a
+# ClientHello under 1 KB. Application data is written per record, and
+# esp_http_client and os_ws both loop on partial writes.
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
 
 # Mesh messages are untrusted JSON and cJSON parses recursively (~80 B of
 # stack per level): cap the depth so a crafted frame can't overflow a task.

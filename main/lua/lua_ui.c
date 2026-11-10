@@ -156,7 +156,7 @@ static void free_obj(lua_State *L, lh_t *s, lh_obj_t *o)
     o->gen++;
 }
 
-// LVGL copies label text onto the system heap, outside the script's 48 KB,
+// LVGL copies label text onto the system heap, outside the script's 96 KB,
 // so each label holds at most LH_TEXT_MAX bytes (cut at a character, with
 // "...") and all of them together LH_TEXT_TOTAL.
 static void clip_text(char out[LH_TEXT_MAX + 1], const char *in)

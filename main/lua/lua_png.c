@@ -1,6 +1,6 @@
 // PNG -> RGB565 for Lua apps' images (lua_png.h). Inflate follows RFC 1951
 // the way tinf does (canonical Huffman decoding one bit at a time): small and
-// plenty fast for pictures that fit an app's 48 KB.
+// plenty fast for pictures that fit an app's 96 KB.
 
 #include <stdlib.h>
 #include <string.h>
