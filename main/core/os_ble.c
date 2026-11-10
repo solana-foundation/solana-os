@@ -12,7 +12,10 @@
 // it tears the stack down. GATT client work runs on the host task as well
 // (kicked through an npl event), one procedure at a time: the MTU exchange,
 // then for each operation the service and characteristic lookups it still
-// needs, then the read, write or subscribe itself.
+// needs, then the read, write or subscribe itself. The lookups are a cache
+// (forgotten when it fills); a characteristic the app subscribed to is kept
+// apart from it, with its value and CCCD handles, so its pushes keep arriving
+// and its unsubscribe finds its CCCD whatever the app looks up meanwhile.
 //
 // Everything from the air is hostile: lengths are clamped before copying,
 // names become printable ASCII, and what a peer sends is queued only while
@@ -47,6 +50,7 @@ static const char *TAG = "ble";
 #define DEVS        8                       // devices a scan remembers (to merge scan responses, report once a second)
 #define SVC_CACHE   4
 #define CHR_CACHE   8
+#define SUBS        8                       // characteristics subscribed on the central link (os_ble_subscribe: ESP_ERR_NO_MEM past it)
 #define OPQ         (OS_BLE_OPS_MAX + 4)    // + writes without response
 #define SYNC_MS     2000
 #define CONNECT_MS  10000
@@ -61,6 +65,8 @@ typedef struct {
     uint32_t id;                    // 0: a write without response (no DONE)
     uint8_t kind;
     bool on;
+    uint16_t val, cccd;             // OP_SUB: the handles it was sent with, for subs[]
+    uint8_t props;
     uint8_t *data;
     uint16_t len;
 } op_t;
@@ -78,6 +84,15 @@ typedef struct {
     uint8_t props;
     bool missing, cccd_known;
 } chr_c_t;
+
+// A characteristic subscribed on the central link: added when the peer
+// accepts the CCCD write, removed when it accepts the unsubscribe, cleared
+// with the link. Not part of the lookup caches, so nothing resets it.
+typedef struct {
+    os_ble_uuid_t svc, chr;
+    uint16_t val, cccd;
+    uint8_t props;
+} sub_t;
 
 typedef struct {
     bool used, scannable, connectable;
@@ -136,6 +151,8 @@ typedef struct {
     svc_c_t svcc[SVC_CACHE];
     chr_c_t chrc[CHR_CACHE];
     uint8_t n_svcc, n_chrc;
+    sub_t subs[SUBS];
+    uint8_t n_subs;
     op_t ops[OPQ];
     uint8_t n_ops;
     bool busy;                      // a GATT procedure is out
@@ -299,7 +316,7 @@ static void fail_ops(const char *reason)
     }
     S->n_ops = 0;
     S->busy = false;
-    S->n_svcc = S->n_chrc = 0;
+    S->n_svcc = S->n_chrc = S->n_subs = 0;
 }
 
 // The link ended (under lock): answers first, then CLOSE.
@@ -902,12 +919,46 @@ static void kick(void)
     }
 }
 
+// Under lock: the subscription to svc/chr, or -1.
+static int sub_find(const os_ble_uuid_t *svc, const os_ble_uuid_t *chr)
+{
+    for (int i = 0; i < S->n_subs; i++) {
+        if (uuid_eq(&S->subs[i].svc, svc) && uuid_eq(&S->subs[i].chr, chr)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Under lock: a subscribe the peer accepted; queue_op kept room for it.
+static void sub_update(const op_t *op)
+{
+    int i = sub_find(&op->svc, &op->chr);
+    if (!op->on) {
+        if (i >= 0) {
+            S->n_subs--;
+            memmove(&S->subs[i], &S->subs[i + 1], (S->n_subs - i) * sizeof(sub_t));
+        }
+        return;
+    }
+    if (i < 0) {
+        if (S->n_subs == SUBS) {
+            return;
+        }
+        i = S->n_subs++;
+    }
+    S->subs[i] = (sub_t){.svc = op->svc, .chr = op->chr, .val = op->val, .cccd = op->cccd, .props = op->props};
+}
+
 // Under lock: the head operation is answered.
 static bool op_done(bool ok, const char *reason, uint8_t *data, size_t len)
 {
     bool w = false;
     if (S->n_ops) {
         op_t *op = &S->ops[0];
+        if (ok && op->kind == OP_SUB) {
+            sub_update(op);
+        }
         if (op->id) {
             os_ble_ev_t e = {.kind = OS_BLE_EV_DONE, .op = op->id, .ok = ok, .reason = ok ? NULL : reason,
                              .chr = op->chr, .data = data, .len = len};
@@ -1082,6 +1133,15 @@ static void kick_fn(struct ble_npl_event *ev)
     void *gen = (void *)(uintptr_t)S->link_gen;
     uint16_t conn = S->conn;
     int rc = 0, si = -1, ci = -1;
+    uint16_t val, cccd;
+    uint8_t props;
+    int ui = sub_find(&op->svc, &op->chr);
+    if (ui >= 0) {          // subscribed: its handles are known, whatever the caches forgot
+        val = S->subs[ui].val;
+        cccd = S->subs[ui].cccd;
+        props = S->subs[ui].props;
+        goto send;
+    }
     for (int i = 0; i < S->n_svcc; i++) {
         if (uuid_eq(&S->svcc[i].uuid, &op->svc)) {
             si = i;
@@ -1137,26 +1197,30 @@ static void kick_fn(struct ble_npl_event *ev)
     }
     chr_c_t *c = &S->chrc[ci];
     if (op->kind == OP_SUB && !c->cccd_known) {
-        uint16_t val = c->val, end = S->svcc[si].end;
-        if (val >= end) {
+        uint16_t end = S->svcc[si].end;
+        if (c->val >= end) {
             c->cccd_known = true;           // nothing after the value: no CCCD
         } else {
             S->busy = true;
             unlock();
             // NimBLE takes the value's handle and looks after it.
-            rc = ble_gattc_disc_all_dscs(conn, val, end, dsc_cb, gen);
+            rc = ble_gattc_disc_all_dscs(conn, c->val, end, dsc_cb, gen);
             goto started;
         }
     }
+    val = c->val;
+    cccd = c->cccd;
+    props = c->props;
+send:;
     // The operation itself. Its data is the op's; copied out before unlocking.
     uint8_t kind = op->kind, buf[OS_BLE_DATA_MAX];
-    uint16_t len = op->len, handle = c->val;
+    uint16_t len = op->len, handle = val;
     if (len) {
         memcpy(buf, op->data, len);
     }
     if (kind == OP_SUB) {
-        uint16_t v = !op->on ? 0 : (c->props & BLE_GATT_CHR_PROP_NOTIFY) ? 1 : (c->props & BLE_GATT_CHR_PROP_INDICATE) ? 2 : 0xffff;
-        if (!c->cccd || v == 0xffff) {
+        uint16_t v = !op->on ? 0 : (props & BLE_GATT_CHR_PROP_NOTIFY) ? 1 : (props & BLE_GATT_CHR_PROP_INDICATE) ? 2 : 0xffff;
+        if (!cccd || v == 0xffff) {
             w = op_done(false, "not allowed", NULL, 0);
             kick();
             unlock();
@@ -1165,7 +1229,10 @@ static void kick_fn(struct ble_npl_event *ev)
         buf[0] = v & 0xff;
         buf[1] = v >> 8;
         len = 2;
-        handle = c->cccd;
+        handle = cccd;
+        op->val = val;              // for subs[] once the peer accepts it
+        op->cccd = cccd;
+        op->props = props;
     }
     S->busy = true;
     unlock();
@@ -1226,9 +1293,33 @@ static esp_err_t queue_op(void *ctx, op_kind_t kind, const os_ble_uuid_t *svc, c
     for (int i = 0; i < S->count; i++) {
         waiting += S->ring[(S->head + i) % RING].kind == OS_BLE_EV_DONE;
     }
+    // A subscribe to a characteristic not yet subscribed needs a slot in
+    // subs[]: counted with the other new ones still queued, so every one the
+    // peer accepts finds its slot.
+    bool no_sub = false;
+    if (kind == OP_SUB && on && S->link == LINK_OPEN && sub_find(svc, chr) < 0) {
+        int need = S->n_subs + 1;
+        for (int i = 0; i < S->n_ops; i++) {
+            const op_t *q = &S->ops[i];
+            if (q->kind != OP_SUB || !q->on || sub_find(&q->svc, &q->chr) >= 0) {
+                continue;
+            }
+            if (uuid_eq(&q->svc, svc) && uuid_eq(&q->chr, chr)) {
+                need = 0;           // already on its way: same slot
+                break;
+            }
+            bool first = true;      // count each characteristic once
+            for (int k = 0; k < i && first; k++) {
+                first = !(S->ops[k].kind == OP_SUB && S->ops[k].on && uuid_eq(&S->ops[k].svc, &q->svc) &&
+                          uuid_eq(&S->ops[k].chr, &q->chr));
+            }
+            need += first;
+        }
+        no_sub = need > SUBS;
+    }
     if (S->link != LINK_OPEN || !S->central) {
         err = ESP_ERR_INVALID_STATE;
-    } else if (kind == OP_WRITE_NR ? nr >= OPQ - OS_BLE_OPS_MAX : waiting >= OS_BLE_OPS_MAX) {
+    } else if (kind == OP_WRITE_NR ? nr >= OPQ - OS_BLE_OPS_MAX : waiting >= OS_BLE_OPS_MAX || no_sub) {
         err = ESP_ERR_NO_MEM;
     } else {
         op_t *o = &S->ops[S->n_ops];
@@ -1388,7 +1479,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                 S->conn = ev->connect.conn_handle;
                 S->link_gen++;
                 S->busy = true;     // the MTU exchange goes first
-                S->n_svcc = S->n_chrc = 0;
+                S->n_svcc = S->n_chrc = S->n_subs = 0;
                 mtu = true;
                 conn = S->conn;
                 gen = S->link_gen;
@@ -1428,28 +1519,35 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         break;
     case BLE_GAP_EVENT_NOTIFY_RX:
         if (S->link == LINK_OPEN && S->central && ev->notify_rx.conn_handle == S->conn &&
-            S->count < OS_BLE_EVENTS_MAX) {
-            for (int i = 0; i < S->n_chrc; i++) {
-                if (S->chrc[i].val && S->chrc[i].val == ev->notify_rx.attr_handle) {
-                    size_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
-                    len = len > OS_BLE_DATA_MAX ? OS_BLE_DATA_MAX : len;
-                    os_ble_ev_t e = {.kind = OS_BLE_EV_NOTIFY, .chr = S->chrc[i].uuid, .len = len};
-                    e.data = len ? malloc(len) : NULL;
-                    if (len && !e.data) {
-                        break;
-                    }
+            S->count < OS_BLE_EVENTS_MAX && ev->notify_rx.attr_handle) {
+            // Subscribed ones first (kept apart from the caches), then any
+            // other characteristic still in the cache.
+            uint16_t h = ev->notify_rx.attr_handle;
+            const os_ble_uuid_t *chr = NULL;
+            for (int i = 0; i < S->n_subs && !chr; i++) {
+                chr = S->subs[i].val == h ? &S->subs[i].chr : NULL;
+            }
+            for (int i = 0; i < S->n_chrc && !chr; i++) {
+                chr = S->chrc[i].val == h ? &S->chrc[i].uuid : NULL;
+            }
+            if (chr) {
+                size_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
+                len = len > OS_BLE_DATA_MAX ? OS_BLE_DATA_MAX : len;
+                os_ble_ev_t e = {.kind = OS_BLE_EV_NOTIFY, .chr = *chr, .len = len};
+                e.data = len ? malloc(len) : NULL;
+                if (!len || e.data) {
                     if (len) {
                         os_mbuf_copydata(ev->notify_rx.om, 0, len, e.data);
                     }
                     w = push(&e);
-                    break;
                 }
             }
         }
         break;
     case BLE_GAP_EVENT_SUBSCRIBE: {
         int i = chr_index(ev->subscribe.attr_handle);
-        if (i >= 0 && S->link == LINK_OPEN && !S->central && ev->subscribe.reason != BLE_GAP_SUBSCRIBE_REASON_TERM) {
+        if (i >= 0 && S->link == LINK_OPEN && !S->central && ev->subscribe.conn_handle == S->conn &&
+            ev->subscribe.reason != BLE_GAP_SUBSCRIBE_REASON_TERM) {
             bool on = ev->subscribe.cur_notify || ev->subscribe.cur_indicate;
             if (on != S->subscribed[i]) {
                 S->subscribed[i] = on;

@@ -181,9 +181,13 @@ esp_err_t os_ble_connect(void *ctx, const os_ble_addr_t *addr);
 // Each queues one operation on the link we opened and returns its id in *op;
 // OS_BLE_EV_DONE with that id follows (a write without response has none, and
 // *op is 0). The service and characteristic are looked up on first use and
-// remembered for the link. ESP_ERR_INVALID_STATE: no open central link,
+// remembered for the link (a few of each; the oldest are looked up again).
+// A subscription the peer accepted lasts until it accepts the unsubscribe or
+// the link ends: its notifications arrive whatever else is looked up
+// meanwhile. ESP_ERR_INVALID_STATE: no open central link,
 // ESP_ERR_INVALID_SIZE: over OS_BLE_DATA_MAX, ESP_ERR_NO_MEM: OS_BLE_OPS_MAX
-// already wait.
+// already wait, or (subscribe) 8 characteristics are already subscribed or
+// being subscribed.
 esp_err_t os_ble_read(void *ctx, const os_ble_uuid_t *service, const os_ble_uuid_t *chr, uint32_t *op);
 esp_err_t os_ble_write(void *ctx, const os_ble_uuid_t *service, const os_ble_uuid_t *chr, const uint8_t *data,
                        size_t len, bool response, uint32_t *op);
