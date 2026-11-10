@@ -1,0 +1,12 @@
+{
+  "id": "cheer-mesh",
+  "name": "Cheer",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Cheer with the badges around you over the mesh; your count syncs to a server.",
+  "icon": "heart",
+  "accent": "EB54BC",
+  "category": "social",
+  "permissions": ["mesh", "http", "led"],
+  "hosts": ["cheer.example.com"]
+}

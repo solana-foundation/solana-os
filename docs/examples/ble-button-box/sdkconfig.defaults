@@ -1,0 +1,14 @@
+# Bluetooth LE through NimBLE, nothing else: no Classic Bluetooth, no pairing.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+# The original ESP32 also has Classic Bluetooth: use its controller for LE only.
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=n
+CONFIG_BTDM_CTRL_MODE_BTDM=n
+# One badge at a time, as the badge holds one link.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# The badge doesn't pair, so the box doesn't either.
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+# Plain (legacy) advertising: what every scanner, the badge included, reads.
+CONFIG_BT_NIMBLE_EXT_ADV=n

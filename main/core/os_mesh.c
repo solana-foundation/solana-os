@@ -442,12 +442,32 @@ int os_mesh_channel(void)
     return s_channel;
 }
 
-void os_mesh_set_channel(int channel)
+bool os_mesh_channel_ok(int channel)
 {
+    switch (channel) {
+    case 36: case 40: case 44: case 48:
+    case 149: case 153: case 157: case 161: case 165:
+        return true;
+    default:
+        return channel >= 1 && channel <= 13;
+    }
+}
+
+const char *os_mesh_band(int channel)
+{
+    return channel > 14 ? "5" : "2.4";
+}
+
+bool os_mesh_set_channel(int channel)
+{
+    if (channel && !os_mesh_channel_ok(channel)) {
+        return false;
+    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_override = channel > 0 ? channel : 0;
     xSemaphoreGive(s_lock);
     ESP_LOGI(TAG, "mesh channel %s %d", channel > 0 ? "set to" : "back to the server's,", channel > 0 ? channel : s_server_ch);
+    return true;
 }
 
 int os_mesh_server_channel(void)
@@ -1338,8 +1358,8 @@ static void print_status(void)
 {
     os_wifi_info_t w;
     os_wifi_get_info(&w);
-    printf("mesh: id %s  channel %d (radio on %d)  %s%s  key %s  acquired %d%s\n", s_id[0] ? s_id : "-", s_channel,
-           os_radio_channel(), os_mesh_ready() ? "ready" : on_channel() ? "on channel" : "off channel",
+    printf("mesh: id %s  channel %d, %s GHz (radio on %d)  %s%s  key %s  acquired %d%s\n", s_id[0] ? s_id : "-",
+           s_channel, os_mesh_band(s_channel), os_radio_channel(), os_mesh_ready() ? "ready" : on_channel() ? "on channel" : "off channel",
            paused() ? " (paused: radio lent out)" : "", s_has_key ? "yes" : "no", s_acquired,
            s_took_wifi ? " (Wi-Fi suspended by mesh)" : "");
     if (s_override) {
@@ -1445,7 +1465,13 @@ static int cmd_mesh(int argc, char **argv)
     } else if (!strcmp(sub, "send") && argc >= 5) {
         return cmd_send(argc, argv);
     } else if (!strcmp(sub, "channel") && argc == 3) {
-        os_mesh_set_channel(strcmp(argv[2], "auto") ? atoi(argv[2]) : 0);
+        bool autom = !strcmp(argv[2], "auto");
+        int ch = autom ? 0 : atoi(argv[2]);
+        if ((!autom && !ch) || !os_mesh_set_channel(ch)) {
+            printf("mesh: %s is not a mesh channel%s. Use 1-13, 36, 40, 44, 48, 149, 153, 157, 161, 165 or auto\n",
+                   argv[2], ch >= 52 && ch <= 144 ? " (a radar channel)" : "");
+            return 1;
+        }
     } else if (!strcmp(sub, "acquire")) {
         os_mesh_acquire();
     } else if (!strcmp(sub, "release")) {

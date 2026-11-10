@@ -1,0 +1,12 @@
+{
+  "id": "cheer-room",
+  "name": "Cheer Room",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Cheer with everyone in a room through your own server, over Wi-Fi only.",
+  "icon": "heart",
+  "accent": "EB54BC",
+  "category": "social",
+  "permissions": ["http"],
+  "hosts": ["cheer.example.com"]
+}

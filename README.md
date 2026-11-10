@@ -1,9 +1,9 @@
 # Solana OS
 
 Firmware for the Solana Breakpoint 2026 conference badge (ESP32-C5, ILI9341
-320x240, microSD, 6 buttons, 8 WS2812s): an app launcher, Wi-Fi, an ESP-NOW
-badge-to-badge mesh, the *Hitchhiker's Guide to Solana* game apps and a
-sandboxed Lua 5.5 app host. The same sources also build to WebAssembly for a
+320x240, microSD, 6 buttons, 8 WS2812s): an app launcher, Wi-Fi (2.4 and 5 GHz), an
+ESP-NOW badge-to-badge mesh, Bluetooth LE for apps, the *Hitchhiker's Guide to Solana*
+game apps and a sandboxed Lua 5.5 app host. The same sources also build to WebAssembly for a
 browser emulator (`emulator/`) and for the store's Lua compiler (`tools/luac/`).
 
 Stack: ESP-IDF v6.0.1, C, LVGL 9, Lua 5.5. What changed in each release: [CHANGELOG.md](CHANGELOG.md).
@@ -11,8 +11,11 @@ Stack: ESP-IDF v6.0.1, C, LVGL 9, Lua 5.5. What changed in each release: [CHANGE
 ## Lua apps and memory
 
 The badge has no PSRAM, so a Lua app (96 KB of heap since 0.5.13, 48 KB before)
-shares the free heap with Wi-Fi, TLS and the mesh: ~156 KB at the launcher on
-0.5.13, ~116 KB before (CHANGELOG.md says where it came from). Since 0.5.0:
+shares the free heap with Wi-Fi, TLS, the mesh and Bluetooth: ~156 KB at the launcher on
+0.5.13, ~116 KB before (CHANGELOG.md says where it came from). Bluetooth (1.0.0) costs
+about 4 KB in the build and about 30 KB more while an app has it on, so it is off until
+an app calls `ble.on()`. Which radio an app should use for what, and how to plan its
+memory: [docs/CONNECTIVITY.md](docs/CONNECTIVITY.md). Since 0.5.0:
 
 - Store apps arrive compiled: the App Store compiles them with this firmware's
   own Lua (`tools/luac/`, the same `main/lua/vendor/` built to wasm) and the
@@ -47,7 +50,7 @@ idf.py -p /dev/cu.usbserial-110 -b 460800 flash
 | Path | What |
 |---|---|
 | `components/bsp/` | Board drivers: display, microSD, buttons, RGB LEDs, battery |
-| `main/core/` | The OS: app manager, Wi-Fi, mesh, server link, OTA, UI kit |
+| `main/core/` | The OS: app manager, Wi-Fi, mesh, Bluetooth (`os_ble`), server link, OTA, UI kit |
 | `main/apps/` | Built-in apps (one folder each, registered in `apps/registry.c`) |
 | `main/game/` | Game services (X Dex, trades, quests) |
 | `main/lua/` | Lua host and the vendored Lua 5.5.1 (patches listed in `vendor/LICENSE`) |
@@ -60,7 +63,9 @@ This repo is a git submodule (at `firmware/`) of solana-bp26-badges, Solana
 Foundation's private repo for the server, website, beacon firmware and the
 protocol contracts (`docs/MESH.md`, `server/API.md`). The Lua app API (`docs/LUA_API.md`) lives
 here, next to the host that implements it; the site renders it at `/apps/docs`.
-So does the quest-building guide (`docs/QUESTS.md`, at `/apps/docs/quests`).
+So do the quest-building guide (`docs/QUESTS.md`, at `/apps/docs/quests`) and
+the connectivity guide with its examples (`docs/CONNECTIVITY.md`, `docs/examples/`, at
+`/apps/docs/connectivity`).
 A few tools assume that
 layout: `tools/export_web.ts` / `tools/build_web.sh`, `tools/gen_assets.sh`
 (brand fonts) and the emulator build (writes to `../web/static/emulator`).

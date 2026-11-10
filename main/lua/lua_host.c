@@ -234,6 +234,7 @@ static void close_state(lh_t *s)
     if (s->L) {
         s->ui_off = true;
         lh_callback(s, run_on_exit, NULL);
+        lh_ble_stop(s);                     // its callbacks go with the state
         lh_storage_flush(s, true);
         s->steps = 0;
         lua_close(s->L);
@@ -281,6 +282,7 @@ static void fail(lh_t *s, int rc, const char *msg_in)
     s->failed = true;
     lh_mesh_mute();
     lh_ws_stop(s);                          // give the badge its server connection back now
+    lh_ble_stop(s);                         // and its Bluetooth heap
     show_error(s, title, msg);
     s->killed = false;
     lua_sethook(L, step_hook, LUA_MASKCOUNT, LH_HOOK_EVERY);
@@ -440,6 +442,7 @@ static int boot(lua_State *L)
     lh_open_json(L);
     lh_open_net(L);
     lh_open_ws(L);
+    lh_open_ble(L);
     lh_open_fs(L);
     lh_storage_load(s);
 
@@ -529,6 +532,7 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
     }
     lh_calls_run(s);
     lh_ws_run(s);
+    lh_ble_run(s);
     if (s->L && !s->failed) {
         lh_meet_run(s);
     }
@@ -741,6 +745,7 @@ static void host_enter(lv_obj_t *root)
     s->t0 = lh_now();
     s->area = area;
     s->modal_ref = s->store_ref = LUA_NOREF;
+    lh_ble_init(s);
     s->loading = ui_label(area, &sol_font_14, COL_DIM, "Starting...");
     lv_obj_center(s->loading);
     s->heap_before = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
@@ -777,6 +782,7 @@ static void host_exit(void)
     xQueueSendToFront(s_q, &ev, pdMS_TO_TICKS(50));
     bool done = s->finished || xSemaphoreTake(s_done, pdMS_TO_TICKS(LH_EXIT_WAIT_MS)) == pdTRUE;
     lh_net_stop(s);
+    lh_ble_stop(s);
     lh_ui_release(s);
     xSemaphoreTake(lh_mx, portMAX_DELAY);
     lh_cur = NULL;

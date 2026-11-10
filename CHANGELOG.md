@@ -6,6 +6,87 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 1.0.0 (2026-11-10)
+
+- **Bluetooth LE for Lua apps** (`ble`, permission `ble`; `docs/LUA_API.md` "ble"). An app
+  can advertise a few bytes (≤ 24, 20 with a 16-bit service, 6 with a 128-bit one), scan
+  for devices, connect to one (`ble.connect`: read, write, subscribe) or serve one service
+  of up to 4 characteristics that a phone, a gadget or another badge connects to
+  (`ble.serve`). One link at a time, either way round, ≤ 244 bytes a value, no pairing and
+  no encryption. It reaches what the mesh can't: a gadget built on any ESP32, a phone, a
+  laptop, or another badge while both stay on Wi-Fi. Bluetooth has its own channels, so
+  it works on either Wi-Fi band and next to the mesh. `main/core/os_ble.*` (NimBLE,
+  device-only: one owner at a time, events waiting for it as for `os_socket`),
+  `main/lua/lua_ble.c` (the module), `emulator/platform/os_ble_emu.c` (emulated badges in
+  tabs of one browser find, connect to and serve each other over a `BroadcastChannel`;
+  nothing else is in range), `tests/t-ble`, and a `ble` console command. `ble` on the
+  console turns Bluetooth on, advertises, scans, serves, connects, reads, writes and
+  subscribes by hand, prints each event, and is refused while an app has Bluetooth.
+- **The build has Bluetooth again** (`CONFIG_BT_ENABLED`; it was left out after the old BLE
+  scanner app cost about 41 KB while open): NimBLE trimmed to one link and no pairing, with the
+  controller's code in flash (`CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY`) so it takes little of the
+  IRAM, which shares the SRAM with the heap. Bluetooth is off until an app calls `ble.on()`,
+  and goes off when that app ends. Measured at the launcher with Wi-Fi joined: about
+  149 KB free without Bluetooth in the build, 145 KB with it in the build and off, 115 KB
+  with it on, 110 KB with a link open, 106 KB with a link and a scan. So every badge pays
+  about 4 KB (3.6 KB of static RAM), and about 30 KB more while an app has it on. A test
+  app with 60 labels reached 49 KB of Lua heap with Bluetooth on before the 32 KB reserve
+  stopped it, against 78 KB without (same build). The image grew by about 333 KB. `ble.on()` refuses under 64 KB
+  free; a new secure connection still needs 56 KB.
+- Bluetooth leaves the heap as it found it: 20 on/off cycles end with the same free heap
+  and largest block. ESP-IDF makes an interrupt line's descriptor (16 B, never freed) the
+  first time the line is used, and which lines the controller gets depends on what else
+  holds one, so `os_ble_init()` turns Bluetooth on and off once at boot while holding six
+  spare lines: every line it can get later has its descriptor already, instead of two new
+  ones landing in the middle of the heap under an app.
+- Measured with Bluetooth on next to Wi-Fi joined on 2.4 and on 5 GHz: the badge advertised
+  (a Mac saw it), scanned (16 to 45 devices in a few seconds, at 30 % and 100 % duty) and
+  held a connection from a Mac (connected in about a second), while a server request
+  answered 200, ESP-NOW frames were acknowledged 30 of 30, and a full TLS handshake
+  succeeded with the link open. On the 1.0.0 build, both ways
+  round against a Mac: the badge served a service (the Mac read it, wrote to it and got a
+  push) and connected out to one the Mac served (read, write with and without an answer,
+  21 pushes), with a server request answering 200 and the mesh's HELLOs going out
+  meanwhile, and both links outliving two NVS writes (the controller's code runs from
+  flash). `tests/t-ble` on the badge: 44 of 44 as the served side, 49 of 50 connecting out
+  (the one a Mac can't pass: it can't advertise manufacturer data); two emulated badges:
+  all of it. Close reasons seen: `"closed"`, `"peer closed"`, `"unreachable"` (after
+  9.8 s). Not seen: `"lost"` (it needs a peer that vanishes without hanging up). The
+  button box example builds for the ESP32, C3 and C5 and hasn't run against a badge.
+- **5 GHz mesh channels** (`docs/MESH.md` "Which channels"). The mesh channel may be 36,
+  40, 44, 48, 149, 153, 157, 161 or 165 besides 1 to 13; a hello naming any other channel
+  is ignored and the badge keeps the one it had. The radio also tuned to and sent on 36,
+  52, 100 and 165, and the driver doesn't refuse the radar (DFS) channels, which is why
+  only the channels without radar rules are allowed. On channel 149 a unicast ESP-NOW frame
+  to a 5 GHz access point was acknowledged 20 of 20 times, sent at 6 Mbps (1 Mbps on
+  2.4 GHz). Joined to a 5 GHz network on the mesh channel, the mesh and the server work at
+  once; joined on another channel, a `mesh` app takes the radio from Wi-Fi while it's open,
+  as before. Badges below 1.0.0 ignore a channel above 13, so a 5 GHz mesh channel is for
+  events where every badge has updated. Not tested: receiving ESP-NOW on 5 GHz (it needs
+  two badges). One check for all of it,
+  `os_mesh_channel_ok()`: hello's `mesh`, the channel saved in NVS, `mesh channel <n>` on the
+  console (`52 is not a mesh channel (a radar channel)`), and the ESP-NOW app's Mesh tab,
+  which still listens everywhere but won't move the mesh onto a radar channel. The Wi-Fi
+  and ESP-NOW apps and `mesh status` say the band. On the 1.0.0 build: with the mesh
+  moved to 149 and Wi-Fi joined on 6, a `mesh` app took the radio, and after
+  `mesh.pause()` Wi-Fi rejoined the same network on 149, so `mesh.info()` read `online =
+  true` on 5 GHz. Beacon firmware 0.4.0 follows a 5 GHz channel on the ESP32-C5 and says
+  why it can't on the other chips (built, not run on a beacon).
+- **`mesh.info()`**: `{channel, band, online, paused}`. `online` is true when Wi-Fi is
+  joined on the mesh channel, so the app is on the mesh and the server at once and never
+  pauses Wi-Fi; `paused` between `mesh.pause()` and `mesh.resume()`.
+- **The Connectivity guide** (`docs/CONNECTIVITY.md`, on the site at
+  `/apps/docs/connectivity`): which of the mesh, Bluetooth and Wi-Fi to use for what, how
+  the one radio is shared, memory planning with the numbers above, trust, testing, and
+  older badges. With complete examples in `docs/examples/`: `ble-button-box` (an ESP-IDF
+  NimBLE gadget for any ESP32, built for the ESP32 and C3 on ESP-IDF 5.5.4 and the C5 on
+  6.0.1, and its badge app), `ble-nearby`, `ble-link`, `mesh-and-wifi`, and `wifi-room` (a
+  `ws` room, with its Bun server).
+- The store keeps `ble` apps from badges below 1.0.0, as it keeps `rpc` apps from badges
+  below 0.5.2 (`server/API.md`).
+- Not measured: the range of Bluetooth or of ESP-NOW on 5 GHz, battery life with Bluetooth
+  on, how many badges one room carries, Bluetooth during a software update.
+
 ## 0.5.15 (2026-11-10)
 
 - **Meets: Lua apps can prove two badges met** (`docs/LUA_API.md` "Meets",

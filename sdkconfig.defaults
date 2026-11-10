@@ -17,7 +17,7 @@ CONFIG_SOLANA_OS_SERVER_URL="https://badge-api.solana.com"
 
 # App metadata shown in About / info
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="0.5.15"
+CONFIG_APP_PROJECT_VER="1.0.0"
 
 # Over-the-air updates (core/os_ota.c): a new build boots on trial and the
 # bootloader goes back to the previous slot unless it confirms itself. This
@@ -73,9 +73,41 @@ CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
 CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 
-# No Bluetooth: badge radios are Wi-Fi and ESP-NOW. Keeping the BT stack out
-# of the image frees its controller RAM for the UI and TLS.
-CONFIG_BT_ENABLED=n
+# Bluetooth LE for Lua apps (core/os_ble.c, 1.0.0): NimBLE, off until an app
+# turns it on and off again when it ends, so it costs heap only while it runs
+# (measured: about 30 KB). Trimmed to what os_ble.h offers: one link either way
+# round (central + GATT client, or peripheral + GATT server), advertising and
+# scanning, legacy advertisements only, no pairing, no bonds, no logs.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_LE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
+CONFIG_BT_NIMBLE_GATT_SERVER=y
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=n
+CONFIG_BT_LE_50_FEATURE_SUPPORT=n
+CONFIG_BT_NIMBLE_LOG_LEVEL_NONE=y
+# Buffers: one link of up to 244-byte values needs few. The defaults (24 + 24
+# blocks, 30 events) cost ~9 KB more while on and buy nothing here.
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=8
+CONFIG_BT_LE_WHITELIST_SIZE=1
+CONFIG_BT_LE_LL_DUP_SCAN_LIST_COUNT=8
+CONFIG_BT_LE_LL_RESOLV_LIST_SIZE=1
+# The controller's code runs from flash: +3.7 KB of static RAM over no
+# Bluetooth instead of +25 KB with it in IRAM. Espressif marks it experimental
+# and the badge has no flash auto-suspend (CONFIG_SPI_FLASH_ROM_IMPL), so the
+# controller waits out each flash write; a link survives NVS writes (measured).
+CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 
 # LVGL
 # LVGL allocates from the system heap so Wi-Fi and the UI share RAM

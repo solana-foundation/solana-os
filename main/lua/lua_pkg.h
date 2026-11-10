@@ -34,9 +34,10 @@ typedef enum {
     LUA_PERM_QUEST = 1 << 6,
     LUA_PERM_HTTP = 1 << 7,
     LUA_PERM_RPC = 1 << 8,
+    LUA_PERM_BLE = 1 << 9,
 } lua_perm_t;
 
-#define LUA_PERM_COUNT  9
+#define LUA_PERM_COUNT  10
 
 typedef struct {
     char id[LUA_PKG_ID_MAX + 1];
@@ -116,7 +117,7 @@ void lua_pkg_hosts_line(const struct cJSON *hosts, char *out, size_t n);
 // The same from apps/<id>/app.json (a small file read). false without any.
 bool lua_pkg_hosts(const char *id, char *out, size_t n);
 
-// Permission names: "led" ... "rpc", and a plain-words description.
+// Permission names: "led" ... "ble", and a plain-words description.
 const char *lua_perm_name(int bit_index);
 const char *lua_perm_text(int bit_index);
 uint32_t lua_perm_parse(const char *name);     // 0 if unknown

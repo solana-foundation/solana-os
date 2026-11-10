@@ -1,0 +1,11 @@
+{
+  "id": "ble-nearby",
+  "name": "Nearby",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "See who is around over Bluetooth, with their team and score. No connections.",
+  "icon": "eye",
+  "accent": "64A8F2",
+  "category": "social",
+  "permissions": ["ble"]
+}

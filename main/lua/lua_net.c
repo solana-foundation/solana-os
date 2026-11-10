@@ -17,6 +17,7 @@
 #include "core/os_cloud.h"
 #include "core/os_mesh.h"
 #include "core/os_socket.h"
+#include "core/os_wifi.h"
 #include "lua_priv.h"
 
 typedef enum {
@@ -737,6 +738,7 @@ static int l_http_request(lua_State *L)
 
 static int s_mesh_sub = -1;
 static bool s_mesh_acquired;
+static volatile bool s_mesh_paused;             // Lua task: between mesh.pause() and mesh.resume()
 static uint32_t s_mesh_gen;
 static char s_mesh_app[LUA_PKG_ID_MAX + 1];     // "" = queue nothing
 static char s_mesh_me[OS_MESH_ID_LEN + 1];
@@ -782,6 +784,7 @@ void lh_mesh_start(lh_t *s)
     strlcpy(s_mesh_me, in.id, sizeof(s_mesh_me));
     s_mesh_gen = s->gen;
     xSemaphoreGive(lh_mx);
+    s_mesh_paused = false;
     os_mesh_acquire();
     s_mesh_acquired = true;
     s_mesh_sub = os_mesh_subscribe(OS_MESH_APP, mesh_handler, NULL);
@@ -932,6 +935,7 @@ static void mesh_hold(void *arg)
 static int mesh_hold_post(lua_State *L, bool want)
 {
     lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    s_mesh_paused = !want;
     os_post(mesh_hold, (void *)(uintptr_t)((lh_get(L)->gen & 0x7fffffff) << 1 | want));
     return 0;
 }
@@ -944,6 +948,27 @@ static int l_mesh_pause(lua_State *L)
 static int l_mesh_resume(lua_State *L)
 {
     return mesh_hold_post(L, true);
+}
+
+// mesh.info(): the mesh channel and its band, whether Wi-Fi is joined on it
+// (on the mesh and the server at once: the app never pauses Wi-Fi) and
+// whether the app paused the mesh (LUA_API.md "The mesh channel").
+static int l_mesh_info(lua_State *L)
+{
+    lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    int ch = os_mesh_channel();
+    os_wifi_info_t w;
+    os_wifi_get_info(&w);
+    lua_createtable(L, 0, 4);
+    lua_pushinteger(L, ch);
+    lua_setfield(L, -2, "channel");
+    lua_pushstring(L, os_mesh_band(ch));
+    lua_setfield(L, -2, "band");
+    lua_pushboolean(L, ch && w.state == OS_WIFI_CONNECTED && w.channel == ch);
+    lua_setfield(L, -2, "online");
+    lua_pushboolean(L, s_mesh_paused);
+    lua_setfield(L, -2, "paused");
+    return 1;
 }
 
 // mesh.meets([after], cb): this owner's meets in the app, as the server holds
@@ -1031,7 +1056,7 @@ void lh_open_net(lua_State *L)
     static const luaL_Reg quest[] = {{"report", l_report}, {"active", l_active}, {NULL, NULL}};
     static const luaL_Reg mesh[] = {{"nearby", l_mesh_nearby}, {"send", l_mesh_send}, {"bridge", l_mesh_bridge},
                                     {"meet", lh_mesh_meet}, {"meets", l_mesh_meets}, {"pause", l_mesh_pause},
-                                    {"resume", l_mesh_resume}, {NULL, NULL}};
+                                    {"resume", l_mesh_resume}, {"info", l_mesh_info}, {NULL, NULL}};
     static const luaL_Reg http[] = {{"get", l_http_get}, {"post", l_http_post}, {"request", l_http_request},
                                     {NULL, NULL}};
     static const luaL_Reg rpc[] = {{"call", l_rpc_call}, {NULL, NULL}};

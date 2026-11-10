@@ -30,6 +30,7 @@ set(SOLANA_OS_SRCS
     apps/apps/apps_app.c
     lua/lua_host.c lua/lua_ui.c lua/lua_sys.c lua/lua_net.c lua/lua_json.c lua/lua_pkg.c lua/lua_cmd.c
     lua/lua_fs.c lua/lua_install.c lua/lua_code.c lua/lua_ws.c lua/lua_img.c lua/lua_png.c lua/lua_gif.c lua/lua_meet.c
+    lua/lua_ble.c
     ${SOLANA_OS_LUA_VENDOR_SRCS}
     assets/sol_mono_12.c assets/sol_font_14.c assets/sol_font_20.c assets/sol_font_32.c
     assets/img_logomark_16.c assets/img_logomark_40.c assets/img_logomark_72.c
@@ -43,6 +44,7 @@ set(SOLANA_OS_DEVICE_SRCS
     core/os_ws.c
     core/os_ota_flash.c
     core/os_radio.c
+    core/os_ble.c
     core/console.c
     lua/lua_xip.c
 )

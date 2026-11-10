@@ -9,6 +9,7 @@
 #include <string.h>
 #include "esp_timer.h"
 #include "core/os.h"
+#include "core/os_mesh.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
 
@@ -74,7 +75,7 @@ static void saved_row(ui_row_t *r)
     bool on = w.enabled && !strcmp(w.ssid, saved);
     switch (on ? w.state : OS_WIFI_IDLE) {
     case OS_WIFI_CONNECTED:
-        snprintf(r->sub, sizeof(r->sub), "Connected  ch %d  SELECT disconnect", w.channel);
+        snprintf(r->sub, sizeof(r->sub), "Connected  %s ch %d  SELECT disconnect", band(w.channel), w.channel);
         r->title_color = COL_GREEN;
         break;
     case OS_WIFI_CONNECTING:
@@ -105,8 +106,10 @@ static void row(int i, ui_row_t *r, void *ctx)
     bool current = w.state == OS_WIFI_CONNECTED && !strcmp(w.ssid, n->ssid) && (w.channel > 14) == (n->channel > 14);
 
     strlcpy(r->title, n->ssid[0] ? n->ssid : "(hidden network)", sizeof(r->title));
-    snprintf(r->sub, sizeof(r->sub), "%s  ch %d  %s%s%s", band(n->channel), n->channel, auth_str(n->auth),
-             current ? "  connected" : "", !current && saved[0] && !strcmp(saved, n->ssid) ? "  saved" : "");
+    // "mesh": an AP on the mesh channel, so mesh apps never pause Wi-Fi there.
+    snprintf(r->sub, sizeof(r->sub), "%s  ch %d%s  %s%s%s", band(n->channel), n->channel,
+             n->channel == os_mesh_channel() ? " mesh" : "", auth_str(n->auth), current ? "  connected" : "",
+             !current && saved[0] && !strcmp(saved, n->ssid) ? "  saved" : "");
     snprintf(r->right, sizeof(r->right), "%d dBm", n->rssi);
     r->right_color = rssi_color(n->rssi);
     if (current) {
@@ -124,7 +127,8 @@ static void render_status(void)
     switch (w.state) {
     case OS_WIFI_CONNECTED:
         lv_label_set_text_fmt(s_status, LV_SYMBOL_WIFI "  %s", w.ssid);
-        lv_label_set_text_fmt(s_detail, "IP %s  %d dBm  ch %d (%s)", w.ip, w.rssi, w.channel, band(w.channel));
+        lv_label_set_text_fmt(s_detail, "IP %s  %d dBm  ch %d (%s)%s", w.ip, w.rssi, w.channel, band(w.channel),
+                              w.channel == os_mesh_channel() ? "  mesh" : "");
         c = COL_GREEN;
         break;
     case OS_WIFI_CONNECTING:

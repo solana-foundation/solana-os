@@ -9,6 +9,7 @@
 #include "core/os.h"
 #include "core/os_wifi.h"
 #include "core/os_cloud.h"
+#include "core/os_ble.h"
 #include "core/os_bridge.h"
 #include "core/os_mesh.h"
 #include "core/os_ota.h"
@@ -70,6 +71,7 @@ void app_main(void)
     game_init();
     boot_sweep();
     lua_host_init();
+    os_ble_init();      // the "ble" console command; Bluetooth stays off
 
     os_start();
     os_ota_init();
