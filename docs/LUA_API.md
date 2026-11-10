@@ -793,7 +793,8 @@ one. A read of a `read` characteristic is answered with its current value, witho
 the app: `value` in `def`, then whatever `ble.set(chr, data)` last set (a write from the
 device sets it too). `ble.notify(chr, data)` sets the value and pushes it: `true`, or
 `nil` and `"not open"` (nobody connected), `"not subscribed"` or `"busy"` (the radio has
-no room for another push right now: try again on the next tick). `ble.set` returns `true`. `ble.serve`
+no room for another push right now: try again on the next tick). It asks the radio, so it works even when the
+`"subscribe"` callback was one of those dropped. `ble.set` returns `true`. `ble.serve`
 returns `true`, or `nil` and `"busy"` (a link exists), `"already serving"` or `"not enough
 memory"`. `ble.drop()` with nobody connected does nothing. Lua errors: a characteristic
 that isn't served (`ble.set`, `ble.notify`), no characteristic or more than 4, or the

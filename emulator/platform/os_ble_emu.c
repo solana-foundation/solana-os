@@ -36,7 +36,8 @@ static const char *TAG = "os_ble";
 #define OP_TIMEOUT_MS   5000        // "timeout"
 #define REPORT_MS       1000        // one report per device a second
 #define SEEN_MAX        16
-#define QUEUE_CAP       16          // scans take the first OS_BLE_EVENTS_MAX, link events the rest
+#define QUEUE_CAP       16          // what peers send takes the first OS_BLE_EVENTS_MAX, OPEN/CLOSE/DONE the rest
+#define FRAMES_PER_POLL 64          // the page keeps 64
 #define FRAME_MAX       320
 
 enum {
@@ -196,12 +197,15 @@ static bool uuid_eq(const os_ble_uuid_t *a, const os_ble_uuid_t *b)
 // ---------------------------------------------------------------------------
 // Events
 
-// false: no room (a scan report beyond OS_BLE_EVENTS_MAX); data is then freed.
+// false: no room; data is then freed. As on the badge (os_ble.h), what peers
+// send (SCAN, NOTIFY, WRITE, SUBSCRIBE) is dropped once OS_BLE_EVENTS_MAX wait,
+// so apps meet the same losses here; OPEN, CLOSE and DONE have the rest.
 static bool push(os_ble_ev_t *ev)
 {
-    int cap = ev->kind == OS_BLE_EV_SCAN ? OS_BLE_EVENTS_MAX : QUEUE_CAP;
-    if (!s_owner || s_qlen >= cap) {
-        if (ev->kind != OS_BLE_EV_SCAN) {
+    bool peer = ev->kind == OS_BLE_EV_SCAN || ev->kind == OS_BLE_EV_NOTIFY || ev->kind == OS_BLE_EV_WRITE ||
+                ev->kind == OS_BLE_EV_SUBSCRIBE;
+    if (!s_owner || s_qlen >= (peer ? OS_BLE_EVENTS_MAX : QUEUE_CAP)) {
+        if (!peer) {
             ESP_LOGW(TAG, "event queue full: link event dropped");
         }
         free(ev->data);
@@ -676,7 +680,9 @@ static void ble_task(void *arg)
         if (s_owner) {
             int64_t now = now_ms();
             int n;
-            while (s_owner && s_qlen < OS_BLE_EVENTS_MAX && (n = ble_js_take(from, buf, sizeof(buf))) > 0) {
+            // Every frame, as a radio would: a slow app loses what peers send
+            // (push), not the link's pings.
+            for (int k = 0; s_owner && k < FRAMES_PER_POLL && (n = ble_js_take(from, buf, sizeof(buf))) > 0; k++) {
                 on_frame(from, buf, n, now);
             }
             if (s_owner) {
@@ -774,6 +780,9 @@ esp_err_t os_ble_advertise(void *ctx, const os_ble_adv_t *adv)
     if (adv->interval_ms && (adv->interval_ms < 20 || adv->interval_ms > 10000)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (adv->connectable && s_link.state != LINK_NONE) {
+        return ESP_ERR_INVALID_STATE;       // one link: nobody may connect meanwhile
+    }
     if (adv->name) {
         strlcpy(s_adv.name, adv->name, sizeof(s_adv.name));
     } else {
@@ -869,8 +878,11 @@ esp_err_t os_ble_set(void *ctx, const os_ble_uuid_t *chr, const uint8_t *data, s
     if (!notify) {
         return ESP_OK;
     }
-    if (s_link.state != LINK_OPEN || s_link.central || !c->subscribed) {
+    if (s_link.state != LINK_OPEN || s_link.central) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (!c->subscribed) {
+        return ESP_ERR_NOT_ALLOWED;
     }
     wr_t w = { .n = 0 };
     w8(&w, F_NOTIFY);
@@ -881,12 +893,26 @@ esp_err_t os_ble_set(void *ctx, const os_ble_uuid_t *chr, const uint8_t *data, s
     return ESP_OK;
 }
 
+// One link, and the last one's CLOSE taken before the next, as on the badge.
+static bool close_waiting(void)
+{
+    for (int i = 0; i < s_qlen; i++) {
+        if (s_q[(s_qhead + i) % QUEUE_CAP].kind == OS_BLE_EV_CLOSE) {
+            return true;
+        }
+    }
+    return false;
+}
+
 esp_err_t os_ble_connect(void *ctx, const os_ble_addr_t *addr)
 {
-    if (!ctx || ctx != s_owner || s_link.state != LINK_NONE) {
+    if (!ctx || ctx != s_owner || s_link.state != LINK_NONE || close_waiting()) {
         return ESP_ERR_INVALID_STATE;
     }
     s_scan.on = false;                      // a scan ends while the badge connects
+    if (s_adv.connectable) {
+        s_adv.on = false;                   // a device connecting to us meanwhile would take the one link
+    }
     uint32_t seq = s_link.op_seq;
     int64_t now = now_ms();
     s_link = (typeof(s_link)){ .state = LINK_CONNECTING, .central = true, .started = now, .next_try = now,

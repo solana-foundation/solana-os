@@ -111,14 +111,20 @@ ignores the channel).
   open link pings every second; 6 s without a frame is `"lost"`, and a tab
   that closes says so at once (`pagehide`). The served side stops advertising
   while connected. Answers time out after 5 s.
-- Events wait in a queue: scan reports past 8 are dropped, and while 8 wait
-  the task stops taking frames from the page (which keeps 64, dropping
-  advertisements first), so link events aren't lost to a slow app.
+- Events wait in a queue, as on the badge: what peers send (scan reports,
+  notifications, writes, subscribes) is dropped while 8 wait, OPEN, CLOSE and
+  answers never are. The task takes every frame from the page (which keeps 64,
+  dropping advertisements first) whatever the app is doing, so a slow app
+  loses what a badge's app would, and its link isn't "lost" for it.
+- Connecting out stops a connectable advertisement (a plain one keeps going),
+  and a connectable one is refused while a link exists, as on the badge.
 - Console: `ble` / `ble status` (on or off, address, advertising, scan, served
   service, link, events waiting). The emulated badge has no other `ble`
   subcommands: only an app turns it on.
 - Test: `main/lua/tests/t-ble` in two tabs (LEFT in one serves, RIGHT in the
   other connects; UP holds a link for `"lost"`).
+  `main/lua/tests/t-ble-busy` the same way: advertising around links, a
+  subscribe lost behind a full queue, a reconnect storm that timers outrun.
 
 ### Tasks and timing
 

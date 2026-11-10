@@ -13,7 +13,14 @@
 // made with; only the live one's methods work, so a stale object can't touch
 // a newer link. Callbacks owed without an os_ble event (a second connect's
 // "busy", ble.off's "off" and its lost answers) go out from a short list on
-// the next round, never inside the call that caused them.
+// the next round, never inside the call that caused them, and a round runs
+// only those that waited when it began: a callback that owes another (a
+// "busy" close that connects again) can't keep the round going.
+//
+// Nothing here is decided from what os_ble may drop (SCAN, NOTIFY, WRITE,
+// SUBSCRIBE, when 8 events wait): the link and peer state follow OPEN and
+// CLOSE, which always arrive, and ble.notify asks os_ble whether the device
+// subscribed rather than remembering the last SUBSCRIBE it saw.
 
 #include <stdlib.h>
 #include <string.h>
@@ -362,7 +369,6 @@ static void on_event(lh_t *s, os_ble_ev_t *ev)
             }
         } else {
             s->ble.peer = true;
-            memset(s->ble.subscribed, 0, sizeof(s->ble.subscribed));
             char addr[18];
             addr_fmt(&ev->addr, addr);
             ble_cb_t c = { .ref = s->ble.serve_ref };
@@ -389,7 +395,6 @@ static void on_event(lh_t *s, os_ble_ev_t *ev)
             unref(s, &ref);
         } else if (s->ble.peer) {
             s->ble.peer = false;
-            memset(s->ble.subscribed, 0, sizeof(s->ble.subscribed));
             ble_cb_t c = { .ref = s->ble.serve_ref };
             arg_str(&c, "close");
             arg_str(&c, reason);
@@ -417,10 +422,8 @@ static void on_event(lh_t *s, os_ble_ev_t *ev)
             run(s, &c);
         }
         break;
-    case OS_BLE_EV_SUBSCRIBE: {
-        int i = served_index(s, &ev->chr);
-        if (s->ble.peer && i >= 0) {
-            s->ble.subscribed[i] = ev->ok;
+    case OS_BLE_EV_SUBSCRIBE:
+        if (s->ble.peer && served_index(s, &ev->chr) >= 0) {
             uuid_fmt(&ev->chr, chr);
             ble_cb_t c = { .ref = s->ble.serve_ref };
             arg_str(&c, "subscribe");
@@ -429,7 +432,6 @@ static void on_event(lh_t *s, os_ble_ev_t *ev)
             run(s, &c);
         }
         break;
-    }
     case OS_BLE_EV_DONE:
         for (int i = 0; i < OS_BLE_OPS_MAX; i++) {
             if (!ev->op || s->ble.ops[i].op != ev->op) {
@@ -470,7 +472,9 @@ void lh_ble_run(lh_t *s)
     xSemaphoreTake(lh_mx, portMAX_DELAY);
     s->ble.woken = false;
     xSemaphoreGive(lh_mx);
-    while (s->L && !s->failed && s->ble.nlate) {
+    // Only those owed at entry: what their callbacks owe waits for the next
+    // round (owe() posted its wake), after the keys and timers.
+    for (int owed = s->ble.nlate; owed > 0 && s->L && !s->failed && s->ble.nlate; owed--) {
         int ref = s->ble.late[0].ref;
         uint8_t kind = s->ble.late[0].kind;
         const char *reason = s->ble.late[0].reason;
@@ -558,7 +562,6 @@ static int l_on(lua_State *L)
     }
     s->ble.served = s->ble.peer = false;
     s->ble.n_chrs = 0;
-    memset(s->ble.subscribed, 0, sizeof(s->ble.subscribed));
     return ok_true(L);
 }
 
@@ -840,7 +843,6 @@ static int l_serve(lua_State *L)
         s->ble.chrs[i] = chrs[i].uuid;
     }
     s->ble.n_chrs = (uint8_t)count;
-    memset(s->ble.subscribed, 0, sizeof(s->ble.subscribed));
     s->ble.served = true;
     unref(s, &s->ble.serve_ref);
     s->ble.serve_ref = ref;
@@ -871,24 +873,21 @@ static int l_set(lua_State *L)
     return ok_true(L);
 }
 
-// ble.notify(chr, data) -> true | nil, why
+// ble.notify(chr, data) -> true | nil, why. os_ble knows who subscribed (the
+// SUBSCRIBE event may have been dropped) and sets the value whatever it answers.
 static int l_notify(lua_State *L)
 {
     lh_t *s = on_session(L, "notify");
     os_ble_uuid_t u;
     const char *data;
     size_t n;
-    int i = served_arg(L, s, &u, &data, &n, "notify");
-    const char *why = !s->ble.peer ? "not open" : !s->ble.subscribed[i] ? "not subscribed" : NULL;
-    if (why) {
-        os_ble_set(s->ble.ctx, &u, (const uint8_t *)data, n, false);
-        return nil_why(L, why);
-    }
+    served_arg(L, s, &u, &data, &n, "notify");
     esp_err_t err = os_ble_set(s->ble.ctx, &u, (const uint8_t *)data, n, true);
     if (err == ESP_OK) {
         return ok_true(L);
     }
-    return nil_why(L, err == ESP_ERR_NO_MEM ? "busy" : s->ble.peer ? "not subscribed" : "not open");
+    return nil_why(L, err == ESP_ERR_INVALID_STATE ? "not open" : err == ESP_ERR_NOT_ALLOWED ? "not subscribed"
+                    : "busy");
 }
 
 static int l_drop(lua_State *L)

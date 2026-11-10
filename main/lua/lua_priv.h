@@ -129,7 +129,6 @@ typedef struct {
     bool served, peer;          // ble.serve done; a device is connected to us
     uint8_t n_chrs;
     os_ble_uuid_t chrs[OS_BLE_CHARS_MAX];
-    bool subscribed[OS_BLE_CHARS_MAX];
     struct {
         uint32_t op;            // 0: free
         int ref;                // LUA_NOREF: no callback (subscribe)
