@@ -65,11 +65,21 @@ void os_mesh_init(void);                    // after os_wifi_init() and os_cloud
 bool os_mesh_ready(void);
 int os_mesh_channel(void);                  // the channel peers are expected on
 
+// A mesh channel (docs/MESH.md "Which channels"): 2.4 GHz 1 to 13, or a 5 GHz
+// channel without radar rules (36, 40, 44, 48, 149, 153, 157, 161, 165). The
+// driver would also send on the radar (DFS) channels 52 to 144, so every
+// channel that comes in (hello, NVS, console, the ESP-NOW app) goes through
+// this first. Portable.
+bool os_mesh_channel_ok(int channel);
+// The band of a Wi-Fi channel, for people and mesh.info(): "2.4" or "5".
+const char *os_mesh_band(int channel);
+
 // Use `channel` for the mesh instead of the one the server announced, for
 // beacons whose access point is on another channel (the ESP-NOW app's Mesh
 // tab finds them). It lasts until reboot, or until the server announces a
 // different channel; 0 goes back to the server's. Applied within a second.
-void os_mesh_set_channel(int channel);
+// False (and nothing changes) for a channel that isn't a mesh channel.
+bool os_mesh_set_channel(int channel);
 int os_mesh_server_channel(void);           // what the server announced, 0 before the first hello
 bool os_mesh_channel_overridden(void);
 

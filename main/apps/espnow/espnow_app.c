@@ -327,7 +327,7 @@ static void mesh_row(int i, ui_row_t *r)
     const chan_t *c = &s->chans[i - 1];
     bool here = c->ch == mine;
     // The badge fonts are printable ASCII (plus a bullet): no middle dots.
-    snprintf(r->title, sizeof(r->title), "Channel %d%s", c->ch,
+    snprintf(r->title, sizeof(r->title), "Channel %d, %s GHz%s", c->ch, os_mesh_band(c->ch),
              !here ? "" : os_mesh_channel_overridden() ? "  (yours, chosen)" : "  (yours)");
     if (c->beacons) {
         char badges[24] = "";
@@ -400,9 +400,9 @@ static void render(void)
         int n = s_mesh_all ? N_ALL : N_24;
         int left = (n * MESH_DWELL) / 10 - (int)((now - s_sweep_start_us) / 1000000);
         lv_label_set_text_fmt(s_head, LV_SYMBOL_SHUFFLE " Looking for beacons on ch %d", s_channel);
-        lv_label_set_text_fmt(s_sub, "Your mesh: ch %d%s  sweep ~%d s left  %lu HELLOs", os_mesh_channel(),
-                              os_mesh_channel_overridden() ? " (chosen)" : "", left > 0 ? left : 0,
-                              (unsigned long)s_hellos);
+        // The line holds about 45 characters: "(chosen)" is on the channel's own row.
+        lv_label_set_text_fmt(s_sub, "Mesh ch %d %sGHz  sweep ~%d s  %lu HELLOs", os_mesh_channel(),
+                              os_mesh_band(os_mesh_channel()), left > 0 ? left : 0, (unsigned long)s_hellos);
         return;
     }
     portENTER_CRITICAL(&s_mux);
@@ -452,7 +452,7 @@ static void enter(lv_obj_t *root)
     s = calloc(1, sizeof(state_t));
     s_frames = s_mgmt = s_hellos = 0;
     s_hop = HOP_24;
-    s_mesh_all = false;
+    s_mesh_all = os_mesh_channel() > 14;    // a 5 GHz mesh: sweep both bands from the start
 
     s_tabs = ui_tabs(root, tab_names, 2);
     s_head = ui_label(root, &sol_font_14, COL_TEXT, "");
@@ -495,12 +495,18 @@ static void use_channel(const chan_t *c)
         return;
     }
     char msg[80];
+    if (!os_mesh_channel_ok(c->ch)) {
+        // The sweep listens on radar (DFS) channels too, but the mesh never sends there (MESH.md).
+        snprintf(msg, sizeof(msg), "Channel %d is a radar channel: not for the mesh", c->ch);
+        os_toast(msg);
+        return;
+    }
     if (c->ch == server || (c->ch == os_mesh_channel() && os_mesh_channel_overridden())) {
         os_mesh_set_channel(0);
-        snprintf(msg, sizeof(msg), "Back on the event's channel %d", server);
+        snprintf(msg, sizeof(msg), "Back on the event's channel %d (%s GHz)", server, os_mesh_band(server));
     } else {
         os_mesh_set_channel(c->ch);
-        snprintf(msg, sizeof(msg), "Mesh on channel %d until restart", c->ch);
+        snprintf(msg, sizeof(msg), "Mesh on channel %d (%s GHz) until restart", c->ch, os_mesh_band(c->ch));
     }
     os_toast(msg);
 }

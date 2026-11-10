@@ -34,6 +34,7 @@
 #include "os_cmd.h"
 #include "os_data.h"
 #include "os_http.h"
+#include "os_mesh.h"
 #include "os_net.h"
 #include "os_wifi.h"
 
@@ -444,7 +445,8 @@ static int apply(const char *server, const hello_t *r, int *errors, int *backoff
                 ESP_LOGI(TAG, "mesh key stored");
             }
         }
-        if (r->mesh >= 1 && r->mesh <= 13 && r->mesh != s_info.mesh_channel) {
+        // A channel outside docs/MESH.md's list (a radar channel) is ignored: we keep ours.
+        if (os_mesh_channel_ok(r->mesh) && r->mesh != s_info.mesh_channel) {
             s_info.mesh_channel = r->mesh;
             nvs_save_int("mesh", r->mesh);
         }
@@ -714,6 +716,9 @@ void os_cloud_init(void)
     nvs_load("key", key, sizeof(key));
     s_info.has_key = hex_decode(key, s_key, sizeof(s_key));
     s_info.mesh_channel = nvs_load_int("mesh", CONFIG_SOLANA_OS_MESH_CHANNEL);
+    if (!os_mesh_channel_ok(s_info.mesh_channel)) {
+        s_info.mesh_channel = os_mesh_channel_ok(CONFIG_SOLANA_OS_MESH_CHANNEL) ? CONFIG_SOLANA_OS_MESH_CHANNEL : 1;
+    }
     nvs_load("beacon", s_info.beacon, sizeof(s_info.beacon));
     nvs_load("user", s_owner_tag, sizeof(s_owner_tag));
     s_info.claimed = nvs_load_int("claimed", 0) == 1;

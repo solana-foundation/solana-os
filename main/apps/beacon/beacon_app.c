@@ -12,6 +12,7 @@
 #include <string.h>
 #include "core/os.h"
 #include "core/os_cloud.h"
+#include "core/os_mesh.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
 #include "game/beacon.h"
@@ -120,11 +121,16 @@ static void update_lines(void)
         lv_obj_set_style_text_color(s_lines[0], ui_col(COL_ORANGE), 0);
     } else if (mesh && w.channel != mesh) {
         // Its radio follows the network: badges on the mesh channel can't hear it.
-        snprintf(line, sizeof(line), "Wi-Fi ch %d, mesh %d", w.channel, mesh);
+        // Another band says which band the network has to be on.
+        if (strcmp(os_mesh_band(w.channel), os_mesh_band(mesh))) {
+            snprintf(line, sizeof(line), "Mesh %d needs %sGHz", mesh, os_mesh_band(mesh));
+        } else {
+            snprintf(line, sizeof(line), "Wi-Fi %d, mesh %d", w.channel, mesh);
+        }
         lv_label_set_text(s_lines[0], line);
         lv_obj_set_style_text_color(s_lines[0], ui_col(COL_ORANGE), 0);
     } else {
-        snprintf(line, sizeof(line), "On the air, ch %d", w.channel);
+        snprintf(line, sizeof(line), "On air ch %d %sGHz", w.channel, os_mesh_band(w.channel));
         lv_label_set_text(s_lines[0], line);
         lv_obj_set_style_text_color(s_lines[0], ui_col(COL_GREEN), 0);
     }

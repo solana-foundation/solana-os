@@ -3,7 +3,9 @@
 Badge apps from the App Store are Lua 5.5 programs that run in a sandbox on Solana
 OS: `main.lua`, plus any modules and data files the app brings along. This file is
 the API reference. The web shows it at `/apps/docs`, Solana OS implements it
-(`main/lua/`) and the server enforces the permissions.
+(`main/lua/`) and the server enforces the permissions. Which way an app should talk to
+other badges, gadgets, phones and servers (the mesh, Bluetooth or Wi-Fi) is in the
+[Connectivity guide](CONNECTIVITY.md), with [examples](examples/) to start from.
 
 ## The package
 
@@ -58,7 +60,8 @@ app's details, buying and downloads are refused, a quest's app download stops wi
 Update it from the site's firmware flasher (`/stock`, a USB-C cable) or, from 0.4.2, in
 Settings > Software update when it's offered. An app with the `rpc` permission needs
 0.5.2: on 0.5.0 and 0.5.1 its details say so, and buying and downloads are refused with
-"Update Solana OS to 0.5.2 or later to install this app".
+"Update Solana OS to 0.5.2 or later to install this app". An app with the `ble` permission
+needs 1.0.0 in the same way ("Update Solana OS to 1.0.0 or later to install this app").
 
 The manifest, as the badge stores it:
 
@@ -72,7 +75,7 @@ The manifest, as the badge stores it:
   "icon": "play",                   // one of the icon names below
   "accent": "14F195",               // hex colour, no '#'
   "category": "games",              // games | tools | social | quests | demos
-  "permissions": ["lamps", "items", "http"],  // led wifi mesh lamps items profile quest http rpc
+  "permissions": ["lamps", "items", "http"],  // led wifi mesh ble lamps items profile quest http rpc
   "hosts": ["api.example.com"],     // what `http` and `ws` may call (only with the `http` permission)
   "files": 2,                       // bundled files (the store fills it in)
   "filesSize": 5120,                // their bytes together
@@ -102,6 +105,8 @@ function on_tick(ms)         -- every 50 ms, ms = time since the last tick
 end
 function on_mesh(from, msg)  -- a message from the same app on another badge (needs "mesh")
 end
+function on_meet(from, data) -- another badge asks for a signed meet (needs "mesh", 0.5.15):
+end                          -- return a table to sign it ("Meets")
 function on_exit()           -- the app is closing (HOME, CANCEL, sys.exit, error)
 end
 ```
@@ -119,7 +124,7 @@ HOME always returns to the launcher. The screen below the status bar is
 
 | | |
 |---|---|
-| Memory | 96 KB of Lua heap (badges below Solana OS 0.5.13: 48 KB). Past it the app stops with "Out of memory: the app needs more than 96 KB". The badge also keeps 32 KB of its own heap free, and the app's other memory (its 12 KB task stack, its UI objects) counts against that, so an app with many objects, or on a badge that is busy, can be stopped earlier with "The badge is low on memory": with Wi-Fi joined, around 80 KB of Lua heap for an app with 60 labels, the full 96 KB for one with a few. Plan for 64 KB, and keep big images and tables for when you need them. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
+| Memory | 96 KB of Lua heap (badges below Solana OS 0.5.13: 48 KB). Past it the app stops with "Out of memory: the app needs more than 96 KB". The badge also keeps 32 KB of its own heap free, and the app's other memory (its 12 KB task stack, its UI objects) counts against that, so an app with many objects, or on a badge that is busy, can be stopped earlier with "The badge is low on memory": with Wi-Fi joined, around 80 KB of Lua heap for an app with 60 labels (around 49 KB with Bluetooth on, which takes about 30 KB of the badge's heap), the full 96 KB for one with a few. Plan for 64 KB, and keep big images and tables for when you need them. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
 | UI objects | 64 at a time, one of them a QR code |
 | Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
@@ -128,7 +133,8 @@ HOME always returns to the launcher. The screen below the status bar is
 | Storage | 16 KB per app (`storage.*`) |
 | Files | 64 bundled files, ≤ 256 KB each, ≤ 1 MB together, read-only (`fs`, `require`) |
 | Reads | ≤ 16 KB per `fs.read` and `fs.json`, lines ≤ 512 bytes. Card reads count toward the instruction budget: 500 per file opened or looked up (`fs.exists`, `fs.size`, `fs.list`), 1 per 4 bytes read or compiled |
-| Mesh | 4 messages per second, ≤ 200 bytes each |
+| Mesh | 4 messages per second, ≤ 200 bytes each. Meets: one asked and one accepted a second, ≤ 100 bytes of data a side, 300 per badge a day, 40 waiting to upload |
+| Bluetooth | one connection at a time, ≤ 244 bytes per read, write or notification, 4 waiting for an answer; a served service has ≤ 4 characteristics; an advertisement carries ≤ 24 bytes of app data; about 30 KB of the badge's own heap while it is on |
 | HTTP | 60 requests a minute per badge, ≤ 2 KB sent, ≤ about 3.5 KB of answer, 6 s to answer |
 | RPC | 30 calls a minute per badge (6 of them `sendTransaction`), ≤ 2 KB of params, ≤ about 3.5 KB of answer, 6 s to answer |
 | WebSocket | one at a time, 20 opens a minute per badge, ≤ 4 KB per message either way, 8 waiting to go |
@@ -412,7 +418,21 @@ mesh.nearby()               -- { {id="7K2Q9M", name="@toly", level=12, rssi=-48,
 mesh.send(to, msg)          -- to = badge id or "*"; msg = table (≤ 200 bytes as JSON)
 -- received by on_mesh(from_id, msg) on badges running the same app
 mesh.bridge()               -- show this badge's bridge code over the app (CANCEL closes it)
+mesh.meet(id, data, cb)     -- a meet both badges sign, for your server to trust ("Meets", 0.5.15)
+mesh.meets([after,] cb)     -- the meets the server holds for this badge's owner
+mesh.pause()                -- give the radio back to Wi-Fi, mesh.resume() takes it again (0.5.15)
+mesh.info()                 -- { channel = 149, band = "5", online = true, paused = false }   (1.0.0)
 ```
+
+**The mesh channel** (`mesh.info()`, Solana OS 1.0.0). Every badge and beacon at an event
+shares one channel, which the server announces. It is a 2.4 GHz channel (1 to 13,
+`band = "2.4"`) or, when every badge at the event runs 1.0.0, a 5 GHz one (36, 40, 44,
+48, 149, 153, 157, 161 or 165, `band = "5"`). `online` is true when Wi-Fi is joined **on that channel** (false with Wi-Fi off): the badge
+is then on the mesh and the server at once, and your `mesh` app never pauses Wi-Fi. When
+it is false, opening the app took the radio from Wi-Fi (server calls answer `"offline"`
+until `mesh.pause()` or the app closes). `paused` is true between `mesh.pause()` and
+`mesh.resume()`. Check `if mesh.info then` on badges that may run an older build. The
+guide ([Connectivity](CONNECTIVITY.md)) says which radio to pick for what.
 
 **Bridged badges.** Badges out of radio range, and emulators (no radio), meet over a
 **bridge** through the server (docs/MESH.md "Bridges"). One badge shows its bridge
@@ -460,6 +480,361 @@ end
 function on_mesh(from, msg)
   if msg.ping then ui.toast(from .. " says hi") end
 end
+```
+
+#### Meets: prove that two badges met (Solana OS 0.5.15)
+
+`mesh.send` messages are unsigned. What your app says it heard from another badge is
+only that badge's word, and a badge's owner can change the Lua on it, so a server
+can't believe "I met 7K2Q9M" in an `http` body. A **meet** is the way around that, and
+it is how X Dex swaps cards with Wi-Fi off:
+
+1. Two badges running your app exchange three short messages over the mesh. No Wi-Fi
+   is involved.
+2. Both sign one statement with their **mesh key**, which only that badge and the badge
+   server know: your app's id, both badge ids, a fresh random number from each, each
+   badge's clock and each side's data. The OS builds the statement, so a script can't
+   sign anything else.
+3. Each badge keeps the *other* badge's signature and puts the meet in the badge's
+   outbox, on the card. The OS uploads it the next time the badge has Wi-Fi, also after
+   your app has closed or the badge restarted.
+4. The badge server checks the signature and stores the meet once, whichever badge
+   uploads it first. Your own server reads the meets with your app's key.
+
+A badge can only upload a meet with a signature it could not have made itself, so
+changing the code on one badge isn't enough to invent one.
+
+```lua
+ok, err = mesh.meet(id, data, cb)
+-- Ask badge `id` (from mesh.nearby) for a meet. data: a table of named fields,
+-- at most 100 bytes as JSON, plain ASCII.
+-- Returns true when the request is on its way (cb follows), else nil and why:
+--   "busy" (one ask at a time), "too fast: one meet a second", "not nearby",
+--   "the mesh is off", "outbox full" (40 uploads waiting), "data over 100 bytes"
+-- cb(true, {peer = id, data = <their table>})   both signed; the upload is queued
+-- cb(false, "refused" | "no answer" | "outbox full")
+
+function on_meet(from, data)    -- another badge asks. Return a table (your side's
+  return { ok = true }          -- data) to sign, anything else to refuse
+end
+
+mesh.meets([after,] cb)
+-- What the server holds for this badge's owner, oldest first:
+-- cb(true, {items = { {id=, peer=, asked=, mine={...}, theirs={...}, bridged=, at=}, ... }, next = id or nil})
+-- at: unix seconds. Pass `next` as `after` for more.
+
+mesh.pause()                    -- give the radio back to Wi-Fi
+mesh.resume()                   -- take it for the mesh again
+```
+
+**One radio.** Wi-Fi and the mesh share the badge's radio. While an app with `mesh`
+runs, a Wi-Fi network on another channel is paused: server calls answer `"offline"`
+and meets wait in the outbox. They upload when your app closes. To sync without
+leaving, do what X Dex does and switch: `mesh.pause()` lets Wi-Fi rejoin (a few
+seconds; `badge.online()` turns true), the outbox empties and `mesh.meets`,
+`http` and the rest work; `mesh.resume()` goes back to the mesh. While paused,
+messages and meets don't arrive and nearby badges drop out of `mesh.nearby()` after
+30 seconds. With Wi-Fi off, meets wait until the owner turns it on. Over a bridge, or
+on a network that is on the mesh channel, both work at once and there is nothing to
+switch: `mesh.info().online` (1.0.0) tells which. The example
+[`mesh-and-wifi`](examples/mesh-and-wifi/) shows the player which it is and syncs with
+`mesh.pause()` only when it has to.
+
+**What a meet proves.** Both badges' keys signed that statement: both owners' badges
+took part, in your app, with that data. It does **not** prove two people stood
+together: two owners who cooperate can pass messages along, and a bridge does exactly
+that (`bridged` says so, when the badges are honest). A badge's clock is its own word
+too. So let a meet earn what cooperation between two people is worth, count a pair of
+people once, and keep anything valuable behind your own server's rules.
+
+**Your side decides.** `on_meet` runs for any badge nearby that runs your app and
+asks, as often as once a second. Refuse what makes no sense for your game (a tag from
+someone who isn't "it", a second meet with the same badge), and check on your server
+again: the other badge's script may have been changed.
+
+```lua
+-- Tag: whoever is "it" tags a badge nearby; the server keeps score from the meets.
+local it = storage.get("it") or false
+local label = ui.label(8, 8, it and "You're it. SELECT tags the nearest badge" or "Run!")
+
+function on_key(k)
+  if k ~= "select" or not it then return false end
+  local near = mesh.nearby()[1]                 -- strongest signal first
+  if not near or near.kind ~= "badge" then ui.toast("Nobody in range") return true end
+  local ok, err = mesh.meet(near.id, { tag = 1 }, function(ok, res)
+    if not ok then ui.toast("Missed: " .. res) return end
+    it = false
+    storage.set("it", false)
+    label:text("Tagged " .. res.peer .. ". Run!")
+  end)
+  if not ok then ui.toast(err) end
+  return true
+end
+
+function on_meet(from, data)
+  if it or not data.tag then return nil end     -- only someone who isn't "it" can be tagged
+  it = true
+  storage.set("it", true)
+  label:text("Tagged by " .. from .. ". You're it")
+  return { caught = 1 }
+end
+```
+
+**Your server** reads the meets with the app's key: make one in **My apps**
+(`/apps/mine`, *Server key*; it is shown once, and making a new one retires the old).
+Poll with the last `id` you saw, at the API's address (not the store's):
+
+```sh
+curl -H "Authorization: Bearer $APP_KEY" "https://badge-api.solana.com/api/app/meets?after=0"
+```
+
+```json
+{ "app": "tag",
+  "items": [
+    { "id": 812, "at": 1790000123000, "by": "9XQ3TT", "bridged": false,
+      "req": { "badge": "9XQ3TT", "user": "2f1c...", "t": 1790000061, "data": { "tag": 1 } },
+      "acc": { "badge": "7K2Q9M", "user": "8e40...", "t": 1790000063, "data": { "caught": 1 } } } ] }
+```
+
+`req` is the badge that asked, `acc` the one whose app accepted. `user` is the owner's
+id, the same one escrow ledgers and the signed `http` headers carry (null for a badge
+nobody claimed yet): count people, not badges. `at` is when the server got the meet
+(unix ms) and `by` the badge that uploaded it; `t` is each badge's clock at the meet
+(unix seconds), null when it didn't know the time. A meet reaches you once, however
+many times the badges upload it. From there it's yours: keep a score, or pay players
+from an escrow.
+
+A badge takes part in at most 300 meets per app a day. Test runs (Try in emulator,
+Run on badge) make real meets too; those of an app you have never submitted stay on
+the badges' side (`mesh.meets`) and never reach a server. Solana OS before 0.5.15 has
+no meets: check `if mesh.meet then`, and a badge on an older build never answers
+(`"no answer"`).
+
+### `ble` (permission `ble`, Solana OS 1.0.0)
+
+Bluetooth Low Energy, for what the mesh can't reach: a gadget you built on any ESP32 (or
+anything else that speaks BLE), a phone, or another badge while both stay on Wi-Fi.
+Bluetooth has its own channels, so it works whatever Wi-Fi channel or band the badge is
+on, and next to `mesh`, `http` and `ws`. The badge has one radio that takes turns, so a
+busy scan slows Wi-Fi a little. When to choose Bluetooth over the mesh or Wi-Fi, and how
+to plan its memory: the [Connectivity guide](CONNECTIVITY.md). Complete apps:
+[`ble-button-box`](examples/ble-button-box/) (a gadget on any ESP32, firmware included),
+[`ble-nearby`](examples/ble-nearby/) (advertise and scan, no connections) and
+[`ble-link`](examples/ble-link/) (two badges on one connection).
+
+```lua
+ble.on()                            -- turn Bluetooth on: true, or nil and why not
+ble.off()                           -- stop everything; the memory comes back
+ble.state()                         -- "off" | "on"
+ble.address()                       -- this badge's address, "7c:df:a1:00:56:78" (nil while off)
+
+ble.advertise{name = "Dice", service = "ffe0", data = "\1\2", connectable = true}
+ble.advertise(false)                -- stop
+
+ble.scan({service = "ffe0"}, function(dev) end)   -- dev: see "Finding devices"
+ble.scan(false)                     -- stop
+
+local link = ble.connect(dev, cb)   -- cb("open") | cb("notify", chr, data) | cb("close", reason)
+link:read(service, chr, function(ok, data) end)
+link:write(service, chr, data)              -- no answer wanted: true, or nil and why not
+link:write(service, chr, data, function(ok, err) end)
+link:subscribe(service, chr)                -- notifications arrive as cb("notify", chr, data)
+link:subscribe(service, chr, false)
+link:close()                        -- cb("close", "closed") follows
+link:state()                        -- "connecting" | "open" | "closed"
+
+ble.serve({service = "ffe0", chars = {{uuid = "ffe1", read = true, write = true, notify = true}}}, cb)
+-- cb("open", addr) | cb("write", chr, data) | cb("subscribe", chr, on) | cb("close", reason)
+ble.set(chr, data)                  -- the value a connected device reads
+ble.notify(chr, data)               -- set it and tell the connected device: true, or nil and why not
+ble.drop()                          -- disconnect the device that connected to us
+```
+
+**On and off.** Bluetooth is off until the app calls `ble.on()`, and goes off when the
+app exits. While it is on it takes about 30 KB of the badge's own memory (not of the
+app's 96 KB), so the badge may stop a big app earlier (see "Limits": with Wi-Fi joined
+and Bluetooth on, an app with 60 labels gets about 49 KB of Lua heap). `ble.on()` returns
+`true`, or `nil` and `"not enough memory"` (the badge has under 64 KB free: free some of
+the app's first), or `"unavailable"`. Every other function is a Lua error while Bluetooth
+is off, except `ble.off`, `ble.state` and `ble.address`; a link from before answers
+`"closed"` to `link:state()`, and its other methods return `nil` and `"not open"`. Turn it on when the app needs it
+and off when it doesn't: a secure connection (`http`, `ws`, the store) needs 56 KB free
+to start.
+
+**UUIDs and data.** A service or characteristic is a string: 16-bit as 4 hex digits
+(`"180f"`), or 128-bit as `"6e400001-b5a3-f393-e0a9-e50e24dcca9e"`; case doesn't matter,
+anything else is a Lua error. Values are Lua strings of bytes (`string.pack`,
+`string.byte`), ≤ 244 bytes; longer is a Lua error. How much fits in one push, one read's
+answer or one write without an answer is up to the link: 20 bytes until the two sides
+agree on more (they do in the first moments; a Mac agreed to the full 244), and anything longer
+is cut there. A write with a callback goes through whole. Keep messages under 20 bytes
+if they must arrive whatever the other device is.
+
+**No pairing, no encryption.** Anyone in range can see an advertisement, connect to a
+served service, and read and write it; a device can lie about its name. Treat everything
+that arrives as untrusted (check lengths and ranges), never send a secret, and when
+something is worth cheating at, let your server decide (`http`), or use a meet
+(`mesh.meet`), which both badges sign.
+
+#### Being found: `ble.advertise`
+
+`ble.advertise(opts)` starts (or replaces) what the badge broadcasts about ten times a
+second; `ble.advertise(false)` stops it. All fields are optional:
+
+| | |
+|---|---|
+| `name` | what scanners show, ≤ 29 bytes of printable ASCII. Default `"Badge <id>"` |
+| `service` | one service UUID, so that others can scan for your app only |
+| `data` | bytes for whoever is listening, no connection needed: ≤ 24 bytes, ≤ 20 with a 16-bit `service`, ≤ 6 with a 128-bit one |
+| `connectable` | `true`: devices may connect (see `ble.serve`). Default `false` |
+| `interval` | milliseconds between broadcasts, 20 to 10000. Default 100 |
+
+It returns `true`, or `nil` and `"too big"`, or `"busy"` for a `connectable` one while a
+link exists (one link at a time; a plain advertisement keeps going through a link). The name travels in the scan response, so
+only an active scan (below) sees it; `service` and `data` are in the advertisement
+itself. Call it again to change `data`: a counter, a score, a state.
+
+#### Finding devices: `ble.scan`
+
+`ble.scan(opts, cb)` listens for advertisements and calls `cb(dev)` for each device, at
+most once a second per device; `ble.scan(false)` stops. It returns `true`, or `nil` and `"busy"` while the badge is connecting. One scan at a
+time (a new one replaces it). A scan runs alongside advertising, serving and an open
+link; it stops by itself when the app calls `ble.connect`, and doesn't start again
+(call `ble.scan` again once the link is open or closed). A `duty` or `seconds` out of
+range is a Lua error, as is an `interval` in `ble.advertise`. `opts`, all optional:
+
+| | |
+|---|---|
+| `service` | only devices advertising this service |
+| `name` | only devices whose name starts with this. Names travel in the scan response, so this needs `active = true` (a passive scan with `name` hears nothing) |
+| `active` | `true`: also ask each device for its name (it then sees a scan request). Default `false`: names are often missing |
+| `seconds` | stop by itself after this long. Default: until `ble.scan(false)` |
+| `duty` | percent of the time the radio listens, 10 to 100. Default 30. More finds devices faster and slows Wi-Fi and the mesh more |
+
+```lua
+dev = {
+  addr = "7c:df:a1:00:12:34",   -- the device's address (phones change theirs every few minutes)
+  rssi = -61,                   -- signal: about -40 next to it, -90 at the edge of range
+  name = "Dice",                -- "" when it sent none (or the scan isn't active)
+  services = {"ffe0"},          -- the services it advertises (up to 4), written as above: lower case, 4 hex digits or the full 128-bit form
+  company = 0xffff,             -- who defined `data` (0xffff: a badge app, or a gadget using the test id), nil if none
+  data = "\1\2",                -- its manufacturer data after the company id, "" if none
+  connectable = true,
+  random = false,               -- the address kind; ble.connect needs it, keep the table
+}
+```
+
+Names arrive as printable ASCII (other bytes become `?`). When 8 events wait for the
+app, newer reports are dropped: keep `cb` quick, and filter by `service`. Use a service
+UUID you made up (`uuidgen`): a well-known one, such as the Nordic UART service, also
+matches other people's gadgets in the room.
+
+#### Connecting to a device: `ble.connect`
+
+`ble.connect(dev, cb)` connects to a device from a scan (or to `{addr = "...", random =
+false}`) and returns a link at once; `cb("open")` follows within about a second, or
+`cb("close", reason)`. One link at a time, counting a device that connected to this
+badge: a second `ble.connect` returns a link that closes at once with `"busy"`.
+Connecting stops the scan and a connectable advertisement (advertise again after the
+link closes).
+
+- `link:read(service, chr, cb)`: `cb(true, data)` or `cb(false, reason)`.
+- `link:write(service, chr, data)`: sends without waiting for an answer (fast, may be
+  lost). With a callback it waits for the device to confirm: `cb(true)` or `cb(false,
+  reason)`.
+- `link:subscribe(service, chr)`: asks the device to push that characteristic; each push
+  arrives as `cb("notify", chr, data)` on the link's callback (`chr` as you wrote it, in
+  lower case). A device that refuses just never pushes: there is no answer to wait for.
+
+Each returns `true` when it was queued, or `nil` and `"not open"` or `"busy"` (4 already
+wait for their answer, or a subscribe when 8 characteristics are subscribed on the link).
+A subscription lasts until you unsubscribe or the link closes, whatever else the app
+reads or writes meanwhile. The answers' reasons: `"no such characteristic"`, `"not allowed"`
+(the device refused), `"timeout"`, `"lost"` (the link ended first). The first use of a
+characteristic looks it up on the device, which takes a few tenths of a second.
+
+Every link ends with one `cb("close", reason)`, and when the app exits (no callback
+then):
+
+| `reason` | |
+|---|---|
+| `"closed"` | the app called `link:close()` |
+| `"peer closed"` | the device hung up |
+| `"lost"` | it went out of range or was switched off |
+| `"unreachable"` | it didn't answer the connection within 10 s |
+| `"busy"` | another link is open or being made |
+| `"off"` | `ble.off()` |
+
+To reconnect, scan again and connect from the `"close"` callback, after a second or two.
+
+#### Being connected to: `ble.serve`
+
+`ble.serve(def, cb)` gives the badge one service that a phone, a computer, a gadget or
+another badge can connect to. Call it once after `ble.on()`, before any link, then
+advertise with `connectable = true` (and the same `service`, so they can find it).
+
+```lua
+def = {
+  service = "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+  chars = {                                   -- 1 to 4
+    {uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e", write = true},
+    {uuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e", read = true, notify = true, value = "hello"},
+  },
+}
+```
+
+- `cb("open", addr)`: a device connected (one at a time; advertising stops meanwhile).
+- `cb("write", chr, data)`: it wrote to a `write` characteristic.
+- `cb("subscribe", chr, on)`: it asked for (or stopped) that characteristic's pushes.
+- `cb("close", reason)`: `"peer closed"`, `"lost"`, `"closed"` (`ble.drop()`) or `"off"`.
+  Advertise again to be found again.
+
+The same queue of 8 holds what a connected device sends: a burst of writes or subscribes
+beyond it is dropped (a write still becomes the value), so don't rely on seeing every
+one. A read of a `read` characteristic is answered with its current value, without calling
+the app: `value` in `def`, then whatever `ble.set(chr, data)` last set (a write from the
+device sets it too). `ble.notify(chr, data)` sets the value and pushes it: `true`, or
+`nil` and `"not open"` (nobody connected), `"not subscribed"` or `"busy"` (the radio has
+no room for another push right now: try again on the next tick). It asks the radio, so it works even when the
+`"subscribe"` callback was one of those dropped. `ble.set` returns `true`. `ble.serve`
+returns `true`, or `nil` and `"busy"` (a link exists), `"already serving"` or `"not enough
+memory"`. `ble.drop()` with nobody connected does nothing. Lua errors: a characteristic
+that isn't served (`ble.set`, `ble.notify`), no characteristic or more than 4, or the
+same UUID twice (`ble.serve`).
+
+#### In the emulator
+
+The emulator has no radio, so its Bluetooth is the browser: emulated badges in tabs of
+one browser (`/emulator` and `/emulator?badge=2`) advertise to, find, connect to and
+serve each other with the same calls, and nothing else is in range. Use it to build both
+halves of a two-badge app; a gadget needs a real badge (Run on badge).
+
+```lua
+-- Read a button box you built: an ESP32 serving ffe0, whose ffe1 notifies 2 bytes,
+-- 1 while the button is held (else 0) and a press count (examples/ble-button-box/).
+-- app.json: "permissions": ["ble"]
+local status = ui.label(10, 40, "Looking for the box...")
+local link
+
+local function find()
+  ble.scan({service = "ffe0", seconds = 20}, function(dev)
+    ble.scan(false)
+    link = ble.connect(dev, function(what, a, b)
+      if what == "open" then
+        status:text("Connected")
+        link:subscribe("ffe0", "ffe1")
+      elseif what == "notify" then
+        status:text(string.byte(b, 1) == 1 and "Pressed" or "Released")
+      elseif what == "close" then
+        status:text("Lost it (" .. a .. "), looking again")
+        timer.after(2000, find)
+      end
+    end)
+  end)
+end
+
+local ok, why = ble.on()                       -- nil and "not enough memory" or "unavailable"
+if ok then find() else status:text("No Bluetooth: " .. why) end
 ```
 
 ### `lamps` (permission `lamps`)
@@ -559,7 +934,8 @@ quest.active(cb)                -- the owner's active quests: { {id=, title=, st
 ### `http` (permission `http`, Solana OS 0.4.6)
 
 Requests to web servers: your own (a game server, the server behind your escrow) or a
-public API. The badge can't open a second secure connection while an app runs, so the
+public API (when `http` is the right choice, and when the mesh or Bluetooth is:
+[Connectivity](CONNECTIVITY.md)). The badge can't open a second secure connection while an app runs, so the
 badge server makes the request for it and hands back the answer. A request needs
 Wi-Fi like every server call, and works the same in the emulator.
 
@@ -654,22 +1030,39 @@ address, not the store's: see "The server's address" above):
 `X-Badge-Key` names one you don't have (the key may be replaced). To trust a request,
 check the signature, that `X-Badge-App` is your app, that `X-Badge-Time` is within a
 minute of your clock, and that you haven't seen its `X-Badge-Request` in that minute
-(a replay). In TypeScript (Bun, Node 20+, Deno, Cloudflare Workers):
+(a replay). Check and remember the request in one step, after the signature and with no
+`await` in between, or two copies arriving together both pass. In TypeScript (Bun,
+Node 20+, Deno, Cloudflare Workers):
 
 ```ts
 const SERVER = 'https://badge-api.solana.com';
 const keys = new Map<string, CryptoKey>();
 const seen = new Map<string, number>(); // X-Badge-Request -> time
+let fetching: Promise<void> | null = null; // the key fetch in flight: every request waits for the same one
 let fetchedAt = 0;
 
 async function badgeKey(id: string): Promise<CryptoKey | null> {
-  if (!keys.has(id) && Date.now() - fetchedAt > 60_000) { // at most once a minute
+  if (!keys.has(id) && !fetching && Date.now() - fetchedAt > 60_000) { // at most once a minute
     fetchedAt = Date.now();
-    const k = await (await fetch(`${SERVER}/api/http/key`)).json();
-    const raw = Uint8Array.from(atob(k.key), (c) => c.charCodeAt(0));
-    keys.set(k.id, await crypto.subtle.importKey('raw', raw, 'Ed25519', false, ['verify']));
+    fetching = (async () => {
+      const k = await (await fetch(`${SERVER}/api/http/key`)).json();
+      const raw = Uint8Array.from(atob(k.key), (c) => c.charCodeAt(0));
+      keys.set(k.id, await crypto.subtle.importKey('raw', raw, 'Ed25519', false, ['verify']));
+    })()
+      .catch(() => { fetchedAt = 0; }) // failed: the next request tries again
+      .finally(() => { fetching = null; });
   }
+  if (!keys.has(id) && fetching) await fetching;
   return keys.get(id) ?? null;
+}
+
+/** True the first time `id` comes, false again until a minute after `time`. The check and
+ *  the claim are one step, so call it after your last `await`. Old ids go as it runs. */
+function once(id: string, time: number): boolean {
+  for (const [k, t] of seen) if (Date.now() - t > 60_000) seen.delete(k);
+  if (seen.has(id)) return false;
+  seen.set(id, time);
+  return true;
 }
 
 /** The badge and player behind a request from your app, or null. `body`: the raw body. */
@@ -677,7 +1070,7 @@ export async function fromBadge(req: Request, body: string, app: string) {
   const h = (n: string) => req.headers.get(n) ?? '';
   const time = Number(h('x-badge-time'));
   const id = h('x-badge-request');
-  if (h('x-badge-app') !== app || !(Math.abs(Date.now() - time) < 60_000) || !id || seen.has(id)) return null;
+  if (h('x-badge-app') !== app || !(Math.abs(Date.now() - time) < 60_000) || !id) return null;
   const key = await badgeKey(h('x-badge-key'));
   if (!key) return null;
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)));
@@ -685,8 +1078,7 @@ export async function fromBadge(req: Request, body: string, app: string) {
     app, h('x-badge-id'), h('x-badge-user'), h('x-badge-time'), id].join('\n');
   const sig = Uint8Array.from(atob(h('x-badge-signature')), (c) => c.charCodeAt(0));
   if (!(await crypto.subtle.verify('Ed25519', key, sig, new TextEncoder().encode(signed)))) return null;
-  seen.set(id, time);
-  for (const [k, t] of seen) if (Date.now() - t > 60_000) seen.delete(k);
+  if (!once(id, time)) return null; // a replay
   return { badge: h('x-badge-id'), user: h('x-badge-user') };
 }
 ```
@@ -735,7 +1127,8 @@ A live connection (a WebSocket) to one of the app's hosts, for messages both way
 they happen: a multiplayer game, a chat, live scores. Unlike `http` it goes straight
 from the badge to the host, so messages arrive as the host sends them. The badge holds
 one secure connection at a time, so while the socket is open it takes the place of the
-badge's own connection to the badge server (see "While a socket is open").
+badge's own connection to the badge server (see "While a socket is open"). A complete
+room game with its server: [`wifi-room`](examples/wifi-room/).
 
 ```lua
 local sock = ws.open(url, cb)                         -- url: wss://, to one of the app's hosts
@@ -833,21 +1226,22 @@ snake                                  the app
 
 Check it when the connection opens, as for a request: the signature, that it names
 your app, that the time is within a minute of your clock and that you haven't seen the
-request in that minute. With `badgeKey()` and `seen` from the `http` example:
+request in that minute, the last in one step after the signature (one ticket, one
+socket). With `badgeKey()` and `once()` from the `http` example:
 
 ```ts
 /** The badge and player opening a socket to your app, or null. host: your wss host name. */
 export async function fromBadgeSocket(req: Request, app: string, host: string) {
   const ticket = new URL(req.url).searchParams.get('badge_ticket') ?? '';
   const [a, badge, user, time, request, keyId, sig, extra] = ticket.split('.');
-  if (extra !== undefined || a !== app || !sig || !request || seen.has(request) ||
+  if (extra !== undefined || a !== app || !sig || !request ||
       !(Math.abs(Date.now() - Number(time)) < 60_000)) return null;
   const key = await badgeKey(keyId);
   if (!key) return null;
   const signed = ['badge-ws-v1', host, app, badge, user, time, request].join('\n');
   const raw = Uint8Array.from(atob(sig.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
   if (!(await crypto.subtle.verify('Ed25519', key, raw, new TextEncoder().encode(signed)))) return null;
-  seen.set(request, Number(time));
+  if (!once(request, Number(time))) return null; // a ticket used already
   return { badge, user };
 }
 
@@ -875,8 +1269,10 @@ local function connect()
     if event == "open" then
       add("Connected")
     elseif event == "message" then
-      local m = json.decode(data)
-      if m then add(m.from .. ": " .. m.text) end
+      local m = json.decode(data)              -- check what arrives: it may not be what you expect
+      if type(m) == "table" and type(m.from) == "string" and type(m.text) == "string" then
+        add(m.from .. ": " .. m.text)
+      end
     else
       add("Closed: " .. data)
       timer.after(5000, connect)               -- and again in 5 s
@@ -1209,6 +1605,12 @@ const RPC = 'https://api.devnet.solana.com';
 const PROGRAMS = new Set(['11111111111111111111111111111111', 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr']);
 const pending = new Map<string, { message: Uint8Array; badge: string; at: number }>();
 
+/** A badge's transaction while it's under 5 minutes old, else undefined. Drops the old ones. */
+function live(id: string) {
+  for (const [k, p] of pending) if (Date.now() - p.at > 300_000) pending.delete(k);
+  return pending.get(id);
+}
+
 /** A legacy message with the wallet as its one signer, calling only PROGRAMS; else null. */
 function read(m: Uint8Array) {
   let i = 0;
@@ -1237,13 +1639,19 @@ function read(m: Uint8Array) {
   }
 }
 
-async function latestBlockhash() {
-  const res = await fetch(RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'confirmed' }] }),
-  });
-  return bs58.decode((await res.json()).result.value.blockhash);
+/** 32 bytes, or null when the node is down or says no (the wallet can ask again). */
+async function latestBlockhash(): Promise<Uint8Array | null> {
+  try {
+    const res = await fetch(RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getLatestBlockhash', params: [{ commitment: 'confirmed' }] }),
+    });
+    const hash = bs58.decode(String((await res.json()).result.value.blockhash));
+    return hash.length === 32 ? hash : null;
+  } catch {
+    return null;
+  }
 }
 
 Bun.serve({
@@ -1262,7 +1670,7 @@ Bun.serve({
         if (message.length > 1100 || message.length * 2 !== hex.length || !read(message)) {
           return Response.json({ error: 'not a transaction this server serves' }, { status: 400 });
         }
-        for (const [id, p] of pending) if (Date.now() - p.at > 300_000) pending.delete(id);
+        live(''); // drops the expired ones
         const id = Buffer.from(crypto.getRandomValues(new Uint8Array(9))).toString('base64url');
         pending.set(id, { message, badge: from.badge, at: Date.now() });
         return Response.json({ url: `solana:${ORIGIN}/tx/${id}` });
@@ -1271,25 +1679,27 @@ Bun.serve({
     // The wallet (Solana Pay): first who's asking, then the transaction for its account.
     '/tx/:id': {
       GET: (req) =>
-        pending.has(req.params.id)
+        live(req.params.id)
           ? Response.json({ label: 'Badge payment', icon: `${ORIGIN}/icon.png` })
           : Response.json({ error: 'expired' }, { status: 404 }),
       POST: async (req) => {
-        const p = pending.get(req.params.id);
-        if (!p) return Response.json({ error: 'expired' }, { status: 404 });
         let wallet: Uint8Array;
         try {
           wallet = bs58.decode(String((await req.json()).account));
         } catch {
           wallet = new Uint8Array();
         }
+        const p = live(req.params.id); // after the body: it may have expired meanwhile
+        if (!p) return Response.json({ error: 'expired' }, { status: 404 });
         const m = p.message.slice(); // a copy: the wallet may ask again
         const { keys, blockhash } = read(m)!;
         if (wallet.length !== 32 || keys.some((k) => Buffer.compare(k, wallet) === 0)) {
           return Response.json({ error: 'this wallet cannot pay this' }, { status: 400 });
         }
         keys[0].set(wallet); // the wallet signs and pays the fee
-        m.set(await latestBlockhash(), blockhash);
+        const hash = await latestBlockhash();
+        if (!hash) return Response.json({ error: 'the network is busy: try again' }, { status: 503 });
+        m.set(hash, blockhash);
         const tx = new Uint8Array(1 + 64 + m.length); // 1 signature, still empty, then the message
         tx[0] = 1;
         tx.set(m, 65);
@@ -1398,11 +1808,15 @@ end
   `main.lua`, `app.json` if you have one (it fills in the form) and the files it
   needs. New text files can be made right there.
 - **Try in emulator** runs it on an emulated badge in the page, with every file on the
-  emulated card. `print()` and errors show below it.
+  emulated card. `print()` and errors show below it. For `mesh` and `ble` apps, open
+  `/emulator` and `/emulator?badge=2` in two tabs of one browser: their badges hear,
+  find and connect to each other ([Connectivity: Testing each path](CONNECTIVITY.md#testing-each-path)).
 - **Run on badge** copies it onto a real badge over USB (desktop Chrome or Edge, Web
   Serial), sending only the files that changed, starts it and shows the badge's
   console, `print()` included. The badge needs a microSD card and Solana OS 0.5.0 or
-  later (it checks `info` first). It replaces an installed app with the same id.
+  later (it checks `info` first; an app with `ble` needs 1.0.0). It replaces an installed app with the
+  same id. This is how to test with a gadget or a phone over Bluetooth: the emulator
+  has no radio to reach them.
 - **Test runs.** Signed in, both start a test run before the app does, so everything
   that goes through the badge server works with every permission the draft asks for:
   `http`, `ws` and `rpc` with its hosts (once your account has X linked), !LAMPs,

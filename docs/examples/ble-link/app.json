@@ -1,0 +1,11 @@
+{
+  "id": "ble-link",
+  "name": "Link",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Two badges, one Bluetooth link: what you type on one shows on the other.",
+  "icon": "shuffle",
+  "accent": "80ECFF",
+  "category": "social",
+  "permissions": ["ble"]
+}

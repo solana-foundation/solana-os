@@ -17,6 +17,7 @@
 #include "lvgl.h"
 #include "core/os.h"
 #include "core/ui.h"
+#include "core/os_ble.h"
 #include "vendor/lua.h"
 #include "vendor/lauxlib.h"
 #include "lua_host.h"
@@ -36,6 +37,7 @@
 #define LH_STORAGE_SAVE_MS  1000        // storage.set writes at most this often
 #define LH_MESH_PER_S       4
 #define LH_MESH_MAX         200         // bytes of JSON per mesh.send
+#define LH_MEET_MAX         100         // bytes of JSON per side of a mesh.meet
 #define LH_CALLS_MAX        16          // server calls waiting or in flight per app
 #define LH_CALLS_SENT       3           // at once in os_api, whose queue the OS shares
 #define LH_JSON_DEPTH       16          // nesting; bounds the decoder's recursion
@@ -46,6 +48,8 @@
 #define LH_FS_BYTES_PER_STEP 4          // ... and per bytes read or compiled
 #define LH_READ_CHUNK       256         // compiling from the card, a piece at a time
 #define LH_WS_LATE          4           // sockets closing without a connection, per round
+#define LH_BLE_LATE         8           // ble callbacks owed for the next round (closes, lost answers)
+#define LH_BLE_PER_ROUND    OS_BLE_EVENTS_MAX   // ble events per round of the loop, then keys and timers
 
 typedef enum { LH_LABEL, LH_RECT, LH_BAR, LH_GRADIENT, LH_LIST, LH_QR, LH_IMAGE, LH_CANVAS, LH_ANIM, LH_KIND_COUNT } lh_kind_t;
 
@@ -105,6 +109,38 @@ typedef struct {
     } late[LH_WS_LATE];         // closes for the next round (denied, busy, closed by the app)
     int nlate;
 } lh_ws_t;
+
+// Bluetooth (lua_ble.c). ctx is os_ble's owner ctx (an os_api_token) while
+// on; woken is shared with whatever task os_ble wakes us from, under lh_mx.
+// The link (central) carries the id it was made with, as ws sockets do.
+enum { LH_BLE_LINK_NONE, LH_BLE_LINK_CONNECTING, LH_BLE_LINK_OPEN, LH_BLE_LINK_CLOSING };
+enum { LH_BLE_OP_READ, LH_BLE_OP_WRITE, LH_BLE_OP_SUB };
+enum { LH_BLE_LATE_CLOSE, LH_BLE_LATE_LOST };
+
+typedef struct {
+    void *ctx;                  // NULL: off
+    bool woken;                 // a wake is queued and not yet taken
+    int scan_ref, serve_ref, link_ref;
+    os_ble_uuid_t scan_service; // the scan's filters, again for reports queued before a new scan
+    bool scan_by_service;
+    char scan_name[OS_BLE_NAME_MAX + 1];
+    uint32_t link_id, link_seq; // the live link (0: none), the last id given
+    uint8_t link_state;         // LH_BLE_LINK_*
+    bool served, peer;          // ble.serve done; a device is connected to us
+    uint8_t n_chrs;
+    os_ble_uuid_t chrs[OS_BLE_CHARS_MAX];
+    struct {
+        uint32_t op;            // 0: free
+        int ref;                // LUA_NOREF: no callback (subscribe)
+        uint8_t kind;           // LH_BLE_OP_*
+    } ops[OS_BLE_OPS_MAX];
+    struct {
+        int ref;
+        uint8_t kind;           // LH_BLE_LATE_*
+        const char *reason;
+    } late[LH_BLE_LATE];
+    int nlate;
+} lh_ble_t;
 
 typedef struct {
     uint32_t size;              // bytes run in place, 0: compiled on the badge
@@ -171,12 +207,16 @@ typedef struct lh {
     // mesh
     int mesh_sub;
     int64_t mesh_sent[LH_MESH_PER_S];
+    struct lh_meet *meet;       // mesh.meet's handshakes (lua_meet.c), made on first use
 
     // Server calls
     lh_call_t *calls;
 
     // ws
     lh_ws_t ws;
+
+    // ble
+    lh_ble_t ble;
 } lh_t;
 
 // Figures from the last run, for "lua mem".
@@ -195,14 +235,14 @@ typedef struct {
 extern lh_stats_t lh_stats;
 
 // Events for the Lua task.
-typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_QUIT } lh_ev_kind_t;
+typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_MEET, LH_EV_QUIT } lh_ev_kind_t;
 
 typedef struct {
     uint8_t kind;
     uint8_t key;
     bool repeat;
     uint32_t gen;
-    char *data;                 // LH_EV_MESH: "<from id>\0<json>", freed by the receiver
+    char *data;                 // LH_EV_MESH, LH_EV_MEET: "<from id>\0<json>", freed by the receiver
 } lh_ev_t;
 
 extern SemaphoreHandle_t lh_mx;     // guards call records, the mesh filter, lh_cur
@@ -294,6 +334,12 @@ bool lh_ws_busy(const lh_t *s);                         // from ws.open until it
 void lh_ws_stop(lh_t *s);                               // any task: the app stops, the socket goes
 void lh_ws_free(lh_t *s);                               // after the Lua task ended
 
+// lua_ble.c: Bluetooth LE (os_ble)
+void lh_open_ble(lua_State *L);
+void lh_ble_init(lh_t *s);                              // at launch: no refs yet
+void lh_ble_run(lh_t *s);                               // Lua task: owed callbacks and os_ble's events
+void lh_ble_stop(lh_t *s);                              // any task: the app stops, Bluetooth goes off
+
 // lua_net.c: mesh, lamps, items, profile, quest, http
 void lh_open_net(lua_State *L);
 void lh_calls_run(lh_t *s);                             // answer finished calls
@@ -303,6 +349,13 @@ void lh_mesh_event(lh_t *s, char *data);
 void lh_mesh_start(lh_t *s);                            // OS task
 void lh_mesh_mute(void);                                // stop queueing messages
 void lh_mesh_stop(void);                                // OS task
+void lh_mesh_me(char out[7]);                           // this badge's id when the app started, "" without one
+
+// lua_meet.c: mesh.meet, a statement two badges sign (docs/MESH.md "Meets")
+int lh_mesh_meet(lua_State *L);
+void lh_meet_event(lh_t *s, const char *data);          // Lua task: a meet message, "<from id>\0<json>"
+void lh_meet_run(lh_t *s);                              // Lua task: repeats and the timeout of an ask
+void lh_meet_free(lh_t *s);                             // after the Lua task ended
 
 // lua_json.c: JSON <-> Lua. Encoding never raises Lua errors (it may run
 // with C memory to free); decoding may (out of memory).

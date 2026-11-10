@@ -44,6 +44,7 @@ firmware/emulator/
 | `core/os_ota_flash.c` | esp_ota_* (write the other OTA slot, confirm a new build) | `platform/os_ota_flash_emu.c`: refuses; the page always runs the site's build and the server never offers the emulator an update |
 | `lua/lua_xip.c` | store apps' compiled code copied into a flash slot of the `storage` partition and mapped (run in place) | `platform/lua_xip_emu.c`: read into memory and checked against its SHA-256; the Lua heap figures (`lua mem`) match the badge's |
 | `core/os_radio.c` (mesh) | ESP-NOW | `platform/os_radio_emu.c`: `BroadcastChannel("solana-os-mesh")` between tabs of one origin (docs/MESH.md "Emulator transport"), on the emulated radio's channel |
+| `core/os_ble.c` (Bluetooth LE for Lua apps, `os_ble.h`) | NimBLE | `platform/os_ble_emu.c`: `BroadcastChannel("solana-os-ble")` between tabs of one origin: advertising, scans, one link, GATT reads/writes/notifications (below) |
 | `core/console.c` | UART REPL (`console_stream_read()` takes `lua recv`'s stream) | `platform/console_emu.c`: `emu_console("open wifi")` from the page; no stream, so the page writes app files into MEMFS instead |
 | `bsp_display.c` | ILI9341 + esp_lvgl_port | `bsp_display_emu.c`: 2 x 320x24 partial buffers, RGBA framebuffer for a `<canvas>` |
 | `bsp_buttons.c` | TCA9534 + BOOT, button task | `bsp_buttons_emu.c`: page sets the raw lines, same task/callback shape |
@@ -89,6 +90,42 @@ rest over `os_api` (`POST /api/device/bridge/sync`), so it is the same code on
 the badge. Console: `bridge`, `bridge code`, `bridge end`, `mesh peers`
 (bridged peers say so).
 
+### Bluetooth: Lua `ble` between tabs
+
+`lua_ble.c` is the badge's own file; `os_ble_emu.c` plays the radio under it
+(docs/LUA_API.md "ble", `core/os_ble.h`). Tabs of the origin share
+`BroadcastChannel("solana-os-ble")`: messages `{from, to, data}`, 12-hex
+addresses (`to` is `"*"` for advertisements) and a base64 frame whose first
+byte says what it is (advertisement, connect, accept, disconnect, ping, read,
+write, subscribe, their answers, notify, "this tab is going away"). The
+address is the emulated MAC + 2, as on an ESP32, and public. A "ble" task polls
+every 10 ms while an app has Bluetooth on (it is off otherwise and the tab
+ignores the channel).
+
+- Advertisements go out at their interval; a scan hears each with the
+  probability of its duty, reports a device at most once a second, and sees the
+  name only when active. Manufacturer data (company 0xFFFF) is present only
+  when the advertisement has `data`. Nothing else is in range.
+- A connect is retried every 200 ms until the device accepts (it must be
+  advertising connectable and have no link) or 10 s pass (`"unreachable"`). An
+  open link pings every second; 6 s without a frame is `"lost"`, and a tab
+  that closes says so at once (`pagehide`). The served side stops advertising
+  while connected. Answers time out after 5 s.
+- Events wait in a queue, as on the badge: what peers send (scan reports,
+  notifications, writes, subscribes) is dropped while 8 wait, OPEN, CLOSE and
+  answers never are. The task takes every frame from the page (which keeps 64,
+  dropping advertisements first) whatever the app is doing, so a slow app
+  loses what a badge's app would, and its link isn't "lost" for it.
+- Connecting out stops a connectable advertisement (a plain one keeps going),
+  and a connectable one is refused while a link exists, as on the badge.
+- Console: `ble` / `ble status` (on or off, address, advertising, scan, served
+  service, link, events waiting). The emulated badge has no other `ble`
+  subcommands: only an app turns it on.
+- Test: `main/lua/tests/t-ble` in two tabs (LEFT in one serves, RIGHT in the
+  other connects; UP holds a link for `"lost"`).
+  `main/lua/tests/t-ble-busy` the same way: advertising around links, a
+  subscribe lost behind a full queue, a reconnect storm that timers outrun.
+
 ### Tasks and timing
 
 There are no threads (the site is static; no SharedArrayBuffer, no COOP/COEP).
@@ -129,7 +166,8 @@ side is `web/src/lib/components/emulator/emulator.ts`.
 ## Limitations
 
 - Radios are simulated demo data (browsers
-  can't sniff Wi-Fi). Wi-Fi finds one open network, Emulator Guest, on
+  can't sniff Wi-Fi). Bluetooth reaches only other emulated badges in the same
+  browser: no phones, gadgets or real badges, no RSSI but a stable fake. Wi-Fi finds one open network, Emulator Guest, on
   the mesh channel (no password). The
   mesh is real between tabs of one origin, but has no range or packet loss.
 - The SD card is in memory and resets on reload. The battery is a fake.

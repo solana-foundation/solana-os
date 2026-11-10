@@ -1,0 +1,11 @@
+{
+  "id": "button-box",
+  "name": "Button Box",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Shows the presses of a Bluetooth button box you built on an ESP32.",
+  "icon": "bulb",
+  "accent": "14F195",
+  "category": "demos",
+  "permissions": ["ble", "led"]
+}

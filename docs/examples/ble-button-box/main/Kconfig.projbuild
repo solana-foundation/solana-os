@@ -1,0 +1,20 @@
+menu "Button box"
+
+config BOX_BUTTON_GPIO
+    int "Button GPIO"
+    default 9 if IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32H2
+    default 28 if IDF_TARGET_ESP32C5
+    default 0
+    help
+        The GPIO the button is on, wired to ground (pressed = low; the internal
+        pull-up holds it high). The default is the board's BOOT button, so a dev
+        board works with no wiring: GPIO0 on the ESP32 and ESP32-S3, GPIO9 on the
+        C2, C3, C6 and H2, GPIO28 on the C5.
+
+config BOX_NAME
+    string "Advertised name"
+    default "Button Box"
+    help
+        What scanners (and the badge's active scan) show. At most 29 bytes.
+
+endmenu
