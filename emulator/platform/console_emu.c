@@ -60,7 +60,7 @@ int console_stream_read(void *buf, size_t n, int timeout_ms)
 EMSCRIPTEN_KEEPALIVE void emu_console(const char *line)
 {
     // Split like the badge's esp_console: spaces separate words, "double
-    // quotes" group them ("wifi connect \"Solana Demo\" pass").
+    // quotes" group them ("wifi connect \"Emulator Guest\"").
     static char buf[512];
     char *argv[16];
     int argc = 0;
