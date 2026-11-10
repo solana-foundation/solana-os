@@ -17,9 +17,13 @@
 local HOST = "https://cheer.example.com"
 local SYNC_EVERY = 20             -- cheers between automatic syncs
 local WAIT_S = 20                 -- how long to wait for Wi-Fi after mesh.pause()
+local MAX_BATCH = 1000            -- cheers per request: the server takes no more
 
-local mine = storage.get("mine") or 0          -- all my cheers
-local unsynced = storage.get("unsynced") or 0  -- not on the server yet
+-- Kept in one storage key, written in one go, so a batch is never half saved.
+local saved = storage.get("cheer") or {}
+local mine = saved.mine or 0                   -- all my cheers
+local unsynced = saved.unsynced or 0           -- not in a batch yet
+local batch = saved.batch                      -- {id = "...", n = cheers}: sent, not acknowledged yet
 local heard = 0                                -- cheers from others since the app opened
 local last_send = -1000
 local syncing = false
@@ -32,6 +36,9 @@ local big = ui.label(0, 84, "", {size = 32, w = ui.W, align = "center", color = 
 local small = ui.label(0, 128, "", {w = ui.W, align = "center", color = "dim"})
 local last = ui.label(0, 150, "", {w = ui.W, align = "center"})
 ui.hint("SELECT cheer   RIGHT sync   CANCEL exit")
+
+-- Cheers not on the server yet: the batch on its way and the rest.
+local function waiting() return unsynced + (batch and batch.n or 0) end
 
 -- What the radio is doing, for the player. Older builds have no mesh.info.
 local function info()
@@ -56,32 +63,50 @@ local function show()
     radio2:text(where .. ". RIGHT pauses the mesh to sync")
   end
   big:text(tostring(mine))
-  small:text(unsynced > 0 and (unsynced .. " not synced yet") or "all synced")
+  small:text(waiting() > 0 and (waiting() .. " not synced yet") or "all synced")
 end
 
 local function save()
-  storage.set("mine", mine)
-  storage.set("unsynced", unsynced)
+  storage.set("cheer", {mine = mine, unsynced = unsynced, batch = batch})
 end
 
--- POST the cheers not counted yet. The server learns the badge and player from
--- the signed headers, so the body only says how many.
-local function post(done)
-  local n = unsynced
-  http.post(HOST .. "/score", {cheers = n}, function(ok, res)
-    if ok and res.status == 200 then
-      unsynced = unsynced - n
+-- 16 random hex digits (math.random is seeded per launch).
+local function new_id()
+  local r = math.random
+  return string.format("%04x%04x%04x%04x", r(0, 0xFFFF), r(0, 0xFFFF), r(0, 0xFFFF), r(0, 0xFFFF))
+end
+
+-- POST the cheers in batches of at most MAX_BATCH. A batch keeps its id until the server
+-- answers with that id, so when an answer is lost the next try sends the same batch again
+-- and the server counts it once. The server learns the badge and player from the signed
+-- headers, so the body only says which batch and how many.
+local function post(done, synced)
+  synced = synced or 0
+  if not batch then
+    if unsynced == 0 then
+      if synced > 0 then ui.toast("Synced " .. synced .. " cheers") end
+      return done()
+    end
+    batch = {id = new_id(), n = math.min(unsynced, MAX_BATCH)}
+    unsynced = unsynced - batch.n
+    save()                                  -- before sending: the id has to outlive the app
+  end
+  http.post(HOST .. "/score", {batch = batch.id, cheers = batch.n}, function(ok, res)
+    local m = ok and res.status == 200 and json.decode(res.body)
+    if type(m) == "table" and m.batch == batch.id then
+      local n = batch.n
+      batch = nil                           -- acknowledged: now it's safe to forget
       save()
-      ui.toast("Synced " .. n .. " cheers")
+      post(done, synced + n)                -- the next batch, if there is one
     else
       ui.toast("Not synced: " .. (ok and ("server said " .. res.status) or res))
+      done()
     end
-    done()
   end)
 end
 
 local function sync()
-  if syncing or unsynced == 0 then return end
+  if syncing or waiting() == 0 then return end
   local i = info()
   if i.online then                          -- the network is on the mesh channel, or Wi-Fi is free anyway
     syncing = true
@@ -124,7 +149,7 @@ function on_key(k)
   save()
   led.fill(0x14, 0xF1, 0x95)
   timer.after(80, led.off)
-  if unsynced >= SYNC_EVERY and info().online then sync() end  -- only automatic when it costs nothing
+  if waiting() >= SYNC_EVERY and info().online then sync() end  -- only automatic when it costs nothing
   show()
   return true
 end
@@ -138,4 +163,4 @@ end
 
 timer.every(1000, show)                     -- online can change: Wi-Fi joins, drops, a hello moves the channel
 show()
-if unsynced > 0 and info().online then sync() end
+if waiting() > 0 and info().online then sync() end

@@ -12,7 +12,13 @@ player what the radio is doing, from `mesh.info()` (Solana OS 1.0.0):
 
 The automatic sync (every 20 cheers) runs only while `online` is true, when it costs
 nothing; pausing is left to the player, because it takes the badge off the mesh for a few
-seconds. Unsynced cheers are kept in `storage`, so nothing is lost when the app closes.
+seconds.
+
+**Syncing is safe to repeat.** Answers get lost: Wi-Fi drops, or the request times out after
+the server has already counted the cheers, and the app can't tell which. So the app saves its
+cheers in `storage` as a batch with a random id before sending, sends that same batch until the
+server answers with its id, and only then forgets it; the server counts each id once. A batch
+holds at most 1,000 cheers, the most the server takes, so a backlog goes up a batch at a time.
 
 - `main.lua`, `app.json`: permissions `mesh`, `http` and `led`, hosts `cheer.example.com`.
 - The server side is [`../wifi-room/server.ts`](../wifi-room/server.ts) (`POST /score`):

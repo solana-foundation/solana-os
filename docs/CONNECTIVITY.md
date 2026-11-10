@@ -257,5 +257,5 @@ Each folder is a complete app you can drop on `/apps/submit`, with a README:
 | [`ble-button-box/`](examples/ble-button-box/) | a Bluetooth gadget for any ESP32 (an ESP-IDF project: one service, one characteristic that notifies when a button changes) and the badge app that finds it, subscribes and reconnects when it goes away |
 | [`ble-nearby/`](examples/ble-nearby/) | no connections: every badge advertises a team and a score and lists who is around, with their signal |
 | [`ble-link/`](examples/ble-link/) | two badges on one connection (the Nordic UART layout): a line typed or a key pressed on one shows on the other |
-| [`mesh-and-wifi/`](examples/mesh-and-wifi/) | a mesh game that reads `mesh.info()`, tells the player when it is online and on the mesh at once, and syncs a score with `mesh.pause()` / `mesh.resume()` |
+| [`mesh-and-wifi/`](examples/mesh-and-wifi/) | a mesh game that reads `mesh.info()`, tells the player when it is online and on the mesh at once, and syncs a score with `mesh.pause()` / `mesh.resume()`, in batches that are safe to send again when an answer gets lost |
 | [`wifi-room/`](examples/wifi-room/) | the same game through the server only: a `ws` room on the app's own host, with the few lines of server it needs |
