@@ -1735,7 +1735,7 @@ Bun.serve({
 ## Example
 
 ```lua
--- Tap counter that pays 1 !LAMP per 100 taps (needs an award cap from an admin).
+-- Tap counter that pays 1 !LAMP per 100 taps (needs an award allowance: ask DevRel on Telegram).
 local taps = storage.get("taps") or 0
 local title = ui.label(0, 60, "Taps", {size=20, w=ui.W, align="center"})
 local count = ui.label(0, 100, tostring(taps), {size=32, w=ui.W, align="center", color="green"})
@@ -1832,6 +1832,11 @@ end
   apps that harm players (taking !LAMPs by deception, asking for passwords, sending
   data away, hiding what they do), usually within a minute. What it flags waits for an
   organiser; until then only you see the app, or the store keeps your previous version.
+  `lamps.award` pays nothing until the DevRel team gives the app an allowance (its award
+  cap, the most each player earns a day): ask them in our
+  [Telegram chat](https://t.me/+FbTI1ucYgAQxYmQx) with the app's id, what it awards
+  !LAMPs for and how much a player should earn a day. The submit page, the app's page and
+  Your apps remind you while the code calls `lamps.award` and the app has none.
   An app with an award cap (`lamps.award`) waits for an organiser after every change to
   its code, files, permissions or hosts, even when the check passes; the store keeps
   your previous version and its cap meanwhile. An account (and an X account) has at
