@@ -6,6 +6,21 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 1.1.1 (2026-11-12)
+
+- **Fixes to 1.1.0's scans and app channels.** A scan's callback no longer depends on its
+  completion event reaching the Lua task: the host delivers finished results
+  (`os_mesh_scan_ready`) even if its event queue was full. `mesh.pause()` drops a
+  waiting callback, so a paused scan never calls back with nothing. Each frame now
+  carries the channel it was heard on (`rx_ctrl.channel`, through reassembly), so a
+  HELLO read after a hop isn't counted on the next channel. A scan that ends after
+  `mesh.channel(n)` (or the server) moved the mesh off the joined network's channel
+  leaves Wi-Fi suspended for the app instead of rejoining it. A bridge taking Wi-Fi
+  stops a running scan (no callback), and a script error stops the app's scan and
+  gives back its channel at once, not when the error screen is dismissed.
+  `main/core/os_mesh.*`, `main/core/os_radio.*`, `main/lua/lua_net.c`,
+  `main/lua/lua_host.c`; `docs/LUA_API.md` lists every way a scan ends.
+
 ## 1.1.0 (2026-11-11)
 
 - **Lua apps choose their mesh channel and scan for one** (`docs/LUA_API.md` "Choosing a
