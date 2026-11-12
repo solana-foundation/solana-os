@@ -421,7 +421,9 @@ mesh.bridge()               -- show this badge's bridge code over the app (CANCE
 mesh.meet(id, data, cb)     -- a meet both badges sign, for your server to trust ("Meets", 0.5.15)
 mesh.meets([after,] cb)     -- the meets the server holds for this badge's owner
 mesh.pause()                -- give the radio back to Wi-Fi, mesh.resume() takes it again (0.5.15)
-mesh.info()                 -- { channel = 149, band = "5", online = true, paused = false }   (1.0.0)
+mesh.info()                 -- { channel = 149, band = "5", online = true, paused = false, event = 149, scanning = false }   (1.0.0)
+mesh.channel(n)             -- move this badge's mesh to channel n while the app runs; mesh.channel() goes back (1.1.0)
+mesh.scan([opts,] cb)       -- listen on each channel a moment: who is on which ("Choosing a channel", 1.1.0)
 ```
 
 **The mesh channel** (`mesh.info()`, Solana OS 1.0.0). Every badge and beacon at an event
@@ -431,8 +433,83 @@ shares one channel, which the server announces. It is a 2.4 GHz channel (1 to 13
 is then on the mesh and the server at once, and your `mesh` app never pauses Wi-Fi. When
 it is false, opening the app took the radio from Wi-Fi (server calls answer `"offline"`
 until `mesh.pause()` or the app closes). `paused` is true between `mesh.pause()` and
-`mesh.resume()`. Check `if mesh.info then` on badges that may run an older build. The
-guide ([Connectivity](CONNECTIVITY.md)) says which radio to pick for what.
+`mesh.resume()`. `event` (1.1.0) is the channel the badge uses outside your app: the
+server's, or one its owner picked in the ESP-NOW app; `channel` differs from it only
+after `mesh.channel(n)`. `scanning` is true while `mesh.scan` runs. Check
+`if mesh.info then` on badges that may run an older build. The guide
+([Connectivity](CONNECTIVITY.md)) says which radio to pick for what.
+
+**Choosing a channel** (Solana OS 1.1.0; check `if mesh.channel then`). By default your
+app talks on the event's channel, with every badge and beacon there. An app can move
+its own badge to another mesh channel while it runs, for a game of its own away from a
+crowded one, and scan the channels first to see who is where.
+
+`mesh.channel(n)` puts this badge's mesh on channel `n` within a second: its HELLOs,
+`mesh.send` and `on_mesh` now use `n`, and badges heard on the old channel drop out of
+`mesh.nearby()`. `n` must be a mesh channel (1 to 13, or 36, 40, 44, 48, 149, 153, 157,
+161, 165), else it answers `nil, "not a mesh channel"`; otherwise `true`.
+`mesh.channel()` (or `0`) goes back to the event's channel, and so does closing the app:
+nothing is saved. Meanwhile:
+
+- **The others have to move too.** Badges hear each other only on the same channel, so
+  every badge in your game runs the app and picks the same `n`: from a scan, from the
+  host's broadcast on the event channel before everyone moves, or from something the
+  players share (a room name hashed to one of the channels).
+- **The rest of the event can't hear this badge.** Beacons (quests), and X Dex and
+  Trade requests from badges on the event channel, wait until the app goes back or
+  closes.
+- **Wi-Fi.** A network joined on the event channel (`online`) pauses once the app
+  moves to another channel, and server calls answer `"offline"` until `mesh.pause()` or
+  the app closes (even if the app goes back meanwhile); a network on channel `n` itself
+  keeps working. Bridged badges are
+  unaffected: a bridge goes through the server.
+- The server announcing a new event channel changes `event`, not your app's channel.
+
+`mesh.scan([opts,] cb)` hops through channels, listening on each for a moment, and
+calls `cb(channels)` once at the end. It sends nothing on the channels it visits (the
+others don't see a scan), so it finds badges and beacons by their HELLOs, which they
+send every 1.5 to 2.5 s, and badges running **your** app by the `mesh.send` messages
+they broadcast meanwhile. `opts`:
+
+| Field | |
+|---|---|
+| `channels` | the channels to visit, in order: a list of up to 22 mesh channels |
+| `band` | instead of `channels`: `"2.4"` (1 to 13), `"5"` (the nine above) or `"all"`. Default: the band of the badge's channel |
+| `dwell` | milliseconds per channel, 500 to 5000. Default 2600, long enough to catch every HELLO once; a shorter one may miss badges |
+
+The whole 2.4 GHz band takes about 34 s at the default dwell, both bands about 57 s.
+`channels` holds one entry per channel visited, in the order visited, heard or not
+(so an empty channel is easy to find):
+
+```lua
+{ channel = 6, band = "2.4", badges = 3, beacons = 1, app = 2,
+  peers = { { id = "7K2Q9M", kind = "badge", name = "@toly", level = 12, rssi = -48, app = true }, ... } }
+```
+
+`app` counts the badges heard sending your app's messages there (`peers[i].app`). A
+badge that runs your app but sends nothing isn't marked, so broadcast now and then
+(once a second or two) if your players should find each other by scanning. `peers` holds
+at most 24 badges and beacons in all, the first heard. Nothing in a scan is proof:
+anyone can send a HELLO or claim an id. While a scan runs the badge is on its own
+channel only while visiting it: `mesh.send` to a badge in range answers
+`nil, "scanning"`, `on_mesh` hears nothing, `mesh.nearby()` keeps what it heard before
+(30 s), and Wi-Fi joined on the mesh channel pauses until the scan ends. One scan at a
+time: another answers `nil, "scanning"`; between `mesh.pause()` and `mesh.resume()`,
+`nil, "paused"`; with a bridge open, `nil, "bridge open"` (a bridge keeps Wi-Fi joined,
+and a joined radio can't change channel). `mesh.pause()` and closing the app end a scan
+without calling `cb`.
+
+```lua
+-- Find this game's players, else the quietest channel, and go there.
+mesh.scan({band = "2.4"}, function(chs)
+  local best
+  for _, c in ipairs(chs) do
+    if c.app > 0 then best = c break end
+    if not best or c.badges + c.beacons < best.badges + best.beacons then best = c end
+  end
+  mesh.channel(best.channel)
+end)
+```
 
 **Bridged badges.** Badges out of radio range, and emulators (no radio), meet over a
 **bridge** through the server (docs/MESH.md "Bridges"). One badge shows its bridge

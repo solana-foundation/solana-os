@@ -87,8 +87,10 @@ to know.
 
 - **Use:** the mesh, `mesh.send` / `on_mesh`; `mesh.meet` when your server must trust it.
 - **Memory:** nothing beyond your app.
-- **Know:** messages get lost: repeat them. All badges must be on the mesh channel. A
-  `mesh` app takes the radio from Wi-Fi joined on another channel while it's open
+- **Know:** messages get lost: repeat them. All badges must be on the same channel: the
+  event's, or one your app moves them to (`mesh.channel`, after a `mesh.scan` if you
+  like, Solana OS 1.1.0; [LUA_API.md "Choosing a channel"](LUA_API.md)). A `mesh` app
+  takes the radio from Wi-Fi joined on another channel while it's open
   ([One radio](#one-radio-shared)).
 
 ### Badge to badge across the venue, or with an emulator
@@ -180,6 +182,13 @@ joined on channel 6 with the mesh moved to 149 took the radio for a `mesh` app, 
 after `mesh.pause()` Wi-Fi rejoined the same network's access point on 149: `mesh.info()`
 then read `online = true` on 5 GHz. Two badges exchanging frames on a 5 GHz channel is
 still untested (it needs two badges in one place).
+
+**Your own channel** (1.1.0). `mesh.channel(n)` moves just this badge, and only while
+your app runs; `mesh.info().event` keeps the event's channel. Moving costs the badge the
+event's beacons and X Dex/Trade requests, and the server too when Wi-Fi was joined on the
+event's channel (`online` turns false until `mesh.pause()` or the app closes), so a
+game that moves is one its players chose to sit down to. `mesh.scan` costs the same while
+it runs (about 34 s for 2.4 GHz at the default dwell), and gives Wi-Fi back when it ends.
 
 **Bluetooth next to both.** Bluetooth has its own channels, so it doesn't care which Wi-Fi
 channel or band the badge is on. Measured on a badge with Wi-Fi joined on 2.4 and on 5 GHz,

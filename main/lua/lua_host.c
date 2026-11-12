@@ -528,6 +528,8 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
             lh_mesh_event(s, ev->data);
         } else if (ev->kind == LH_EV_MEET) {
             lh_meet_event(s, ev->data);
+        } else if (ev->kind == LH_EV_SCAN) {
+            lh_mesh_scan_event(s);
         }
     }
     lh_calls_run(s);
@@ -744,7 +746,7 @@ static void host_enter(lv_obj_t *root)
     s->gen = ++s_gen;
     s->t0 = lh_now();
     s->area = area;
-    s->modal_ref = s->store_ref = LUA_NOREF;
+    s->modal_ref = s->store_ref = s->scan_ref = LUA_NOREF;
     lh_ble_init(s);
     s->loading = ui_label(area, &sol_font_14, COL_DIM, "Starting...");
     lv_obj_center(s->loading);

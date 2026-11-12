@@ -125,6 +125,27 @@ static char s_label[25];
 static int s_level, s_channel;
 static bool s_has_key;
 static int s_server_ch, s_override;     // s_lock: the server's channel, and the user's choice (0 = none)
+static int s_app_ch;                    // s_lock: a Lua app's own channel (0 = none), over both
+
+// A scan (os_mesh_scan), s_lock. Made when one starts, freed when its results
+// are taken or it is stopped: ~1.2 KB only while an app scans.
+#define SCAN_APP_MAX    32
+#define SCAN_STUCK_MS   3000                // a hop the radio never reached is given up after dwell + this
+typedef struct {
+    uint8_t ch[OS_MESH_SCAN_CH_MAX];
+    int n, idx;
+    int dwell;
+    int64_t hop_ms;                         // when this hop began
+    int64_t next_ms;                        // when it ends: 0 until the radio is on its channel
+    bool active;
+    bool took_wifi;                         // the scan suspended Wi-Fi (joined on the mesh channel)
+    char app[SCAN_APP_MAX + 1];
+    os_mesh_scan_done_t done;
+    void *ctx;
+    int nhits;
+    os_mesh_scan_hit_t hits[OS_MESH_SCAN_HITS];
+} scan_t;
+static scan_t *s_scan;
 
 // Badge beacon mode (os_mesh_beacon), s_lock: the id frames go out with and
 // the HELLO to broadcast ("" = none).
@@ -480,6 +501,14 @@ bool os_mesh_channel_overridden(void)
     return s_override != 0;
 }
 
+int os_mesh_event_channel(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int ch = s_override ? s_override : s_server_ch;
+    xSemaphoreGive(s_lock);
+    return ch ? ch : s_channel;
+}
+
 // The ESP-NOW scanner borrowed the radio (Wi-Fi suspended, not by us).
 static bool paused(void)
 {
@@ -495,6 +524,8 @@ bool os_mesh_ready(void)
 {
     return (on_channel() || os_bridge_count() > 0) && s_id[0] && s_has_key;
 }
+
+static void use_channel(int ch);
 
 // Pick up identity and channel changes from os_cloud (mesh task).
 static void sync_cloud(void)
@@ -521,6 +552,9 @@ static void sync_cloud(void)
     if (s_override) {
         ch = s_override;
     }
+    if (s_app_ch) {
+        ch = s_app_ch;                      // the running app's, until it ends
+    }
     bool beacon = s_beacon[0] != 0;
     xSemaphoreGive(s_lock);
     free(in);
@@ -532,19 +566,306 @@ static void sync_cloud(void)
             ch = w.channel;
         }
     }
-    if (ch != s_channel) {
-        ESP_LOGI(TAG, "mesh channel %d", ch);
+    use_channel(ch);
+}
+
+static bool wifi_joined(const os_wifi_info_t *w)
+{
+    return w->state == OS_WIFI_CONNECTED || w->state == OS_WIFI_CONNECTING;
+}
+
+// Move the mesh to ch (any task). Peers heard on the old channel are gone
+// (unicasts to them would go nowhere), and a mesh holder takes the radio
+// from a network on another channel, as its acquire would have.
+static void use_channel(int ch)
+{
+    bool suspend = false;
+    os_wifi_info_t w;
+    os_wifi_get_info(&w);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool changed = ch != s_channel;
+    if (changed) {
         s_channel = ch;
+        for (int i = 0; i < PEER_MAX; i++) {
+            if (!s_meta[i].bridged && !s_meta[i].pinned) {
+                s_peers[i].last_ms = 0;
+            }
+        }
+        if (s_acquired > 0 && !s_keep_wifi && !s_took_wifi && wifi_joined(&w) &&
+                !(w.state == OS_WIFI_CONNECTED && w.channel == ch)) {
+            suspend = s_took_wifi = true;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (changed) {
+        ESP_LOGI(TAG, "mesh channel %d", ch);
         os_wifi_set_park_channel(ch);
+    }
+    if (suspend) {
+        ESP_LOGI(TAG, "Wi-Fi is off the new mesh channel: suspending it while the mesh app runs");
+        os_wifi_suspend();
     }
 }
 
-// While our acquire holds the radio, os_wifi does not park it: we do.
+// An empty frame wakes the mesh task now (any task but the mesh task).
+static void wake(void)
+{
+    rx_t w = { .len = 0 };
+    if (s_rxq) {
+        xQueueSend(s_rxq, &w, 0);
+    }
+}
+
+bool os_mesh_app_channel(int channel)
+{
+    if (channel && !os_mesh_channel_ok(channel)) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool same = s_app_ch == channel;
+    s_app_ch = channel;
+    int ch = channel ? channel : s_override ? s_override : s_server_ch;
+    bool beacon = s_beacon[0] != 0;
+    xSemaphoreGive(s_lock);
+    if (!same) {
+        ESP_LOGI(TAG, "app channel %s %d", channel ? "set to" : "cleared, back to", ch);
+    }
+    if (!beacon && ch) {
+        use_channel(ch);                    // now, not at the next sync
+    }
+    return true;
+}
+
+// Where the radio should be: the scan's channel while one runs, else the mesh's.
+static int radio_target_locked(void)
+{
+    return s_scan && s_scan->active ? s_scan->ch[s_scan->idx] : s_channel;
+}
+
+// While our acquire (or a scan) holds the radio, os_wifi does not park it: we
+// do. Otherwise os_wifi parks it, on the scan's channel while one runs.
 static void hold_channel(void)
 {
-    if (s_took_wifi && s_channel && os_radio_channel() != s_channel) {
-        os_radio_set_channel(s_channel);    // fails until the disconnect settles; retried
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int target = radio_target_locked();
+    bool took = s_took_wifi;
+    xSemaphoreGive(s_lock);
+    if (!target) {
+        return;
     }
+    if (took) {
+        if (os_radio_channel() != target) {
+            os_radio_set_channel(target);   // fails until the disconnect settles; retried
+        }
+    } else {
+        os_wifi_set_park_channel(target);   // nothing while a network is joined or the radio is lent out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scans
+
+bool os_mesh_scanning(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool on = s_scan && s_scan->active;
+    xSemaphoreGive(s_lock);
+    return on;
+}
+
+esp_err_t os_mesh_scan(const uint8_t *channels, int n, int dwell_ms, const char *app, os_mesh_scan_done_t done,
+                       void *ctx)
+{
+    if (!channels || n < 1 || n > OS_MESH_SCAN_CH_MAX || dwell_ms < 500 || dwell_ms > 5000 || !done ||
+            (app && strlen(app) > SCAN_APP_MAX)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (int i = 0; i < n; i++) {
+        if (!os_mesh_channel_ok(channels[i])) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+    scan_t *sc = calloc(1, sizeof(*sc));
+    if (!sc) {
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(sc->ch, channels, n);
+    sc->n = n;
+    sc->dwell = dwell_ms;
+    sc->hop_ms = now_ms();
+    sc->active = true;
+    strlcpy(sc->app, app ? app : "", sizeof(sc->app));
+    sc->done = done;
+    sc->ctx = ctx;
+
+    os_wifi_info_t w;
+    os_wifi_get_info(&w);
+    scan_t *old = NULL;
+    esp_err_t err = ESP_OK;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_scan && s_scan->active) {
+        err = ESP_ERR_NOT_FINISHED;
+    } else if (!s_acquired || s_keep_wifi || s_beacon[0]) {
+        err = ESP_ERR_INVALID_STATE;        // no holder, a bridge keeps Wi-Fi joined, or a beacon
+    } else {
+        if (!s_took_wifi && wifi_joined(&w)) {
+            sc->took_wifi = s_took_wifi = true;     // joined on the mesh channel: lend it to the scan
+        }
+        old = s_scan;                       // results nobody took
+        s_scan = sc;
+    }
+    xSemaphoreGive(s_lock);
+    if (err != ESP_OK) {
+        free(sc);
+        return err;
+    }
+    free(old);
+    ESP_LOGI(TAG, "scan: %d channels, %d ms each%s", n, dwell_ms, sc->took_wifi ? " (Wi-Fi suspended meanwhile)" : "");
+    if (sc->took_wifi) {
+        os_wifi_suspend();
+    }
+    wake();
+    return ESP_OK;
+}
+
+void os_mesh_scan_stop(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    scan_t *sc = s_scan;
+    s_scan = NULL;
+    bool resume = sc && sc->took_wifi;
+    if (resume) {
+        s_took_wifi = false;
+    }
+    xSemaphoreGive(s_lock);
+    if (sc && sc->active) {
+        ESP_LOGI(TAG, "scan stopped");
+    }
+    free(sc);
+    if (resume) {
+        os_wifi_resume();
+    }
+    wake();
+}
+
+int os_mesh_scan_take(uint8_t channels[OS_MESH_SCAN_CH_MAX], int *n_ch, os_mesh_scan_hit_t *out, int max)
+{
+    int n = 0;
+    *n_ch = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    scan_t *sc = s_scan && !s_scan->active ? s_scan : NULL;
+    if (sc) {
+        s_scan = NULL;
+    }
+    xSemaphoreGive(s_lock);
+    if (sc) {
+        memcpy(channels, sc->ch, sc->n);
+        *n_ch = sc->n;
+        n = sc->nhits < max ? sc->nhits : max;
+        memcpy(out, sc->hits, n * sizeof(*out));
+        free(sc);
+    }
+    return n;
+}
+
+// Mesh task, every MAINTAIN_MS: the next hop once this one has lasted its
+// dwell (counted from when the radio got there), done at the end.
+static void scan_step(int64_t now)
+{
+    os_mesh_scan_done_t done = NULL;
+    void *ctx = NULL;
+    bool resume = false;
+    int radio = os_radio_channel();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    scan_t *sc = s_scan;
+    if (sc && sc->active) {
+        if (!sc->next_ms && radio == sc->ch[sc->idx]) {
+            sc->next_ms = now + sc->dwell;
+        }
+        bool over = sc->next_ms ? now >= sc->next_ms : now - sc->hop_ms > sc->dwell + SCAN_STUCK_MS;
+        if (over && sc->idx + 1 < sc->n) {
+            sc->idx++;
+            sc->hop_ms = now;
+            sc->next_ms = 0;
+        } else if (over) {
+            sc->active = false;
+            done = sc->done;
+            ctx = sc->ctx;
+            resume = sc->took_wifi;
+            if (resume) {
+                sc->took_wifi = s_took_wifi = false;
+            }
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (resume) {
+        os_wifi_resume();
+    }
+    if (done) {
+        ESP_LOGI(TAG, "scan done");
+        done(ctx);
+    }
+}
+
+// A HELLO or one of the scanning app's APP messages, heard during a scan
+// (mesh task). False when no scan runs.
+static bool scan_note(uint8_t type, const char *src, int rssi, const char *json)
+{
+    char app[SCAN_APP_MAX + 1];
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool on = s_scan && s_scan->active;
+    strlcpy(app, on ? s_scan->app : "", sizeof(app));
+    xSemaphoreGive(s_lock);
+    if (!on || (type != OS_MESH_HELLO && (type != OS_MESH_APP || !app[0] || !strstr(json, app)))) {
+        return on;
+    }
+    int ch = os_radio_channel();
+    cJSON *j = cJSON_Parse(json);
+    if (!cJSON_IsObject(j)) {
+        cJSON_Delete(j);
+        return on;
+    }
+    bool hello = type == OS_MESH_HELLO;
+    const char *a = cJSON_GetStringValue(cJSON_GetObjectItem(j, "app"));
+    if (!hello && (!a || strcmp(a, app))) {
+        cJSON_Delete(j);
+        return on;
+    }
+    const char *k = cJSON_GetStringValue(cJSON_GetObjectItem(j, "k"));
+    const cJSON *lv = cJSON_GetObjectItem(j, "lv");
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    scan_t *sc = s_scan;
+    bool visiting = false;
+    for (int i = 0; sc && sc->active && i < sc->n && !visiting; i++) {
+        visiting = sc->ch[i] == ch;
+    }
+    os_mesh_scan_hit_t *h = NULL;
+    for (int i = 0; visiting && i < sc->nhits && !h; i++) {
+        if (sc->hits[i].channel == ch && !strcmp(sc->hits[i].id, src)) {
+            h = &sc->hits[i];
+        }
+    }
+    if (visiting && !h && sc->nhits < OS_MESH_SCAN_HITS) {
+        h = &sc->hits[sc->nhits++];
+        memset(h, 0, sizeof(*h));
+        h->channel = ch;
+        strlcpy(h->id, src, sizeof(h->id));
+        h->kind = OS_PEER_BADGE;
+    }
+    if (h) {
+        h->rssi = rssi;
+        if (hello) {
+            h->hello = true;
+            h->kind = k && !strcmp(k, "c") ? OS_PEER_BEACON : OS_PEER_BADGE;
+            clean_copy(h->name, sizeof(h->name), cJSON_GetStringValue(cJSON_GetObjectItem(j, "n")));
+            h->level = h->kind == OS_PEER_BADGE && cJSON_IsNumber(lv) ? (int16_t)lv->valuedouble : 0;
+        } else {
+            h->app = true;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    cJSON_Delete(j);
+    return on;
 }
 
 void os_mesh_acquire(void)
@@ -1029,6 +1350,9 @@ static void deliver(uint8_t type, const uint8_t *mac, const char *src, int rssi,
         printf("mesh rx type %d from %s (%d B, %s, %d dBm): %.80s\n", type, src, len,
                bridged ? "bridged" : frags == 1 ? "1 frag" : "frags", rssi, json);
     }
+    if (!bridged && scan_note(type, src, rssi, json) && !on_channel()) {
+        return;                             // heard on a channel the scan visits: noted, nothing more
+    }
 
     if (type == OS_MESH_HELLO) {
         if (bridged) {
@@ -1276,6 +1600,7 @@ static void mesh_task(void *arg)
                 next_sync = now + SYNC_MS;
                 sync_cloud();
             }
+            scan_step(now);
             hold_channel();
             expire_reassembly(now);
         }
@@ -1366,6 +1691,15 @@ static void print_status(void)
         printf("  channel %d chosen on the badge; the server announced %d (\"mesh channel auto\" goes back)\n", s_override,
                s_server_ch);
     }
+    if (s_app_ch) {
+        printf("  channel %d chosen by the running app (mesh.channel)\n", s_app_ch);
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_scan) {
+        printf("  scan: %s, channel %d (%d of %d), %d heard%s\n", s_scan->active ? "running" : "done", s_scan->ch[s_scan->idx],
+               s_scan->idx + 1, s_scan->n, s_scan->nhits, s_scan->took_wifi ? ", Wi-Fi suspended for it" : "");
+    }
+    xSemaphoreGive(s_lock);
     if (s_beacon[0]) {
         printf("  playing beacon %s: %s\n", s_beacon, s_beacon_hello[0] ? s_beacon_hello : "(silent)");
     }
