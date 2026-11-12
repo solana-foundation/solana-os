@@ -940,8 +940,13 @@ static void mesh_hold(void *arg)
 static int mesh_hold_post(lua_State *L, bool want)
 {
     lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    lh_t *s = lh_get(L);
+    if (!want && s->scan_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, s->scan_ref);  // the pause ends the scan: its callback never runs
+        s->scan_ref = LUA_NOREF;
+    }
     s_mesh_paused = !want;
-    os_post(mesh_hold, (void *)(uintptr_t)((lh_get(L)->gen & 0x7fffffff) << 1 | want));
+    os_post(mesh_hold, (void *)(uintptr_t)((s->gen & 0x7fffffff) << 1 | want));
     return 0;
 }
 
@@ -1002,7 +1007,7 @@ static int l_mesh_channel(lua_State *L)
 static void scan_done(void *ctx)
 {
     lh_ev_t ev = { .kind = LH_EV_SCAN, .gen = (uint32_t)(uintptr_t)ctx };
-    lh_post(&ev);
+    lh_post(&ev);                       // only a wake: lh_mesh_scan_run finds the results if the queue was full
 }
 
 static const uint8_t s_ch24[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
@@ -1153,12 +1158,19 @@ static int scan_deliver(lua_State *L)
     return 0;
 }
 
-void lh_mesh_scan_event(lh_t *s)
+void lh_mesh_scan_run(lh_t *s)
 {
-    // A scan started since this one ended (and freed its results) owns the callback now.
-    if (s->L && !s->failed && s->scan_ref != LUA_NOREF && !os_mesh_scanning()) {
+    // Results that still exist: not a scan a pause, a bridge or a newer scan
+    // ended (which freed them), and not one still running.
+    if (s->L && !s->failed && s->scan_ref != LUA_NOREF && os_mesh_scan_ready()) {
         lh_callback(s, scan_deliver, s);
     }
+}
+
+void lh_mesh_end_app(void)
+{
+    os_mesh_scan_stop();
+    os_mesh_app_channel(0);
 }
 
 // mesh.meets([after], cb): this owner's meets in the app, as the server holds

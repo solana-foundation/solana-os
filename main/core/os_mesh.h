@@ -96,8 +96,8 @@ int os_mesh_event_channel(void);
 // `channels`, `dwell_ms` on each, and only listens. HELLOs and APP messages
 // for `app` heard meanwhile are noted per channel; nothing else is handled
 // unless the radio is on the mesh channel. done(ctx) runs on the mesh task
-// at the end (post from it, nothing more); os_mesh_scan_stop() ends it
-// without calling done. Needs a mesh holder (os_mesh_acquire), no bridge
+// at the end (post from it, nothing more); os_mesh_scan_stop(), or a bridge
+// taking Wi-Fi (os_mesh_keep_wifi), ends it without calling done. Needs a mesh holder (os_mesh_acquire), no bridge
 // keeping Wi-Fi and no beacon: ESP_ERR_INVALID_STATE, ESP_ERR_NOT_FINISHED
 // while another scan runs, ESP_ERR_NO_MEM, ESP_ERR_INVALID_ARG.
 #define OS_MESH_SCAN_CH_MAX     22
@@ -117,6 +117,8 @@ esp_err_t os_mesh_scan(const uint8_t *channels, int n, int dwell_ms, const char 
                        void *ctx);
 void os_mesh_scan_stop(void);
 bool os_mesh_scanning(void);
+// A scan ended and its results wait for os_mesh_scan_take (false once taken or stopped).
+bool os_mesh_scan_ready(void);
 // After done: the channels visited and what was heard, then the results are
 // freed. Returns the hits (<= max), *n_ch the channels (<= OS_MESH_SCAN_CH_MAX).
 int os_mesh_scan_take(uint8_t channels[OS_MESH_SCAN_CH_MAX], int *n_ch, os_mesh_scan_hit_t *out, int max);

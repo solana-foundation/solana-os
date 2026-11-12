@@ -347,7 +347,8 @@ void lh_calls_run(lh_t *s);                             // answer finished calls
 void lh_net_stop(lh_t *s);                              // OS task, after the Lua task ended
 void lh_calls_free(lh_t *s);
 void lh_mesh_event(lh_t *s, char *data);
-void lh_mesh_scan_event(lh_t *s);                       // LH_EV_SCAN: mesh.scan's callback
+void lh_mesh_scan_run(lh_t *s);                         // mesh.scan's callback once its results wait
+void lh_mesh_end_app(void);                             // stop the app's scan and channel (any task)
 void lh_mesh_start(lh_t *s);                            // OS task
 void lh_mesh_mute(void);                                // stop queueing messages
 void lh_mesh_stop(void);                                // OS task

@@ -281,6 +281,7 @@ static void fail(lh_t *s, int rc, const char *msg_in)
     strlcpy(s->err, msg, sizeof(s->err));
     s->failed = true;
     lh_mesh_mute();
+    lh_mesh_end_app();                      // no scan or app channel outlives the script
     lh_ws_stop(s);                          // give the badge its server connection back now
     lh_ble_stop(s);                         // and its Bluetooth heap
     show_error(s, title, msg);
@@ -528,13 +529,12 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
             lh_mesh_event(s, ev->data);
         } else if (ev->kind == LH_EV_MEET) {
             lh_meet_event(s, ev->data);
-        } else if (ev->kind == LH_EV_SCAN) {
-            lh_mesh_scan_event(s);
-        }
+        }                                   // LH_EV_SCAN only wakes us: lh_mesh_scan_run below
     }
     lh_calls_run(s);
     lh_ws_run(s);
     lh_ble_run(s);
+    lh_mesh_scan_run(s);
     if (s->L && !s->failed) {
         lh_meet_run(s);
     }

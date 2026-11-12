@@ -29,7 +29,8 @@ static uint32_t s_stamp;
 static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
     if (s_rx && info && info->src_addr) {
-        s_rx(info->src_addr, data, len, info->rx_ctrl ? info->rx_ctrl->rssi : 0);
+        s_rx(info->src_addr, data, len, info->rx_ctrl ? info->rx_ctrl->rssi : 0,
+             info->rx_ctrl ? info->rx_ctrl->channel : 0);
     }
 }
 

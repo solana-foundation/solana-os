@@ -496,8 +496,9 @@ channel only while visiting it: `mesh.send` to a badge in range answers
 (30 s), and Wi-Fi joined on the mesh channel pauses until the scan ends. One scan at a
 time: another answers `nil, "scanning"`; between `mesh.pause()` and `mesh.resume()`,
 `nil, "paused"`; with a bridge open, `nil, "bridge open"` (a bridge keeps Wi-Fi joined,
-and a joined radio can't change channel). `mesh.pause()` and closing the app end a scan
-without calling `cb`.
+and a joined radio can't change channel). `mesh.pause()`, a bridge opening, a script
+error and closing the app end a scan without calling `cb`; a script error also gives
+back the channel `mesh.channel(n)` chose.
 
 ```lua
 -- Find this game's players, else the quietest channel, and go there.
