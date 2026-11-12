@@ -17,7 +17,9 @@ site changes that came with them live in the parent repository.
   `mesh.channel(n)` (or the server) moved the mesh off the joined network's channel
   leaves Wi-Fi suspended for the app instead of rejoining it. A bridge taking Wi-Fi
   stops a running scan (no callback), and a script error stops the app's scan and
-  gives back its channel at once, not when the error screen is dismissed.
+  gives back its channel at once, not when the error screen is dismissed. The host clears both
+  again once the script's state is closed, so an `on_exit` (or a finalizer) that scans
+  or calls `mesh.channel` can't leave either behind, whatever ended the app.
   `main/core/os_mesh.*`, `main/core/os_radio.*`, `main/lua/lua_net.c`,
   `main/lua/lua_host.c`; `docs/LUA_API.md` lists every way a scan ends.
 

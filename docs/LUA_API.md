@@ -498,7 +498,8 @@ time: another answers `nil, "scanning"`; between `mesh.pause()` and `mesh.resume
 `nil, "paused"`; with a bridge open, `nil, "bridge open"` (a bridge keeps Wi-Fi joined,
 and a joined radio can't change channel). `mesh.pause()`, a bridge opening, a script
 error and closing the app end a scan without calling `cb`; a script error also gives
-back the channel `mesh.channel(n)` chose.
+back the channel `mesh.channel(n)` chose. Neither outlives the app: a scan or a channel
+an `on_exit` asks for ends with it.
 
 ```lua
 -- Find this game's players, else the quietest channel, and go there.

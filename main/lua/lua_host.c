@@ -240,6 +240,9 @@ static void close_state(lh_t *s)
         lua_close(s->L);
         s->L = NULL;
         s->gif_work = NULL;                 // it was a userdata
+        if (s->pkg.perms & LUA_PERM_MESH) {
+            lh_mesh_end_app();              // again: on_exit (or a finalizer) may have scanned or moved
+        }
     }
     lh_fs_close(s);
     lh_code_close(s);                       // nothing points into it now
@@ -281,7 +284,7 @@ static void fail(lh_t *s, int rc, const char *msg_in)
     strlcpy(s->err, msg, sizeof(s->err));
     s->failed = true;
     lh_mesh_mute();
-    lh_mesh_end_app();                      // no scan or app channel outlives the script
+    lh_mesh_end_app();                      // no scan or app channel outlives the script (close_state repeats it after on_exit)
     lh_ws_stop(s);                          // give the badge its server connection back now
     lh_ble_stop(s);                         // and its Bluetooth heap
     show_error(s, title, msg);
