@@ -102,7 +102,7 @@ function on_key(k)
   return false
 end
 
--- Before anything else: a secure connection needs room to start (56 KB of the
--- badge's heap free), so open the socket while the app is still small and load
--- big data after it's up.
+-- Before anything else: below Solana OS 2.0.0 a secure connection needs room to
+-- start (56 KB of the badge's heap free), so open the socket while the app is
+-- still small and load big data after it's up. (From 2.0.0 it takes PSRAM.)
 connect()

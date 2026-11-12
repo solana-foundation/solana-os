@@ -96,8 +96,8 @@ to know.
 ### Badge to badge across the venue, or with an emulator
 
 - **Use:** a bridge (same `mesh` code, `mesh.bridge()`), or a `ws` room on your server.
-- **Memory:** bridge: nothing beyond your app. `ws`: 56 KB free to start, about 5 KB while
-  open.
+- **Memory:** bridge: nothing beyond your app. `ws`: about 27 KB of PSRAM to start, about
+  5 KB while open (below 2.0.0: 56 KB of the shared heap free to start; see "Memory").
 - **Know:** both need Wi-Fi. A bridged message takes about 1 to 3 seconds: turn-based games
   work, fast action doesn't. With `ws`, other server calls wait while the socket is open,
   and your server must be up.
@@ -127,7 +127,8 @@ Its access points aren't on the mesh channel, or the organisers want everything 
 the server.
 
 - **Use:** a `ws` room on your host, or `http`.
-- **Memory:** 56 KB free to start a secure connection.
+- **Memory:** a secure connection takes PSRAM, which an app can't run out of (below 2.0.0:
+  56 KB of the shared heap free to start; see "Memory").
 - **Know:** everything depends on the venue's Wi-Fi and your server. While a socket is
   open, `lamps`, `items`, `http` and the rest answer `"socket open"`: call them before
   `ws.open`. 20 socket opens a minute per badge.
@@ -210,8 +211,33 @@ Badges whose network is on the mesh channel get `online = true` everywhere on th
 
 ## Memory
 
-The badge has no extra RAM chip: your app, Wi-Fi, secure connections and Bluetooth share one
-heap. Measured at the launcher with Wi-Fi joined:
+From Solana OS 2.0.0 the badge uses the 8 MB of PSRAM in its chip's package: your app's Lua
+heap (up to 6 MB), Wi-Fi's buffers and secure connections live there, while Bluetooth, your
+app's UI objects and its task stack stay in the chip's own memory (SRAM). So the radios
+and your data no longer compete. Measured on 2.0.0:
+
+| | SRAM free | PSRAM free |
+|---|---|---|
+| Launcher, Wi-Fi joined, the server connection open | about 154 KB | about 8.1 MB |
+| Bluetooth on (no network joined) | about 30 KB less | the same |
+| A secure connection's handshake, for a moment | the same | about 27 KB less |
+| A test app holding 6 MB of Lua heap and 124 labels | about 116 KB | about 2 MB |
+
+What needs room, and when:
+
+- `ble.on()` refuses with `"not enough memory"` while the badge has under 64 KB of SRAM
+  free. A Lua heap can't take SRAM, and UI objects are capped (LUA_API.md "Limits"), so an
+  app can't get there on its own.
+- A new secure connection (`ws.open`, the App Store, the badge's own server connection)
+  needs 56 KB of PSRAM free to start. The badge never lets an app's heap take PSRAM below
+  512 KB, so there always is.
+- `lua mem` on the console shows the last run's peak Lua heap, `heap` the badge's free SRAM
+  and then its PSRAM, and `sys.memory()` tells the app itself.
+
+### Badges below 2.0.0
+
+Until a badge updates, your app, Wi-Fi, secure connections and Bluetooth share one heap,
+measured at the launcher with Wi-Fi joined:
 
 | | Free heap |
 |---|---|
@@ -221,22 +247,16 @@ heap. Measured at the launcher with Wi-Fi joined:
 | Bluetooth on, a link open (either way round) | about 110 KB |
 | Bluetooth on, a link open and a scan running | about 106 KB |
 
-So Bluetooth costs every badge about 4 KB, and about 30 KB more while an app has it on (up to about 39 KB with a link open and a scan
-running);
-`ble.off()` gives that back. Your Lua heap has its own cap of 96 KB, and the badge stops an
-app that would leave the badge's own heap under 32 KB ("The badge is low on memory"). With Wi-Fi
-joined, a test app with 60 labels reached about 80 KB of Lua heap before that reserve
-stopped it, and about 49 KB with Bluetooth on. Lighter apps go further; apps with many UI
-objects stop sooner.
+So Bluetooth costs about 4 KB, and about 30 KB more while an app has it on (up to about 39
+KB with a link open and a scan running); `ble.off()` gives that back. The Lua heap's cap is
+96 KB, and the badge stops an app that would leave its heap under 32 KB ("The badge is low
+on memory"). With Wi-Fi joined, a test app with 60 labels reached about 80 KB of Lua heap
+before that reserve stopped it, and about 49 KB with Bluetooth on. Lighter apps go further;
+apps with many UI objects stop sooner. `ble.on()` needs 64 KB of that heap free, and a new
+secure connection 56 KB; it takes up to about 40 KB for a moment, and an open socket keeps
+about 5 KB.
 
-What needs room, and when:
-
-- `ble.on()` refuses with `"not enough memory"` while the badge has under 64 KB free.
-- A new secure connection (`ws.open`, the App Store, the badge's own server connection)
-  needs 56 KB free to start, takes up to about 40 KB for a moment, and an open socket keeps
-  about 5 KB.
-
-So do things in this order:
+So on those badges do things in this order:
 
 1. **Turn Bluetooth on first**, before you build big tables, load images or read files:
    `if ble.on() then ... end` at the top of `main.lua`.
@@ -245,9 +265,9 @@ So do things in this order:
    has to be made again it needs room too (up to the same 56 KB).
 3. **Turn Bluetooth off when you're done with it**: after reading a gadget once, or when the
    player leaves the screen that needs it. Turn it on again later the same way.
-4. **Measure on a badge.** `lua mem` on the console shows the last run's peak Lua heap,
-   `heap` the badge's free heap. A socket and Bluetooth together haven't been measured: if
-   your app needs both, open the socket first, then turn Bluetooth on, and check `heap`.
+4. **Measure on a badge.** `lua mem` shows the last run's peak Lua heap, `heap` the badge's
+   free heap. A socket and Bluetooth together haven't been measured there: if your app
+   needs both, open the socket first, then turn Bluetooth on, and check `heap`.
 
 ## Trust
 

@@ -43,7 +43,7 @@
 #define OS_BLE_SERVICES_MAX 4       // service UUIDs reported per advertisement
 #define OS_BLE_EVENTS_MAX   8       // events waiting for the owner
 #define OS_BLE_OPS_MAX      4       // reads, writes with response and subscribes waiting for their answer
-#define OS_BLE_MIN_FREE     (64 * 1024)     // os_ble_start refuses below this much free heap
+#define OS_BLE_MIN_FREE     (64 * 1024)     // os_ble_start refuses below this much free SRAM (the controller's heap)
 
 // A UUID as written: 16-bit "180f" -> len 2, {0x18, 0x0f}; 128-bit
 // "6e400001-b5a3-f393-e0a9-e50e24dcca9e" -> len 16, {0x6e, 0x40, ...}.

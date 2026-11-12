@@ -41,6 +41,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "os.h"
 #include "os_ble.h"
+#include "os_mem.h"
 #include "os_cloud.h"
 #include "os_cmd.h"
 
@@ -1642,7 +1643,7 @@ esp_err_t os_ble_start(os_ble_wake_t wake, void *ctx)
         unlock();
         return same ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
-    if (heap_caps_get_free_size(MALLOC_CAP_DEFAULT) < OS_BLE_MIN_FREE) {
+    if (heap_caps_get_free_size(OS_MEM_SRAM) < OS_BLE_MIN_FREE) {
         unlock();
         return ESP_ERR_NO_MEM;
     }
@@ -1888,9 +1889,9 @@ static int parse_data(const char *s, uint8_t *out, int max)
 
 static void heap_line(const char *what)
 {
-    printf("ble: heap %-10s %6u free, %6u min, %6u largest\n", what, (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
-           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT),
-           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+    printf("ble: heap %-10s %6u free, %6u min, %6u largest (SRAM); %u PSRAM free\n", what,
+           (unsigned)heap_caps_get_free_size(OS_MEM_SRAM), (unsigned)heap_caps_get_minimum_free_size(OS_MEM_SRAM),
+           (unsigned)heap_caps_get_largest_free_block(OS_MEM_SRAM), (unsigned)heap_caps_get_free_size(OS_MEM_PSRAM));
 }
 
 static void cmd_off(void)
@@ -1964,12 +1965,12 @@ static int cmd_ble(int argc, char **argv)
                 printf("ble: cycle %d: on: %s\n", i + 1, err_name(e));
                 return 1;
             }
-            size_t on = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+            size_t on = heap_caps_get_free_size(OS_MEM_SRAM);
             cmd_off();
             vTaskDelay(pdMS_TO_TICKS(50));      // the idle task frees the host task's stack
             printf("ble: cycle %2d: on %u free; off %u free, %u largest\n", i + 1, (unsigned)on,
-                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
-                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+                   (unsigned)heap_caps_get_free_size(OS_MEM_SRAM),
+                   (unsigned)heap_caps_get_largest_free_block(OS_MEM_SRAM));
         }
         heap_line("after");
         return 0;

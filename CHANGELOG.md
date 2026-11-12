@@ -6,6 +6,51 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 2.0.0 (2026-11-12)
+
+- **PSRAM.** Every badge's ESP32-C5HR8 carries 8 MB of quad PSRAM in its package (production
+  rev 1.0 and the prototypes' rev 1.2 alike), which Solana OS left off until now. It runs at
+  80 MHz, is brought up by the app's startup code (not the bootloader, so a badge updated
+  over the air gets it too) and goes into the heap: `malloc()` puts blocks over 16 KB there,
+  Wi-Fi and lwIP buffers prefer it (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`), FatFS's
+  buffers too, and mbedTLS allocates from it first (`tls_calloc` in `os_http.c`,
+  `CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`), so a TLS handshake no longer touches SRAM. A chip
+  without PSRAM still boots and gets 1.x's limits (`CONFIG_SPIRAM_IGNORE_NOTFOUND`).
+  `core/os_mem.h` says which heap is which; the guards follow it: a new TLS connection
+  (`os_http`, `os_ws`) checks PSRAM, `ble.on()` SRAM. Measured: SRAM 163 KB free at the
+  launcher with no network joined (1.1.2: 156 KB), 154 KB with Wi-Fi joined and the
+  server connection open (HYQ5VS on 1.1.2: 143 KB); a full handshake takes 27 KB of PSRAM;
+  Bluetooth still takes about 30 KB of SRAM while on. Boot takes about a second longer,
+  the PSRAM's memory test (`CONFIG_SPIRAM_MEMTEST`). On rev 1.0 chips PSRAM isn't
+  encrypted even with flash encryption (an ESP32-C5 erratum; badges don't encrypt flash).
+- **ESP-IDF's flash driver again, not the ROM's.** With PSRAM mapped, the ROM's esp_flash
+  driver (`CONFIG_SPI_FLASH_ROM_IMPL`, used since 0.5.13) overwrites MMU entries in the
+  middle of it: entry 129 (`0x42810000`) during `nvs_flash_init()`, 130 later. Those 128 KB
+  of PSRAM then read `0x0addbad0` (the C5's answer for an unmapped page) and lose every
+  write, so the heap broke as soon as anything reached them (a store access fault in
+  `tlsf_malloc`, on both kinds of badge). ESP-IDF's driver keeps every entry: all 8 MB
+  write and verify, and a 2 MB erase and write of the other OTA slot with a Lua app holding
+  6 MB of PSRAM verified on both sides. It costs about 9 KB of SRAM.
+- **Lua apps get 6 MB of heap** (`docs/LUA_API.md` "Limits"; 96 KB before), all of it in
+  PSRAM (`lh_alloc` uses `heap_caps_realloc(..., OS_MEM_PSRAM)` and never spills into
+  SRAM), and the badge keeps 512 KB of PSRAM for itself while an app runs
+  (`LUA_HOST_PSRAM_RESERVE`). Without PSRAM: 96 KB in SRAM and the 32 KB reserve, as in 1.x
+  (`lua_host_heap_max()`). With the heap out of SRAM, the app's SRAM-bound limits double:
+  128 UI objects (64) and 12 KB of label text (6 KB); and `fs.read`/`fs.json` take up to
+  256 KB a call (16 KB), a whole bundled file. `sys.memory()` (new) answers `{used, max}`;
+  "Out of memory" says "the app needs more than 6 MB"; `lua mem` names the heap. Measured
+  with `tests/t-psram` (new: 124 labels, then 64 KB strings a timer callback at a time): it
+  reached 6,243,450 bytes of Lua heap and "not enough memory" at the cap, with 1.9 to
+  2.1 MB of PSRAM and 116 KB of SRAM still free, and gave all of it back on exit. Snake
+  installed from the store ran from its flash slot as before. `tests/t-heap` is now the
+  test for a badge without PSRAM.
+- **The console shows both heaps.** `heap`'s first line is SRAM, as before the change
+  (the heap whose limits matter most), then `psram: … free, … min, … largest block, …
+  total`; `info` adds `PSRAM: 8192 KB, … KB free`; HW Debug > System shows both. The
+  emulator emulates 8 MB of PSRAM (`MALLOC_CAP_SPIRAM` in its heap shim), so apps get a
+  badge's limits there too.
+- Includes 1.1.2 (Invert colours).
+
 ## 1.1.2 (2026-11-12)
 
 - **Production badges show true colours again.** Their panels need colour inversion,

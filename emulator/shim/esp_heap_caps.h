@@ -1,7 +1,8 @@
 #pragma once
 
 // Heap figures are the real WebAssembly heap (dlmalloc + unused linear
-// memory), not the badge's SRAM.
+// memory), not the badge's SRAM; MALLOC_CAP_SPIRAM answers for an emulated
+// 8 MB of PSRAM (platform/esp_emu.c).
 
 #include <stddef.h>
 #include <stdint.h>

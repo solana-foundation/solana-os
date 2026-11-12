@@ -141,20 +141,20 @@ static int cmd_mem(void)
 {
     lh_t *s = lh_cur;
     if (s && s->L) {
-        printf("running %s: %u bytes of Lua heap (peak %u, cap %d)\n", s->pkg.id, (unsigned)s->mem,
-               (unsigned)s->mem_peak, LUA_HOST_HEAP_MAX);
+        printf("running %s: %u bytes of Lua heap (peak %u, cap %u, in %s)\n", s->pkg.id, (unsigned)s->mem,
+               (unsigned)s->mem_peak, (unsigned)s->heap_max, s->psram ? "PSRAM" : "SRAM");
         print_code(&s->code_stat);
     }
     if (!lh_stats.id[0]) {
         printf("no app has finished yet\n");
         return 0;
     }
-    printf("last run %s: Lua heap peak %u bytes (cap %d), %u left after close\n"
+    printf("last run %s: Lua heap peak %u bytes (cap %u), %u left after close\n"
            "  most instructions in one callback %u (cap %d)\n"
            "  lua task stack never used %u bytes\n"
-           "  system heap free at launch %u\n"
+           "  SRAM free at launch %u\n"
            "  last error: %s\n",
-           lh_stats.id, (unsigned)lh_stats.mem_peak, LUA_HOST_HEAP_MAX, (unsigned)lh_stats.mem_end,
+           lh_stats.id, (unsigned)lh_stats.mem_peak, (unsigned)lua_host_heap_max(), (unsigned)lh_stats.mem_end,
            (unsigned)lh_stats.steps_peak, LUA_HOST_STEPS_MAX, (unsigned)lh_stats.stack_free,
            (unsigned)lh_stats.heap_before, lh_stats.err[0] ? lh_stats.err : "none");
     print_code(&(lh_code_stat_t){ .size = lh_stats.code_size, .slot = lh_stats.code_slot,

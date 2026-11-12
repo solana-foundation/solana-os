@@ -38,6 +38,7 @@
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "core/os_http.h"
+#include "core/os_mem.h"
 #include "vendor/lualib.h"
 #include "lua_install.h"
 #include "lua_priv.h"
@@ -101,6 +102,11 @@ void lh_need_perm(lua_State *L, uint32_t perm, const char *module)
 // ---------------------------------------------------------------------------
 // Limits: a capped allocator and an instruction budget per callback
 
+size_t lua_host_heap_max(void)
+{
+    return os_mem_psram() ? LUA_HOST_HEAP_MAX : LUA_HOST_HEAP_MAX_SRAM;
+}
+
 static void *lh_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
     lh_t *s = ud;
@@ -110,28 +116,32 @@ static void *lh_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
         s->mem -= old;
         return NULL;
     }
-    if (nsize > old && s->mem - old + nsize > LUA_HOST_HEAP_MAX) {
+    if (nsize > old && s->mem - old + nsize > s->heap_max) {
         s->mem_hit = true;
         return NULL;    // Lua collects garbage and retries, then fails with "not enough memory"
     }
     if (nsize > old) {
-        // The badge's own share: no growth that would leave the system heap
-        // below LUA_HOST_SYS_RESERVE (the OS task, mesh and cloud allocate
-        // while an app runs). Lua collects garbage and retries; if that's not
-        // enough the app stops with "The badge is low on memory". Checked once
-        // per KB of growth while there is room (the emulator's free-size call
-        // walks its heap), and at every growth once a check has failed: the
-        // counter only resets when one passes, so the retry and the small
-        // allocations after a refusal can't slip under the reserve.
+        // The badge's own share: no growth that would leave the heap the app
+        // lives in (PSRAM, or SRAM without it) below its reserve (the OS task,
+        // mesh and cloud allocate while an app runs). Lua collects garbage and
+        // retries; if that's not enough the app stops with "The badge is low
+        // on memory". Checked once per KB of growth while there is room (the
+        // emulator's free-size call walks its heap), and at every growth once
+        // a check has failed: the counter only resets when one passes, so the
+        // retry and the small allocations after a refusal can't slip under
+        // the reserve.
         s->grown += nsize - old;
         if (s->grown >= 1024) {
-            if (heap_caps_get_free_size(MALLOC_CAP_DEFAULT) < LUA_HOST_SYS_RESERVE + (nsize - old)) {
+            size_t room = heap_caps_get_free_size(s->psram ? OS_MEM_PSRAM : MALLOC_CAP_DEFAULT);
+            if (room < (s->psram ? LUA_HOST_PSRAM_RESERVE : LUA_HOST_SYS_RESERVE) + (nsize - old)) {
                 return NULL;
             }
             s->grown = 0;
         }
     }
-    void *p = realloc(ptr, nsize);
+    // In PSRAM only: a full PSRAM fails here and Lua collects and retries,
+    // rather than spilling into the SRAM the system needs.
+    void *p = s->psram ? heap_caps_realloc(ptr, nsize, OS_MEM_PSRAM) : realloc(ptr, nsize);
     if (p) {
         s->mem = s->mem - old + nsize;
         if (s->mem > s->mem_peak) {
@@ -263,8 +273,13 @@ static void fail(lh_t *s, int rc, const char *msg_in)
     }
     if (rc == LUA_ERRMEM) {
         title = "Out of memory";
-        snprintf(msg, sizeof(msg), s->mem_hit ? "The app needs more than %d KB." : "The badge is low on memory.",
-                 LUA_HOST_HEAP_MAX / 1024);
+        if (!s->mem_hit) {
+            strlcpy(msg, "The badge is low on memory.", sizeof(msg));
+        } else if (s->heap_max >= 1024 * 1024) {
+            snprintf(msg, sizeof(msg), "The app needs more than %d MB.", (int)(s->heap_max / (1024 * 1024)));
+        } else {
+            snprintf(msg, sizeof(msg), "The app needs more than %d KB.", (int)(s->heap_max / 1024));
+        }
     } else {
         // Over budget: report where it ran out, not how the error travelled.
         if (s->killed && s->kill_msg[0]) {
@@ -753,7 +768,9 @@ static void host_enter(lv_obj_t *root)
     lh_ble_init(s);
     s->loading = ui_label(area, &sol_font_14, COL_DIM, "Starting...");
     lv_obj_center(s->loading);
-    s->heap_before = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    s->heap_before = heap_caps_get_free_size(OS_MEM_SRAM);
+    s->psram = os_mem_psram();
+    s->heap_max = lua_host_heap_max();
     xSemaphoreTake(s_done, 0);
     xSemaphoreTake(lh_mx, portMAX_DELAY);
     lh_cur = s;

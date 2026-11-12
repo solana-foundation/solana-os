@@ -228,13 +228,28 @@ esp_err_t esp_flash_get_size(esp_flash_t *chip, uint32_t *out_size)
 }
 
 // ---------------------------------------------------------------------------
-// Heap: real wasm figures.
+// Heap: real wasm figures. MALLOC_CAP_SPIRAM answers for an emulated 8 MB of
+// PSRAM, like a 2.0.0 badge's, so the Lua host gives apps the badge's limits
+// (core/os_mem.h): its free figure is what the wasm heap can still grow to,
+// up to 8 MB. Everything else is the wasm heap as it is now.
+
+#define EMU_PSRAM   (8 * 1024 * 1024)
 
 static size_t s_min_free = SIZE_MAX;
 
+static size_t psram_free(void)
+{
+    struct mallinfo mi = mallinfo();
+    size_t used = (size_t)sbrk(0) - mi.fordblks;
+    size_t room = emscripten_get_heap_max() > used ? emscripten_get_heap_max() - used : 0;
+    return room < EMU_PSRAM ? room : EMU_PSRAM;
+}
+
 size_t heap_caps_get_free_size(uint32_t caps)
 {
-    (void)caps;
+    if (caps & MALLOC_CAP_SPIRAM) {
+        return psram_free();
+    }
     struct mallinfo mi = mallinfo();
     size_t used_top = (size_t)sbrk(0);
     size_t total = emscripten_get_heap_size();
@@ -247,6 +262,9 @@ size_t heap_caps_get_free_size(uint32_t caps)
 
 size_t heap_caps_get_minimum_free_size(uint32_t caps)
 {
+    if (caps & MALLOC_CAP_SPIRAM) {
+        return psram_free();
+    }
     heap_caps_get_free_size(caps);
     return s_min_free;
 }
@@ -258,8 +276,7 @@ size_t heap_caps_get_largest_free_block(uint32_t caps)
 
 size_t heap_caps_get_total_size(uint32_t caps)
 {
-    (void)caps;
-    return emscripten_get_heap_size();
+    return caps & MALLOC_CAP_SPIRAM ? EMU_PSRAM : emscripten_get_heap_size();
 }
 
 // ---------------------------------------------------------------------------

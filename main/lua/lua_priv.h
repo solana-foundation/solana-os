@@ -24,9 +24,9 @@
 #include "lua_pkg.h"
 #include "lua_xip.h"
 
-#define LH_OBJ_MAX          64          // UI objects at a time
+#define LH_OBJ_MAX          128         // UI objects at a time (SRAM: ~250 B each; 64 before 2.0.0)
 #define LH_TEXT_MAX         200         // bytes per label; longer text ends in "..."
-#define LH_TEXT_TOTAL       (6 * 1024)  // label text per app (LVGL keeps it on the system heap)
+#define LH_TEXT_TOTAL       (12 * 1024) // label text per app (LVGL keeps it in SRAM; 6 KB before 2.0.0)
 #define LH_QR_MAX           1           // ui.qr codes at a time: each canvas is size^2 / 8 bytes of system heap
 #define LH_QR_TEXT_MAX      256         // bytes per code; more doesn't scan off this screen
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
@@ -42,7 +42,7 @@
 #define LH_CALLS_SENT       3           // at once in os_api, whose queue the OS shares
 #define LH_JSON_DEPTH       16          // nesting; bounds the decoder's recursion
 #define LH_LED_COUNT        8
-#define LH_FS_READ_MAX      (16 * 1024) // fs.read / fs.json per call
+#define LH_FS_READ_MAX      LUA_PKG_FILE_MAX    // fs.read / fs.json per call: a whole file (16 KB before 2.0.0)
 #define LH_FS_LINE_MAX      512         // fs.lines: longer lines come in pieces
 #define LH_FS_OPEN_STEPS    500         // budget per file opened ...
 #define LH_FS_BYTES_PER_STEP 4          // ... and per bytes read or compiled
@@ -157,12 +157,14 @@ typedef struct lh {
 
     // Limits
     size_t mem, mem_peak;
+    size_t heap_max;            // lua_host_heap_max() at launch
+    bool psram;                 // the Lua heap is in PSRAM (os_mem.h)
     size_t grown;               // growth since the last system-heap check (lh_alloc)
     bool mem_hit;               // the allocator refused to go over the cap
     uint32_t steps, steps_peak;
     bool killed;                // over the instruction budget
     char kill_msg[64];          // "main.lua:12: Script took too long"
-    size_t heap_before;         // system heap free at launch
+    size_t heap_before;         // SRAM free at launch
     char err[96];               // why the script stopped, "" if it didn't
     int64_t t0;                 // ms at launch
 
@@ -229,7 +231,7 @@ typedef struct {
     uint32_t code_size;         // compiled code run in place, bytes (0: compiled on the badge)
     int code_slot;              // its flash slot, -1 if none
     bool code_copied;           // copied into the slot at this launch
-    size_t heap_before;         // system heap free when the app started
+    size_t heap_before;         // SRAM free when the app started
     char err[96];               // last error, "" if none
 } lh_stats_t;
 

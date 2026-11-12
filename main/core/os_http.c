@@ -11,6 +11,10 @@
 // session ticket makes the handshake after a close a short resumption.
 //
 // Only the cloud task calls in here (os_http.h), so one connection is enough.
+//
+// 2.0.0: mbedTLS allocates from PSRAM (tls_calloc below), so a handshake no
+// longer takes SRAM and the guards below look at the PSRAM heap; on a chip
+// without PSRAM everything is as in 1.x.
 
 #include <stdio.h>
 #include <string.h>
@@ -23,9 +27,24 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "mbedtls/platform.h"
 #include "os_http.h"
+#include "os_mem.h"
 
 static const char *TAG = "os_http";
+
+// TLS memory (CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC): PSRAM first, SRAM when PSRAM is
+// full or missing. Set before app_main, so mbedTLS never allocates otherwise
+// (until then it would use calloc(), which heap_caps_free() frees as well).
+static void *tls_calloc(size_t n, size_t size)
+{
+    return heap_caps_calloc_prefer(n, size, 2, OS_MEM_PSRAM, OS_MEM_SRAM);
+}
+
+__attribute__((constructor)) static void tls_alloc_init(void)
+{
+    mbedtls_platform_set_calloc_free(tls_calloc, heap_caps_free);
+}
 
 #define TIMEOUT_MS      10000
 // Heap a new connection may start from. A full handshake peaks at ~33 KB, a
@@ -120,8 +139,8 @@ static esp_err_t prepare(const char *url)
     bool tls = !strncmp(url, "https://", 8);
     if (tls && !s_open) {
         // A new handshake: only when the heap can take it.
-        size_t free0 = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
-        size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        size_t free0 = heap_caps_get_free_size(os_mem_tls_caps());
+        size_t block = heap_caps_get_largest_free_block(os_mem_tls_caps());
         if (free0 < (s_ticket ? TLS_RESUME_FREE : TLS_MIN_FREE) || block < TLS_MIN_BLOCK) {
             ESP_LOGW(TAG, "not enough heap for a TLS handshake (%u free, %u largest)", (unsigned)free0,
                      (unsigned)block);
@@ -249,7 +268,7 @@ esp_err_t os_http_request(const char *method, const char *url, const char *beare
         resp[0] = 0;
     }
     lock();
-    size_t free0 = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    size_t free0 = heap_caps_get_free_size(os_mem_tls_caps());
     heap_caps_monitor_local_minimum_free_size_start();
     bool fresh = !s_open;
     s_hdr = (header_ctx_t){0};
@@ -270,7 +289,7 @@ esp_err_t os_http_request(const char *method, const char *url, const char *beare
         finish();
     }
     // What this request cost: the heap low-water mark while it ran.
-    size_t low = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
+    size_t low = heap_caps_get_minimum_free_size(os_mem_tls_caps());
     heap_caps_monitor_local_minimum_free_size_stop();
     if (fresh && err == ESP_OK) {
         // Once per connection: what the handshake cost.

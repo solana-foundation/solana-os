@@ -17,7 +17,7 @@ CONFIG_SOLANA_OS_SERVER_URL="https://badge-api.solana.com"
 
 # App metadata shown in About / info
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="1.1.2"
+CONFIG_APP_PROJECT_VER="2.0.0"
 
 # Over-the-air updates (core/os_ota.c): a new build boots on trial and the
 # bootloader goes back to the previous slot unless it confirms itself. This
@@ -28,8 +28,23 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 
-# RAM: there is no PSRAM and IRAM/DRAM share one SRAM. Keep driver code in
-# flash so the heap is big enough for Wi-Fi, TLS and LVGL at once.
+# PSRAM (2.0.0): every badge's ESP32-C5HR8 carries 8 MB of quad PSRAM in the
+# package (eFuse PSRAM_CAP 2, AP Memory), on the same MSPI bus as the flash.
+# The app's startup brings it up (not the bootloader, so badges updated over
+# the air get it too) and adds it to the heap: malloc() puts blocks over 16 KB
+# there first, Wi-Fi and lwIP buffers and TLS (os_http.c) prefer it, and the
+# Lua host keeps an app's whole heap in it (lua_host.c). A chip without it
+# still boots, with the 1.x limits (IGNORE_NOTFOUND).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+
+# RAM: IRAM and DRAM share one SRAM, which task stacks, DMA buffers, LVGL and
+# the Bluetooth controller need. Keep driver code in flash so it stays heap.
 CONFIG_FREERTOS_IN_IRAM=n
 CONFIG_RINGBUF_IN_IRAM=n
 CONFIG_ESP_WIFI_IRAM_OPT=n
@@ -45,13 +60,17 @@ CONFIG_LWIP_TCP_WND_DEFAULT=2880
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 
 # RAM (0.5.13): IRAM and DRAM share the one SRAM, so code kept out of IRAM is
-# heap. The ROM's esp_flash driver instead of ESP-IDF's (~9 KB; the ROM lacks
-# only auto-suspend, unused here), and the SPI master ISR, the ring buffer's
-# ISR functions (the UART ISR, their only user, is in flash as well), heap_caps,
-# the libc locks and the I2C ISR in flash. None of it runs while the cache is
-# off: an LCD flush or a button read that lands on a flash write finishes a
-# few ms later.
-CONFIG_SPI_FLASH_ROM_IMPL=y
+# heap: the SPI master ISR, the ring buffer's ISR functions (the UART ISR,
+# their only user, is in flash as well), heap_caps, the libc locks and the I2C
+# ISR in flash. None of it runs while the cache is off: an LCD flush or a
+# button read that lands on a flash write finishes a few ms later.
+# ESP-IDF's esp_flash driver, not the ROM's (0.5.13 to 1.1.x used the ROM's,
+# ~9 KB less IRAM): with PSRAM mapped, the ROM's driver overwrites MMU entries
+# in the middle of it (entry 129, 0x42810000, during nvs_flash_init(); 130
+# later), so those 128 KB of PSRAM read 0x0addbad0 and lose every write, and
+# the heap broke as soon as anything used them (measured on both kinds of
+# badge, 2.0.0).
+CONFIG_SPI_FLASH_ROM_IMPL=n
 CONFIG_SPI_MASTER_ISR_IN_IRAM=n
 CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
@@ -105,8 +124,9 @@ CONFIG_BT_LE_LL_DUP_SCAN_LIST_COUNT=8
 CONFIG_BT_LE_LL_RESOLV_LIST_SIZE=1
 # The controller's code runs from flash: +3.7 KB of static RAM over no
 # Bluetooth instead of +25 KB with it in IRAM. Espressif marks it experimental
-# and the badge has no flash auto-suspend (CONFIG_SPI_FLASH_ROM_IMPL), so the
-# controller waits out each flash write; a link survives NVS writes (measured).
+# and the badge has no flash auto-suspend (CONFIG_SPI_FLASH_AUTO_SUSPEND), so the
+# controller waits out each flash write; a link survives NVS writes (measured
+# on 1.0.0, with the ROM's flash driver).
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 
 # LVGL

@@ -124,17 +124,17 @@ HOME always returns to the launcher. The screen below the status bar is
 
 | | |
 |---|---|
-| Memory | 96 KB of Lua heap (badges below Solana OS 0.5.13: 48 KB). Past it the app stops with "Out of memory: the app needs more than 96 KB". The badge also keeps 32 KB of its own heap free, and the app's other memory (its 12 KB task stack, its UI objects) counts against that, so an app with many objects, or on a badge that is busy, can be stopped earlier with "The badge is low on memory": with Wi-Fi joined, around 80 KB of Lua heap for an app with 60 labels (around 49 KB with Bluetooth on, which takes about 30 KB of the badge's heap), the full 96 KB for one with a few. Plan for 64 KB, and keep big images and tables for when you need them. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
+| Memory | 6 MB of Lua heap, in the badge's 8 MB of PSRAM (Solana OS 2.0.0). Past it the app stops with "Out of memory: the app needs more than 6 MB". The badge keeps 512 KB of PSRAM for itself while an app runs, and the allocator's own overhead (up to about a quarter for very many small tables or strings) comes out of the rest, so an app made of millions of tiny objects can be stopped a little earlier with "The badge is low on memory". The app's UI objects, label text and 12 KB task stack are in the badge's other memory, capped by the rows below, not in the 6 MB, and Bluetooth no longer shrinks it. `sys.memory()` tells an app where it stands. Badges below 2.0.0 (until they update) give 96 KB (48 KB below 0.5.13), shared with Wi-Fi, TLS and Bluetooth: there an app with 60 labels gets about 80 KB with Wi-Fi joined, about 49 KB with Bluetooth on as well. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it. A big heap is a slower one: PSRAM is slower than the chip's own memory, and the collector walks everything an app keeps, so a few MB of live tables can pause a callback noticeably |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
-| UI objects | 64 at a time, one of them a QR code |
+| UI objects | 128 at a time (64 below 2.0.0), one of them a QR code |
 | Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
-| Text | 200 bytes per label (longer text ends in "..."), 6 KB of label text on screen |
+| Text | 200 bytes per label (longer text ends in "..."), 12 KB of label text on screen (6 KB below 2.0.0) |
 | Timers | 8 at a time, ≥ 20 ms |
 | Storage | 16 KB per app (`storage.*`) |
 | Files | 64 bundled files, ≤ 256 KB each, ≤ 1 MB together, read-only (`fs`, `require`) |
-| Reads | ≤ 16 KB per `fs.read` and `fs.json`, lines ≤ 512 bytes. Card reads count toward the instruction budget: 500 per file opened or looked up (`fs.exists`, `fs.size`, `fs.list`), 1 per 4 bytes read or compiled |
+| Reads | ≤ 256 KB per `fs.read` and `fs.json`, so any bundled file in one read (16 KB below 2.0.0), lines ≤ 512 bytes. Card reads count toward the instruction budget: 500 per file opened or looked up (`fs.exists`, `fs.size`, `fs.list`), 1 per 4 bytes read or compiled |
 | Mesh | 4 messages per second, ≤ 200 bytes each. Meets: one asked and one accepted a second, ≤ 100 bytes of data a side, 300 per badge a day, 40 waiting to upload |
-| Bluetooth | one connection at a time, ≤ 244 bytes per read, write or notification, 4 waiting for an answer; a served service has ≤ 4 characteristics; an advertisement carries ≤ 24 bytes of app data; about 30 KB of the badge's own heap while it is on |
+| Bluetooth | one connection at a time, ≤ 244 bytes per read, write or notification, 4 waiting for an answer; a served service has ≤ 4 characteristics; an advertisement carries ≤ 24 bytes of app data; about 30 KB of the badge's own memory while it is on (not of the app's heap from 2.0.0) |
 | HTTP | 60 requests a minute per badge, ≤ 2 KB sent, ≤ about 3.5 KB of answer, 6 s to answer |
 | RPC | 30 calls a minute per badge (6 of them `sendTransaction`), ≤ 2 KB of params, ≤ about 3.5 KB of answer, 6 s to answer |
 | WebSocket | one at a time, 20 opens a minute per badge, ≤ 4 KB per message either way, 8 waiting to go |
@@ -328,12 +328,18 @@ sys.millis()                -- ms since the app started
 sys.time()                  -- unix seconds from the server clock, or nil if never synced
 sys.battery()               -- percent, or nil on USB / unknown
 sys.keys()                  -- the keys held now, e.g. { up = true, left = true } (0.5.11)
+sys.memory()                -- { used = 18773, max = 6291456 }: the app's Lua heap in bytes (2.0.0)
 sys.exit()                  -- close the app
 badge.id()                  -- "7K2Q9M", or nil before the first hello
 badge.owner()               -- "@toly", or nil while unclaimed
 badge.online()              -- Wi-Fi joined and registered with the server (false while a ws socket is open)
 json.encode(value)  json.decode(text)   -- nil plus an error message on bad input
 ```
+
+`sys.memory()` counts what the app's Lua heap holds now (live objects and garbage not yet
+collected) and its cap on this badge: 6 MB with PSRAM, 96 KB on a badge that has none.
+Before 2.0.0 there is no `sys.memory` and the cap is 96 KB, so an app that wants room for
+big caches can ask: `local max = sys.memory and sys.memory().max or 96 * 1024`.
 
 `sys.keys()` names `up`, `down`, `left`, `right`, `select` and `back` (CANCEL), never HOME,
 and is empty while a dialog has the keys (your `ui.confirm` or `ui.input`, or the badge's own
@@ -374,11 +380,11 @@ fs.exists("questions")                -- true for a file or a folder
 fs.size("questions/space.txt")        -- bytes, or nil if there's no such file
 fs.list("questions")                  -- { "art.txt", "extra/", "space.txt" }: sorted, folders end in "/"
 fs.list()                             -- the top of the app's files; {} for a folder that isn't there
-fs.read("intro.txt")                  -- the whole file (≤ 16 KB) as a string, or nil, "not found"
+fs.read("intro.txt")                  -- the whole file (≤ 256 KB) as a string, or nil, "not found"
 fs.read("book.txt", 8192, 1024)       -- 1024 bytes from byte 8192 (counting from 0); "" past the end
 for line in fs.lines("words.txt") do  -- each line without its "\n" or "\r\n"; ≤ 512 bytes,
 end                                   -- longer lines come in pieces
-fs.json("levels/1.json")              -- the decoded value (file ≤ 16 KB), or nil and an error
+fs.json("levels/1.json")              -- the decoded value (file ≤ 256 KB), or nil and an error
 local scene = fs.load("scenes/intro.lua")  -- compiled, not run or kept: scene() runs it;
                                            -- nil and an error for a syntax error
 ```
@@ -388,10 +394,12 @@ with the same globals as `main.lua`, and what it returns (usually a table, `true
 nothing) is what every `require` of that name gets. A missing module or an error in
 one stops the app like any other error; wrap it in `pcall` to handle it. A missing
 file is an error for `fs.lines` too, while `fs.read`, `fs.json` and `fs.load` return
-`nil` and a message. A bad path, or asking for more than 16 KB at once, is an error.
+`nil` and a message. A bad path, or asking for more than 256 KB at once (16 KB below
+2.0.0), is an error.
 
-Everything you read lands in the app's 96 KB heap, so keep only what you use: read
-big files in pieces (offsets or `fs.lines`), and load data when the app needs it.
+Everything you read lands in the app's heap (6 MB; 96 KB below 2.0.0), so keep what you
+use: on an older badge read big files in pieces (offsets or `fs.lines`), and load data
+when the app needs it.
 `require` keeps a module until the app exits. For code you need only for a while (a
 level, a scene), use `fs.load` and drop the function and what it returned once you're
 done: the collector frees them. In a store app both load the store's compiled code of
@@ -730,15 +738,15 @@ ble.drop()                          -- disconnect the device that connected to u
 ```
 
 **On and off.** Bluetooth is off until the app calls `ble.on()`, and goes off when the
-app exits. While it is on it takes about 30 KB of the badge's own memory (not of the
-app's 96 KB), so the badge may stop a big app earlier (see "Limits": with Wi-Fi joined
-and Bluetooth on, an app with 60 labels gets about 49 KB of Lua heap). `ble.on()` returns
-`true`, or `nil` and `"not enough memory"` (the badge has under 64 KB free: free some of
-the app's first), or `"unavailable"`. Every other function is a Lua error while Bluetooth
+app exits. While it is on it takes about 30 KB of the badge's own memory, not of the
+app's heap (below 2.0.0 the two shared one heap, so the badge could stop a big app earlier:
+see "Limits"). `ble.on()` returns
+`true`, or `nil` and `"not enough memory"` (the badge has under 64 KB of SRAM free; below
+2.0.0 the app's heap counts, so free some of it first), or `"unavailable"`. Every other function is a Lua error while Bluetooth
 is off, except `ble.off`, `ble.state` and `ble.address`; a link from before answers
 `"closed"` to `link:state()`, and its other methods return `nil` and `"not open"`. Turn it on when the app needs it
-and off when it doesn't: a secure connection (`http`, `ws`, the store) needs 56 KB free
-to start.
+and off when it doesn't (below 2.0.0 it also shares the heap that a secure connection
+(`http`, `ws`, the store) needs 56 KB of to start).
 
 **UUIDs and data.** A service or characteristic is a string: 16-bit as 4 hex digits
 (`"180f"`), or 128-bit as `"6e400001-b5a3-f393-e0a9-e50e24dcca9e"`; case doesn't matter,
@@ -1271,10 +1279,12 @@ run.
 **Memory.** Starting a secure connection takes up to about 40 KB for a moment (22 KB
 to `echo.websocket.org`), and an open one keeps about 5 KB. The badge closes its server
 connection first, then starts the socket only with 56 KB free, the same rule as for
-its own connection, so other things don't run out meanwhile. With Wi-Fi joined, an app
-whose Lua heap is around 10 KB when it calls `ws.open` has that room, one at 20 KB
-doesn't (`lua mem` shows the heap). So open the socket first and load big data after
-it's up; without the room it closes with `"not enough memory"`. In the emulator the
+its own connection, so other things don't run out meanwhile. From 2.0.0 that memory is
+PSRAM, which an app's heap never takes below 512 KB, so there always is room. Below
+2.0.0 it was the heap the app shares: with Wi-Fi joined, an app whose Lua heap is around
+10 KB when it calls `ws.open` has that room, one at 20 KB doesn't (`lua mem` shows the
+heap), so there open the socket first and load big data after it's up; without the room
+it closes with `"not enough memory"`. In the emulator the
 socket is the browser's: everything above holds, except that memory is never short and
 a failed connection is always `"unreachable"` (browsers don't say why).
 
@@ -1802,8 +1812,8 @@ Bun.serve({
 - **Scan in the wallet app**, with its own scan button. A phone's camera app may not
   open `solana:` links, or may open them in whichever wallet was installed first.
 - **Memory:** while it waits, the example holds about 25 KB of Lua heap. Compiled on
-  the badge (Run on badge) it peaks at 36 KB of the 96 KB; installed from the store it
-  runs from flash and needs less.
+  the badge (Run on badge) it peaks at 36 KB (of 6 MB, or 96 KB below 2.0.0); installed
+  from the store it runs from flash and needs less.
 - The message travels as hex, which keeps the Lua short: messages up to about 1,000
   bytes fit in `http`'s 2 KB. A transfer is limited to 2,147,483,647 lamports, because
   the badge's integers are 32-bit.

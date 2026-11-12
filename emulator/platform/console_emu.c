@@ -141,6 +141,8 @@ EMSCRIPTEN_KEEPALIVE void emu_console(const char *line)
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT),
                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+        printf("psram: %u free of %u (emulated: what the wasm heap can still grow to)\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
     } else if (os_cmd_run(argc, argv) < 0) {
         printf("unknown command '%s', try 'help'\n", cmd);
     }
