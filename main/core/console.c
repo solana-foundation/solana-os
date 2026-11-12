@@ -39,8 +39,9 @@ static int cmd_info(int argc, char **argv)
            BOARD_SD_CS, BOARD_I2C_SCL, BOARD_I2C_SDA, BOARD_TCA9534_ADDR, BOARD_TCA9534_INT, BOARD_BOOT_BTN,
            BOARD_RGB_COUNT, BOARD_RGB_GPIO, BOARD_BAT_ADC_GPIO, BOARD_BAT_DIVIDER, BOARD_UART_TX, BOARD_UART_RX);
     int mv = bsp_battery_mv();
-    printf("Battery: %d mV (%d%%)\nButtons: 0x%02lX\nHeap: %u bytes free\n", mv, bsp_battery_percent(mv),
-           (unsigned long)bsp_buttons_get(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    printf("Battery: %d mV (%d%%)\nButtons: 0x%02lX\nHeap: %u bytes free\nLCD: colour inversion %s\n", mv,
+           bsp_battery_percent(mv), (unsigned long)bsp_buttons_get(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
+           bsp_display_inverted() ? "on" : "off");
     bsp_sd_print_card();
     return 0;
 }

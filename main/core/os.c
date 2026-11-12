@@ -737,9 +737,15 @@ void os_brightness_apply(void)
     bsp_backlight_level(s_bright_pct[level - 1]);
 }
 
+void os_invert_apply(void)
+{
+    bsp_display_invert(os_setting(OS_SET_LCD_INVERT) != 0);
+}
+
 void os_splash(void)
 {
     os_brightness_apply();
+    os_invert_apply();
     lvgl_port_lock(0);
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);

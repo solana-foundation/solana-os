@@ -6,6 +6,19 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 1.1.2 (2026-11-12)
+
+- **Production badges show true colours again.** Their panels need colour inversion,
+  which 0.4.3 turned off for good after testing on the October badges, which turned out
+  to be prototypes (ESP32-C5 rev 1.2 modules; production badges carry rev 1.0). The
+  two panels read the same over SPI (same ILI9341, same registers), so inversion is on
+  by default again and **Settings > Invert colours** turns it off on a prototype. It
+  applies at once and at every boot (`os_invert_apply()` from `os_splash()`). The
+  setting keeps 0.4.1's NVS key (`settings/lcd_invert`, 1 = on), so a badge that saved
+  it off then (a prototype) stays right. The console's `info` prints the panel's state.
+  `components/bsp/bsp_display.c` (`bsp_display_invert()`, under the LVGL lock and the
+  LCD hold of `bsp_bus.h`), `main/core/os_settings.*`, `main/apps/settings/`.
+
 ## 1.1.1 (2026-11-12)
 
 - **Fixes to 1.1.0's scans and app channels.** A scan's callback no longer depends on its

@@ -15,6 +15,8 @@
 
 static const char *TAG = "bsp_display";
 static SemaphoreHandle_t s_lcd_idle;    // see bsp_bus.h
+static esp_lcd_panel_handle_t s_panel;
+static bool s_inverted;
 
 void bsp_lcd_hold(void)
 {
@@ -132,9 +134,11 @@ lv_display_t *bsp_display_start(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io, &panel_cfg, &panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-    // Production panels show true colours without inversion; with it, RED reads on
-    // cyan and GREEN on magenta. (The prototype's panel was the other way round.)
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, false));
+    // Production panels need inversion; without it RED reads on cyan and GREEN on
+    // magenta. The prototypes' panels are the other way round (bsp.h).
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
+    s_inverted = true;
+    s_panel = panel;
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
@@ -165,4 +169,30 @@ lv_display_t *bsp_display_start(void)
     bsp_backlight(true);
     ESP_LOGI(TAG, "LCD %dx%d ready", BOARD_LCD_H_RES, BOARD_LCD_V_RES);
     return disp;
+}
+
+void bsp_display_invert(bool on)
+{
+    if (!s_panel || on == s_inverted) {
+        return;
+    }
+    // The LVGL lock keeps the LVGL task from queueing a flush meanwhile (esp_lcd's
+    // in-flight count isn't shared safely), and holding the LCD waits for the one
+    // in flight and keeps the card off the bus (bsp_bus.h). The lock is recursive,
+    // so callers that hold it already (app callbacks) are fine.
+    lvgl_port_lock(0);
+    bsp_lcd_hold();
+    esp_err_t err = esp_lcd_panel_invert_color(s_panel, on);
+    bsp_lcd_release();
+    lvgl_port_unlock();
+    if (err == ESP_OK) {
+        s_inverted = on;
+    } else {
+        ESP_LOGW(TAG, "invert: %s", esp_err_to_name(err));
+    }
+}
+
+bool bsp_display_inverted(void)
+{
+    return s_inverted;
 }

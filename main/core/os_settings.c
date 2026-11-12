@@ -15,6 +15,8 @@ static const struct {
 } s_defs[OS_SET_COUNT] = {
     [OS_SET_THEME] = {"theme", OS_THEME_DARK},
     [OS_SET_BRIGHTNESS] = {"bright", OS_BRIGHTNESS_MAX},
+    // The key 0.4.1-0.4.2 used, with the same meaning: what a badge saved then holds.
+    [OS_SET_LCD_INVERT] = {"lcd_invert", 1},
 };
 
 static int32_t s_val[OS_SET_COUNT];

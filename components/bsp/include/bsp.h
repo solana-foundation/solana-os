@@ -46,6 +46,13 @@ void bsp_backlight(bool on);
 // after bsp_display_start(); the level is kept across off/on.
 void bsp_backlight_level(uint8_t pct);
 uint8_t bsp_backlight_get_level(void);
+// Colour inversion. Production panels need it (on, what bsp_display_start()
+// sets); the prototypes' panels (rev 1.2 C5 modules, like HYQ5VS) show RED on
+// cyan with it, and nothing on the bus tells the two apart: same ILI9341, same
+// registers. The OS applies the user's setting (Settings > Invert colours).
+// Any task but the LVGL task's flush path.
+void bsp_display_invert(bool on);
+bool bsp_display_inverted(void);
 
 // ---- Buttons ----
 #define BSP_BTN_PB(n)   (1u << ((n) - 1))   // n = 1..6
