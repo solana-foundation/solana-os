@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "core/os_mem.h"
 #include "lua_priv.h"
 
 typedef struct {
@@ -219,6 +220,35 @@ lh_t *lh_ui_session(lua_State *L)
     return ui_session(L);
 }
 
+// What the app's UI can still grow by in SRAM without calling anything: a
+// list redraws its rows on a key, the keyboard shows what's typed, an image
+// is drawn through a line buffer. Every check keeps that much free as well.
+static size_t ui_later(const lh_t *s)
+{
+    size_t later = s->kb ? LH_UI_KB_TEXT : 0;
+    bool images = false;
+    for (int i = 0; i < LH_OBJ_MAX; i++) {
+        const lh_obj_t *o = &s->objs[i];
+        if (o->obj) {
+            later += o->kind == LH_LIST ? LH_UI_LIST_TEXT : 0;
+            images |= o->kind == LH_IMAGE || o->kind == LH_CANVAS || o->kind == LH_ANIM;
+        }
+    }
+    return later + (images ? LH_UI_IMG_LINE : 0);
+}
+
+// Raises "<what>: the badge is low on memory" (a catchable error, as for
+// making an object) unless `need` more bytes of SRAM leave the badge its
+// reserve. Every call that makes UI objects or grows what they hold asks.
+void lh_ui_room(lua_State *L, const char *what, size_t need)
+{
+    lh_t *s = ui_session(L);
+    size_t later = s ? ui_later(s) : 0;
+    if (heap_caps_get_free_size(OS_MEM_SRAM_MALLOC) < LUA_HOST_SYS_RESERVE + need + later) {
+        luaL_error(L, "%s: the badge is low on memory", what);
+    }
+}
+
 lh_obj_t *lh_ui_new_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref)
 {
     return new_obj_ref(L, s, kind, obj, ref);
@@ -302,6 +332,9 @@ static int m_text(lua_State *L)
         lh_t *s = lh_get(L);
         size_t len = strlen(t);
         check_text(L, s, o->text_len, len);
+        if (len > o->text_len) {
+            lh_ui_room(L, "label:text", len - o->text_len);
+        }
         lv_label_set_text(o->obj, t);
         s->text_total = s->text_total - o->text_len + len;
         o->text_len = len;
@@ -433,11 +466,22 @@ static const char *qr_text(lua_State *L, int idx, size_t *len)
     return t;
 }
 
+// lv_qrcode_update's two scratch buffers while it draws, freed after: the
+// code it picks fills the canvas, so each is up to the canvas's bits.
+static size_t qr_scratch(int size)
+{
+    return 2 * ((size_t)size * size / 8 + 1);
+}
+
 static int m_qr_text(lua_State *L)
 {
     lh_obj_t *o = check_kind(L, LH_QR, "QR code");
     size_t len;
     const char *t = qr_text(L, 2, &len);
+    if (o) {
+        int w = (int)lv_obj_get_width(o->obj);
+        lh_ui_room(L, "qr:text", qr_scratch(w));
+    }
     if (o && lv_qrcode_update(o->obj, t, len) != LV_RESULT_OK) {
         luaL_error(L, "ui.qr: %d bytes don't fit a %d px code", (int)len, (int)lv_obj_get_width(o->obj));
     }
@@ -490,6 +534,7 @@ static int l_label(lua_State *L)
     }
     size_t len = strlen(text);
     check_text(L, s, 0, len);
+    lh_ui_room(L, "ui.label", LH_UI_OBJ_SRAM + len);
     lv_obj_t *l = lv_label_create(s->area);
     lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, color, 0);
@@ -526,6 +571,7 @@ static int l_rect(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.rect", LH_UI_OBJ_SRAM);
     lv_obj_t *r = base_obj(s->area, x, y, w, h);
     lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(r, color, 0);
@@ -547,6 +593,7 @@ static int l_bar(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.bar", LH_UI_OBJ_SRAM);
     lv_obj_t *b = lv_bar_create(s->area);
     lv_obj_remove_style_all(b);
     lv_obj_set_pos(b, x, y);
@@ -573,6 +620,7 @@ static int l_gradient(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.gradient", LH_UI_OBJ_SRAM);
     lv_obj_t *g = ui_gradient_bar(s->area, x, y, w, h);
     lv_obj_set_style_radius(g, 0, 0);
     new_obj(L, s, LH_GRADIENT, g);
@@ -592,6 +640,7 @@ static int l_list(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.list", LH_UI_LIST_SRAM + LH_UI_LIST_TEXT);
     // A box of our own holds the list, so pos/show/remove work like any object.
     lv_obj_t *box = base_obj(s->area, x, y, w, h);
     lh_obj_t *o = new_obj(L, s, LH_LIST, box);      // pushes the handle
@@ -630,6 +679,7 @@ static int l_qr(lua_State *L)
     if (n >= LH_QR_MAX) {
         luaL_error(L, "ui.qr: %d QR code at a time (change its text, or remove it first)", LH_QR_MAX);
     }
+    lh_ui_room(L, "ui.qr", LH_UI_OBJ_SRAM + (size_t)size * size / 8 + qr_scratch(size));
     lv_obj_t *q = lv_qrcode_create(s->area);
     lv_qrcode_set_size(q, size);
     if (!lv_canvas_get_draw_buf(q)) {
@@ -672,8 +722,10 @@ static int l_hint(lua_State *L)
             s->hint = NULL;
         }
     } else if (s->hint) {
+        lh_ui_room(L, "ui.hint", strlen(text));
         lv_label_set_text(s->hint, text);
     } else {
+        lh_ui_room(L, "ui.hint", 2 * LH_UI_OBJ_SRAM + strlen(text));   // a bar and its label
         s->hint = ui_hint(s->area, text);
         keep_dialogs_on_top(s);
     }
@@ -684,6 +736,8 @@ static int l_toast(lua_State *L)
 {
     const char *text = luaL_checkstring(L, 1);
     if (ui_session(L)) {
+        size_t len = strlen(text);
+        lh_ui_room(L, "ui.toast", len < 96 ? len : 96);  // the OS's toast keeps 95 bytes
         os_toast("%s", text);
     }
     return 0;
@@ -707,6 +761,7 @@ static int l_confirm(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.confirm", 4 * LH_UI_OBJ_SRAM + strlen(text));
     dialog_ref(L, s, 2);
     lv_obj_t *dim = base_obj(s->area, 0, 0, OS_ROOT_W, OS_ROOT_H);
     lv_obj_set_style_bg_opa(dim, LV_OPA_70, 0);
@@ -733,6 +788,7 @@ static int l_input(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.input", LH_UI_LIST_SRAM + LH_UI_KB_TEXT + strlen(title));
     dialog_ref(L, s, 3);
     s->kb = ui_kb_create(s->area, title, max < 1 ? 1 : max);
     s->modal = lv_obj_get_child(s->area, -1);   // the keyboard's box, kept on top

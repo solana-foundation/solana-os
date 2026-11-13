@@ -94,5 +94,9 @@ void os_theme_apply(void);
 // Settings changes it).
 void os_brightness_apply(void);
 
+// Set the panel's colour inversion from the Invert colours setting (any task
+// but the LVGL task; at boot and when Settings changes it). See bsp.h.
+void os_invert_apply(void);
+
 // Screenshot of the live screen over the console, see tools/badge.py.
 void os_screenshot(void);

@@ -24,15 +24,29 @@
 #include "lua_pkg.h"
 #include "lua_xip.h"
 
-#define LH_OBJ_MAX          64          // UI objects at a time
+#define LH_OBJ_MAX          128         // UI objects at a time (SRAM: ~250 B each; 64 before 2.0.0)
+// SRAM for UI (2.0.0): LVGL's objects and label text stay in SRAM while a Lua
+// heap in PSRAM grows, so the allocator's PSRAM reserve can't protect them.
+// Every call that makes LVGL objects or grows what they hold (label:text,
+// ui.hint, qr:text, ...; 2.1.0) first checks that the SRAM malloc can take
+// (OS_MEM_SRAM_MALLOC, not the DMA pool) stays above LUA_HOST_SYS_RESERVE
+// after it, plus what the app's lists, keyboard and images can still grow by
+// without a call (rows redrawn on a key, the keyboard's text, an image's line
+// buffer while it's drawn): lh_ui_room. The object cap alone isn't enough:
+// one ui.list slot is up to 43 LVGL objects (ui_list_create_at).
+#define LH_UI_OBJ_SRAM      512         // one object, with headroom (~250 B measured)
+#define LH_UI_LIST_SRAM     (12 * 1024) // a ui.list (8 rows of 5 objects + 3) or the ui.input keyboard
+#define LH_UI_LIST_TEXT     (8 * 160)   // a list's rows' text (8 x 40 + 56 + 20 bytes, plus the allocator's)
+#define LH_UI_KB_TEXT       128         // the keyboard's text (64 bytes and "_")
+#define LH_UI_IMG_LINE      (320 * 4 + 64)  // the line an image is drawn through (one at a time)
 #define LH_TEXT_MAX         200         // bytes per label; longer text ends in "..."
-#define LH_TEXT_TOTAL       (6 * 1024)  // label text per app (LVGL keeps it on the system heap)
+#define LH_TEXT_TOTAL       (12 * 1024) // label text per app (LVGL keeps it in SRAM; 6 KB before 2.0.0)
 #define LH_QR_MAX           1           // ui.qr codes at a time: each canvas is size^2 / 8 bytes of system heap
 #define LH_QR_TEXT_MAX      256         // bytes per code; more doesn't scan off this screen
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
 #define LH_TIMER_MAX        8
 #define LH_TIMER_MIN_MS     20
-#define LH_TICK_MS          50          // on_tick period
+#define LH_TICK_MS          30          // on_tick period (50 before; whole 10 ms RTOS ticks)
 #define LH_STORAGE_MAX      (16 * 1024) // data.json
 #define LH_STORAGE_SAVE_MS  1000        // storage.set writes at most this often
 #define LH_MESH_PER_S       4
@@ -42,7 +56,7 @@
 #define LH_CALLS_SENT       3           // at once in os_api, whose queue the OS shares
 #define LH_JSON_DEPTH       16          // nesting; bounds the decoder's recursion
 #define LH_LED_COUNT        8
-#define LH_FS_READ_MAX      (16 * 1024) // fs.read / fs.json per call
+#define LH_FS_READ_MAX      LUA_PKG_FILE_MAX    // fs.read / fs.json per call: a whole file (16 KB before 2.0.0)
 #define LH_FS_LINE_MAX      512         // fs.lines: longer lines come in pieces
 #define LH_FS_OPEN_STEPS    500         // budget per file opened ...
 #define LH_FS_BYTES_PER_STEP 4          // ... and per bytes read or compiled
@@ -157,12 +171,14 @@ typedef struct lh {
 
     // Limits
     size_t mem, mem_peak;
+    size_t heap_max;            // lua_host_heap_max() at launch
+    bool psram;                 // the Lua heap is in PSRAM (os_mem.h)
     size_t grown;               // growth since the last system-heap check (lh_alloc)
     bool mem_hit;               // the allocator refused to go over the cap
     uint32_t steps, steps_peak;
     bool killed;                // over the instruction budget
     char kill_msg[64];          // "main.lua:12: Script took too long"
-    size_t heap_before;         // system heap free at launch
+    size_t heap_before;         // SRAM free at launch
     char err[96];               // why the script stopped, "" if it didn't
     int64_t t0;                 // ms at launch
 
@@ -229,7 +245,7 @@ typedef struct {
     uint32_t code_size;         // compiled code run in place, bytes (0: compiled on the badge)
     int code_slot;              // its flash slot, -1 if none
     bool code_copied;           // copied into the slot at this launch
-    size_t heap_before;         // system heap free when the app started
+    size_t heap_before;         // SRAM free when the app started
     char err[96];               // last error, "" if none
 } lh_stats_t;
 
@@ -281,6 +297,9 @@ lv_color_t lh_color(lua_State *L, int idx);
 lh_t *lh_ui_session(lua_State *L);
 lh_obj_t *lh_ui_new_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref);
 lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what);
+// Raises "<what>: the badge is low on memory" unless `need` more bytes of
+// SRAM would leave LUA_HOST_SYS_RESERVE free. Before any LVGL object is made.
+void lh_ui_room(lua_State *L, const char *what, size_t need);
 
 // lua_img.c: ui.load, ui.image, ui.canvas
 void lh_img_init(void);                                 // at boot, with the LVGL lock held
@@ -340,6 +359,9 @@ void lh_open_ble(lua_State *L);
 void lh_ble_init(lh_t *s);                              // at launch: no refs yet
 void lh_ble_run(lh_t *s);                               // Lua task: owed callbacks and os_ble's events
 void lh_ble_stop(lh_t *s);                              // any task: the app stops, Bluetooth goes off
+
+// lua_crypto.c: crypto (SHA-256, Ed25519 checks) and solana (base58, program-derived addresses)
+void lh_open_crypto(lua_State *L);
 
 // lua_net.c: mesh, lamps, items, profile, quest, http
 void lh_open_net(lua_State *L);

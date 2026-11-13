@@ -10,12 +10,14 @@ Stack: ESP-IDF v6.0.1, C, LVGL 9, Lua 5.5. What changed in each release: [CHANGE
 
 ## Lua apps and memory
 
-The badge has no PSRAM, so a Lua app (96 KB of heap since 0.5.13, 48 KB before)
-shares the free heap with Wi-Fi, TLS, the mesh and Bluetooth: ~156 KB at the launcher on
-0.5.13, ~116 KB before (CHANGELOG.md says where it came from). Bluetooth (1.0.0) costs
-about 4 KB in the build and about 30 KB more while an app has it on, so it is off until
-an app calls `ble.on()`. Which radio an app should use for what, and how to plan its
-memory: [docs/CONNECTIVITY.md](docs/CONNECTIVITY.md). Since 0.5.0:
+From 2.0.0 Solana OS uses the 8 MB of PSRAM in the badge's ESP32-C5HR8 (`main/core/os_mem.h`):
+a Lua app gets up to 6 MB of heap there, and Wi-Fi's buffers and TLS live there too, so the
+chip's ~160 KB of free SRAM is left for task stacks, DMA, LVGL and Bluetooth (about 30 KB
+while an app has it on, so it is off until an app calls `ble.on()`). Before 2.0.0 there was
+no PSRAM in use: a Lua app (96 KB of heap since 0.5.13, 48 KB before) shared one heap with
+Wi-Fi, TLS, the mesh and Bluetooth, and much of what follows was written for that budget
+(CHANGELOG.md says where each KB came from). Which radio an app should use for what, and how
+to plan its memory: [docs/CONNECTIVITY.md](docs/CONNECTIVITY.md). Since 0.5.0:
 
 - Store apps arrive compiled: the App Store compiles them with this firmware's
   own Lua (`tools/luac/`, the same `main/lua/vendor/` built to wasm) and the

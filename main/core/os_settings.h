@@ -7,6 +7,7 @@
 typedef enum {
     OS_SET_THEME,           // OS_THEME_DARK (default) or OS_THEME_LIGHT; see ui_col()
     OS_SET_BRIGHTNESS,      // screen backlight level 1..OS_BRIGHTNESS_MAX (default: brightest); see os_brightness_apply()
+    OS_SET_LCD_INVERT,      // 1 (default: production panels) or 0 (prototypes): colour inversion; see os_invert_apply()
     OS_SET_COUNT,
 } os_setting_t;
 

@@ -94,8 +94,8 @@ int os_mesh_event_channel(void);
 
 // Scans (LUA_API.md "Choosing a channel"): the mesh task hops through
 // `channels`, `dwell_ms` on each, and only listens. HELLOs and APP messages
-// for `app` heard meanwhile are noted per channel; nothing else is handled
-// unless the radio is on the mesh channel. done(ctx) runs on the mesh task
+// for `app` heard meanwhile are noted per channel; nothing is handled or sent
+// (no HELLOs, os_mesh_send fails), even on the mesh channel. done(ctx) runs on the mesh task
 // at the end (post from it, nothing more); os_mesh_scan_stop(), or a bridge
 // taking Wi-Fi (os_mesh_keep_wifi), ends it without calling done. Needs a mesh holder (os_mesh_acquire), no bridge
 // keeping Wi-Fi and no beacon: ESP_ERR_INVALID_STATE, ESP_ERR_NOT_FINISHED

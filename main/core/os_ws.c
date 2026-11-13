@@ -30,6 +30,7 @@
 #include "lwip/sockets.h"
 #include "mbedtls/base64.h"
 #include "psa/crypto.h"
+#include "os_mem.h"
 #include "os_ws.h"
 
 static const char *TAG = "os_ws";
@@ -292,8 +293,8 @@ esp_err_t os_ws_connect(const char *url, const char *protocols)
     strcpy(path + (*rest != '/'), rest);
     path[strcspn(path, "#")] = 0;
 
-    size_t free0 = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
-    size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    size_t free0 = heap_caps_get_free_size(os_mem_tls_caps());
+    size_t block = heap_caps_get_largest_free_block(os_mem_tls_caps());
     esp_err_t err = ESP_OK;
     char ip[INET_ADDRSTRLEN] = "";
     if (free0 < TLS_MIN_FREE || block < TLS_MIN_BLOCK) {
@@ -319,7 +320,7 @@ esp_err_t os_ws_connect(const char *url, const char *protocols)
     if (err != ESP_OK) {
         drop();
     } else {
-        ESP_LOGI(TAG, "connected to %s, %u bytes free", host, (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+        ESP_LOGI(TAG, "connected to %s, %u bytes free", host, (unsigned)heap_caps_get_free_size(os_mem_tls_caps()));
     }
     return err;
 }

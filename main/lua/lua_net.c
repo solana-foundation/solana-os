@@ -920,13 +920,17 @@ static int l_mesh_send(lua_State *L)
 // mesh.pause() / mesh.resume(): the app hands the radio back to Wi-Fi (server
 // calls work and the outbox uploads, as X Dex syncs before it takes the radio)
 // or takes it for the mesh again. On the OS task, where lh_mesh_start and
-// lh_mesh_stop hold and release it. arg: the launch number, and what to do.
-static void mesh_hold(void *arg)
+// lh_mesh_stop hold and release it. Each applies the app's latest ask
+// (s_mesh_paused), not the one that queued it, so a pause and a resume in one
+// callback cancel out instead of ending a scan started after them.
+
+// Holds or releases the mesh as s_mesh_paused says. One caller at a time: the
+// OS task and the app's callbacks both hold the LVGL lock.
+static void mesh_hold_apply(void)
 {
-    uintptr_t a = (uintptr_t)arg;
-    bool want = a & 1;
-    if (s_mesh_sub < 0 || (s_mesh_gen & 0x7fffffff) != a >> 1 || want == s_mesh_acquired) {
-        return;         // that app has closed, or nothing to change
+    bool want = !s_mesh_paused;
+    if (want == s_mesh_acquired) {
+        return;
     }
     if (want) {
         os_mesh_acquire();
@@ -937,6 +941,15 @@ static void mesh_hold(void *arg)
     s_mesh_acquired = want;
 }
 
+// arg: the launch number.
+static void mesh_hold(void *arg)
+{
+    if (s_mesh_sub < 0 || (s_mesh_gen & 0x7fffffff) != (uintptr_t)arg) {
+        return;         // that app has closed
+    }
+    mesh_hold_apply();
+}
+
 static int mesh_hold_post(lua_State *L, bool want)
 {
     lh_need_perm(L, LUA_PERM_MESH, "mesh");
@@ -944,9 +957,12 @@ static int mesh_hold_post(lua_State *L, bool want)
     if (!want && s->scan_ref != LUA_NOREF) {
         luaL_unref(L, LUA_REGISTRYINDEX, s->scan_ref);  // the pause ends the scan: its callback never runs
         s->scan_ref = LUA_NOREF;
+        os_mesh_scan_stop();            // now, not when the queued release lands: a resume
+                                        // in this callback cancels that, and a scan after it
+                                        // would find this one still running ("scanning")
     }
     s_mesh_paused = !want;
-    os_post(mesh_hold, (void *)(uintptr_t)((s->gen & 0x7fffffff) << 1 | want));
+    os_post(mesh_hold, (void *)(uintptr_t)(s->gen & 0x7fffffff));
     return 0;
 }
 
@@ -1075,6 +1091,13 @@ static int l_mesh_scan(lua_State *L)
         lua_pushnil(L);
         lua_pushliteral(L, "paused");
         return 2;
+    }
+    if (!s_mesh_acquired && s_mesh_sub >= 0 && !s->quit) {
+        // A mesh.resume() earlier in this callback: its acquire waits for the
+        // OS task, which needs the LVGL lock we hold. Take it now (the queued
+        // one then finds nothing to do). Not in on_exit: lh_mesh_stop may run
+        // meanwhile, and close_state would end the scan anyway.
+        mesh_hold_apply();
     }
     lua_pushvalue(L, top);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);

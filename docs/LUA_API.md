@@ -101,8 +101,8 @@ calls these globals if you define them:
 function on_key(key, rep)    -- "up" "down" "left" "right" "select" "back"; rep = auto-repeat
   return true                -- handled. Returning false/nil for "back" exits the app.
 end
-function on_tick(ms)         -- every 50 ms, ms = time since the last tick
-end
+function on_tick(ms)         -- every 30 ms (50 ms before 2.1.0): move things by ms,
+end                          -- the time since the last tick, never by counting ticks
 function on_mesh(from, msg)  -- a message from the same app on another badge (needs "mesh")
 end
 function on_meet(from, data) -- another badge asks for a signed meet (needs "mesh", 0.5.15):
@@ -124,20 +124,21 @@ HOME always returns to the launcher. The screen below the status bar is
 
 | | |
 |---|---|
-| Memory | 96 KB of Lua heap (badges below Solana OS 0.5.13: 48 KB). Past it the app stops with "Out of memory: the app needs more than 96 KB". The badge also keeps 32 KB of its own heap free, and the app's other memory (its 12 KB task stack, its UI objects) counts against that, so an app with many objects, or on a badge that is busy, can be stopped earlier with "The badge is low on memory": with Wi-Fi joined, around 80 KB of Lua heap for an app with 60 labels (around 49 KB with Bluetooth on, which takes about 30 KB of the badge's heap), the full 96 KB for one with a few. Plan for 64 KB, and keep big images and tables for when you need them. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it |
+| Memory | 6 MB of Lua heap, in the badge's 8 MB of PSRAM (Solana OS 2.0.0). Past it the app stops with "Out of memory: the app needs more than 6 MB". The badge keeps 512 KB of PSRAM for itself while an app runs, and the allocator's own overhead (up to about a quarter for very many small tables or strings) comes out of the rest, so an app made of millions of tiny objects can be stopped a little earlier with "The badge is low on memory". The app's UI objects, label text and 12 KB task stack are in the badge's other memory, capped by the rows below, not in the 6 MB, and Bluetooth no longer shrinks it. `sys.memory()` tells an app where it stands. Badges below 2.0.0 (until they update) give 96 KB (48 KB below 0.5.13), shared with Wi-Fi, TLS and Bluetooth: there an app with 60 labels gets about 80 KB with Wi-Fi joined, about 49 KB with Bluetooth on as well. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it. A big heap is a slower one: PSRAM is slower than the chip's own memory, and the collector walks everything an app keeps, so a few MB of live tables can pause a callback noticeably |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
-| UI objects | 64 at a time, one of them a QR code |
+| UI objects | 128 at a time (64 below 2.0.0), one of them a QR code. They live in the badge's SRAM, not the Lua heap: a call that makes one (`ui.label`, `ui.list`, `ui.image`, …) raises "ui.list: the badge is low on memory" (with its own name) when it would leave the badge less than 32 KB, a catchable error (2.0.1). So does a call that makes what they hold grow (2.1.0): `label:text` with longer text, `ui.hint`, `ui.toast`, `qr:text`, and `ui.confirm` and `ui.input` for their text. The 32 KB are SRAM that the badge can still allocate, not counting the 32 KB set aside for DMA (2.0.1 counted those, so its check left the badge almost nothing), and each list, the keyboard and the first image keep a little more for what they redraw on their own (a list's rows, about 1.3 KB). A `ui.list` costs about 12 KB of it, a label about 250 bytes. Measured on 2.1.0 with Wi-Fi off: 60 labels and six lists, or 128 labels; Wi-Fi joined and Bluetooth on leave less |
 | Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
-| Text | 200 bytes per label (longer text ends in "..."), 6 KB of label text on screen |
+| Text | 200 bytes per label (longer text ends in "..."), 12 KB of label text on screen (6 KB below 2.0.0) |
 | Timers | 8 at a time, ≥ 20 ms |
 | Storage | 16 KB per app (`storage.*`) |
 | Files | 64 bundled files, ≤ 256 KB each, ≤ 1 MB together, read-only (`fs`, `require`) |
-| Reads | ≤ 16 KB per `fs.read` and `fs.json`, lines ≤ 512 bytes. Card reads count toward the instruction budget: 500 per file opened or looked up (`fs.exists`, `fs.size`, `fs.list`), 1 per 4 bytes read or compiled |
+| Reads | ≤ 256 KB per `fs.read` and `fs.json`, so any bundled file in one read (16 KB below 2.0.0), lines ≤ 512 bytes. Card reads count toward the instruction budget: 500 per file opened or looked up (`fs.exists`, `fs.size`, `fs.list`), 1 per 4 bytes read or compiled |
 | Mesh | 4 messages per second, ≤ 200 bytes each. Meets: one asked and one accepted a second, ≤ 100 bytes of data a side, 300 per badge a day, 40 waiting to upload |
-| Bluetooth | one connection at a time, ≤ 244 bytes per read, write or notification, 4 waiting for an answer; a served service has ≤ 4 characteristics; an advertisement carries ≤ 24 bytes of app data; about 30 KB of the badge's own heap while it is on |
+| Bluetooth | one connection at a time, ≤ 244 bytes per read, write or notification, 4 waiting for an answer; a served service has ≤ 4 characteristics; an advertisement carries ≤ 24 bytes of app data; about 30 KB of the badge's own memory while it is on (not of the app's heap from 2.0.0) |
 | HTTP | 60 requests a minute per badge, ≤ 2 KB sent, ≤ about 3.5 KB of answer, 6 s to answer |
 | RPC | 30 calls a minute per badge (6 of them `sendTransaction`), ≤ 2 KB of params, ≤ about 3.5 KB of answer, 6 s to answer |
 | WebSocket | one at a time, 20 opens a minute per badge, ≤ 4 KB per message either way, 8 waiting to go |
+| Crypto | of a callback's 200 000 instructions: a signature check takes 40 000, an on-curve test 5 000, a program-derived address 10 000 (see `crypto` and `solana`) |
 | Numbers | 32-bit integers (they wrap at ±2^31) and 32-bit floats (about 7 digits) |
 
 A runtime error stops the app and shows the message with the line number. CANCEL
@@ -298,7 +299,7 @@ dance:scale(3)  dance:pos(x, y)  dance:show(b)  dance:remove()
 - **Drawing** off the canvas is clipped, not an error. Every pixel written costs
   instructions (1 per 16), so redrawing a whole 80 × 54 canvas each `on_tick` is
   fine; the canvas redraws on screen after the callback. Images and canvases are UI
-  objects (the 64), drawn in the order made, so a label made after a canvas sits on
+  objects (the 128), drawn in the order made, so a label made after a canvas sits on
   top of it. So are animations.
 
 ### `led` (permission `led`)
@@ -328,12 +329,18 @@ sys.millis()                -- ms since the app started
 sys.time()                  -- unix seconds from the server clock, or nil if never synced
 sys.battery()               -- percent, or nil on USB / unknown
 sys.keys()                  -- the keys held now, e.g. { up = true, left = true } (0.5.11)
+sys.memory()                -- { used = 18773, max = 6291456 }: the app's Lua heap in bytes (2.0.0)
 sys.exit()                  -- close the app
 badge.id()                  -- "7K2Q9M", or nil before the first hello
 badge.owner()               -- "@toly", or nil while unclaimed
 badge.online()              -- Wi-Fi joined and registered with the server (false while a ws socket is open)
 json.encode(value)  json.decode(text)   -- nil plus an error message on bad input
 ```
+
+`sys.memory()` counts what the app's Lua heap holds now (live objects and garbage not yet
+collected) and its cap on this badge: 6 MB with PSRAM, 96 KB on a badge that has none.
+Before 2.0.0 there is no `sys.memory` and the cap is 96 KB, so an app that wants room for
+big caches can ask: `local max = sys.memory and sys.memory().max or 96 * 1024`.
 
 `sys.keys()` names `up`, `down`, `left`, `right`, `select` and `back` (CANCEL), never HOME,
 and is empty while a dialog has the keys (your `ui.confirm` or `ui.input`, or the badge's own
@@ -374,11 +381,11 @@ fs.exists("questions")                -- true for a file or a folder
 fs.size("questions/space.txt")        -- bytes, or nil if there's no such file
 fs.list("questions")                  -- { "art.txt", "extra/", "space.txt" }: sorted, folders end in "/"
 fs.list()                             -- the top of the app's files; {} for a folder that isn't there
-fs.read("intro.txt")                  -- the whole file (≤ 16 KB) as a string, or nil, "not found"
+fs.read("intro.txt")                  -- the whole file (≤ 256 KB) as a string, or nil, "not found"
 fs.read("book.txt", 8192, 1024)       -- 1024 bytes from byte 8192 (counting from 0); "" past the end
 for line in fs.lines("words.txt") do  -- each line without its "\n" or "\r\n"; ≤ 512 bytes,
 end                                   -- longer lines come in pieces
-fs.json("levels/1.json")              -- the decoded value (file ≤ 16 KB), or nil and an error
+fs.json("levels/1.json")              -- the decoded value (file ≤ 256 KB), or nil and an error
 local scene = fs.load("scenes/intro.lua")  -- compiled, not run or kept: scene() runs it;
                                            -- nil and an error for a syntax error
 ```
@@ -388,10 +395,12 @@ with the same globals as `main.lua`, and what it returns (usually a table, `true
 nothing) is what every `require` of that name gets. A missing module or an error in
 one stops the app like any other error; wrap it in `pcall` to handle it. A missing
 file is an error for `fs.lines` too, while `fs.read`, `fs.json` and `fs.load` return
-`nil` and a message. A bad path, or asking for more than 16 KB at once, is an error.
+`nil` and a message. A bad path, or asking for more than 256 KB at once (16 KB below
+2.0.0), is an error.
 
-Everything you read lands in the app's 96 KB heap, so keep only what you use: read
-big files in pieces (offsets or `fs.lines`), and load data when the app needs it.
+Everything you read lands in the app's heap (6 MB; 96 KB below 2.0.0), so keep what you
+use: on an older badge read big files in pieces (offsets or `fs.lines`), and load data
+when the app needs it.
 `require` keeps a module until the app exits. For code you need only for a while (a
 level, a scene), use `fs.load` and drop the function and what it returned once you're
 done: the collector frees them. In a store app both load the store's compiled code of
@@ -466,10 +475,10 @@ nothing is saved. Meanwhile:
 - The server announcing a new event channel changes `event`, not your app's channel.
 
 `mesh.scan([opts,] cb)` hops through channels, listening on each for a moment, and
-calls `cb(channels)` once at the end. It sends nothing on the channels it visits (the
-others don't see a scan), so it finds badges and beacons by their HELLOs, which they
-send every 1.5 to 2.5 s, and badges running **your** app by the `mesh.send` messages
-they broadcast meanwhile. `opts`:
+calls `cb(channels)` once at the end. It sends nothing on the channels it visits, the
+badge's own included (the others don't see a scan), so it finds badges and beacons by
+their HELLOs, which they send every 1.5 to 2.5 s, and badges running **your** app by the
+`mesh.send` messages they broadcast meanwhile. `opts`:
 
 | Field | |
 |---|---|
@@ -490,9 +499,10 @@ The whole 2.4 GHz band takes about 34 s at the default dwell, both bands about 5
 badge that runs your app but sends nothing isn't marked, so broadcast now and then
 (once a second or two) if your players should find each other by scanning. `peers` holds
 at most 24 badges and beacons in all, the first heard. Nothing in a scan is proof:
-anyone can send a HELLO or claim an id. While a scan runs the badge is on its own
-channel only while visiting it: `mesh.send` to a badge in range answers
-`nil, "scanning"`, `on_mesh` hears nothing, `mesh.nearby()` keeps what it heard before
+anyone can send a HELLO or claim an id. While a scan runs the badge is off the mesh,
+even while it visits its own channel: it sends no HELLOs, `mesh.send` answers
+`nil, "scanning"`, `on_mesh` hears nothing (what it hears goes only into the scan's
+results), `mesh.nearby()` keeps what it heard before
 (30 s), and Wi-Fi joined on the mesh channel pauses until the scan ends. One scan at a
 time: another answers `nil, "scanning"`; between `mesh.pause()` and `mesh.resume()`,
 `nil, "paused"`; with a bridge open, `nil, "bridge open"` (a bridge keeps Wi-Fi joined,
@@ -730,15 +740,15 @@ ble.drop()                          -- disconnect the device that connected to u
 ```
 
 **On and off.** Bluetooth is off until the app calls `ble.on()`, and goes off when the
-app exits. While it is on it takes about 30 KB of the badge's own memory (not of the
-app's 96 KB), so the badge may stop a big app earlier (see "Limits": with Wi-Fi joined
-and Bluetooth on, an app with 60 labels gets about 49 KB of Lua heap). `ble.on()` returns
-`true`, or `nil` and `"not enough memory"` (the badge has under 64 KB free: free some of
-the app's first), or `"unavailable"`. Every other function is a Lua error while Bluetooth
+app exits. While it is on it takes about 30 KB of the badge's own memory, not of the
+app's heap (below 2.0.0 the two shared one heap, so the badge could stop a big app earlier:
+see "Limits"). `ble.on()` returns
+`true`, or `nil` and `"not enough memory"` (the badge has under 64 KB of SRAM free; below
+2.0.0 the app's heap counts, so free some of it first), or `"unavailable"`. Every other function is a Lua error while Bluetooth
 is off, except `ble.off`, `ble.state` and `ble.address`; a link from before answers
 `"closed"` to `link:state()`, and its other methods return `nil` and `"not open"`. Turn it on when the app needs it
-and off when it doesn't: a secure connection (`http`, `ws`, the store) needs 56 KB free
-to start.
+and off when it doesn't (below 2.0.0 it also shares the heap that a secure connection
+(`http`, `ws`, the store) needs 56 KB of to start).
 
 **UUIDs and data.** A service or characteristic is a string: 16-bit as 4 hex digits
 (`"180f"`), or 128-bit as `"6e400001-b5a3-f393-e0a9-e50e24dcca9e"`; case doesn't matter,
@@ -1271,10 +1281,12 @@ run.
 **Memory.** Starting a secure connection takes up to about 40 KB for a moment (22 KB
 to `echo.websocket.org`), and an open one keeps about 5 KB. The badge closes its server
 connection first, then starts the socket only with 56 KB free, the same rule as for
-its own connection, so other things don't run out meanwhile. With Wi-Fi joined, an app
-whose Lua heap is around 10 KB when it calls `ws.open` has that room, one at 20 KB
-doesn't (`lua mem` shows the heap). So open the socket first and load big data after
-it's up; without the room it closes with `"not enough memory"`. In the emulator the
+its own connection, so other things don't run out meanwhile. From 2.0.0 that memory is
+PSRAM, which an app's heap never takes below 512 KB, so there always is room. Below
+2.0.0 it was the heap the app shares: with Wi-Fi joined, an app whose Lua heap is around
+10 KB when it calls `ws.open` has that room, one at 20 KB doesn't (`lua mem` shows the
+heap), so there open the socket first and load big data after it's up; without the room
+it closes with `"not enough memory"`. In the emulator the
 socket is the browser's: everything above holds, except that memory is never short and
 a failed connection is always `"unreachable"` (browsers don't say why).
 
@@ -1486,6 +1498,94 @@ function on_key(k)
 end
 ```
 
+### `crypto` and `solana` (always allowed, Solana OS 2.1.0)
+
+SHA-256, the two Ed25519 checks that need no key, base58 and program-derived addresses,
+done by the badge itself: in Lua they would take most of a callback's instructions, or
+more. No permission is needed, since nothing here leaves the badge. Both tables are `nil`
+below Solana OS 2.1.0: check `if crypto then`.
+
+```lua
+crypto.sha256(data)                     -- the 32 bytes of data's SHA-256
+crypto.on_curve(bytes)                  -- true when the 32 bytes are a point of the Ed25519 curve
+crypto.verify(key, message, signature)  -- true when signature (64 bytes) is key's (32 bytes) over message
+
+solana.encode(bytes)                    -- base58, as Solana writes addresses and signatures
+solana.decode(text)                     -- the bytes, or nil and "not base58" or "too long"
+solana.pda(seeds, program)              -- a program-derived address (32 bytes) and its bump
+```
+
+Everything is a string of bytes (`string.pack`, `string.byte`), as with `ble`: an address
+is its 32 bytes, and `solana.encode` turns it into the text `rpc` and people read.
+
+- **`crypto.sha256(data)`** hashes a string of any length.
+- **`crypto.on_curve(bytes)`** tells the two kinds of Solana address apart: an address that
+  is a point of the curve can have a key (a wallet), one that isn't is a program-derived
+  address. Anything but 32 bytes is `false`.
+- **`crypto.verify(key, message, signature)`** checks an Ed25519 signature: a
+  transaction's (the message is the transaction's message bytes) or the one a wallet makes
+  for `signMessage`. It checks what Solana checks of a transaction's signature
+  (ed25519-dalek's `verify_strict`, 2.1.0): it is `false` for a signature that doesn't
+  match, a key or a signature of the wrong length, a signature whose second half isn't
+  below the curve's group order, and a key or a signature's first half (`R`) that is one
+  of the curve's eight points of small order, in any encoding. Such a key belongs to no
+  one: with the neutral point (`"\1" .. string.rep("\0", 31)`) as the key, a made-up
+  signature would otherwise "verify" every message. `crypto.on_curve` still says `true`
+  for those points, since they are on the curve. It says that the holder of `key` signed `message`, so the key has to
+  come from somewhere you trust: your server's public key can ship in `main.lua` (a public
+  key is no secret), and then a badge can check a statement your server signed after
+  another badge handed it over the mesh or Bluetooth, with Wi-Fi off.
+- **No signing and no keys.** There is nothing here to make a key pair or a signature with,
+  on purpose: a badge is not a wallet (see the warning under `rpc`).
+- **`solana.encode(bytes)`** takes up to 128 bytes (more is a Lua error); a 64-byte
+  signature is 88 characters or fewer. **`solana.decode(text)`** returns `nil` and
+  `"not base58"` or `"too long"` (over 128 bytes) instead of raising, since text from
+  outside is untrusted. Check the length of what comes back: an address is 32 bytes.
+- **`solana.pda(seeds, program)`** gives what `findProgramAddress` gives everywhere else:
+  the address made from the seeds, the program's address and the highest bump (255 down)
+  that lands off the curve, and that bump. `seeds` is a list of up to 15 strings of at most
+  32 bytes each, `program` is 32 bytes; anything else is a Lua error. It returns `nil` if no
+  bump works, which doesn't happen in practice. A number among the seeds is its bytes, as
+  the program wrote them: a `u64` is `string.pack("<i8", n)` for an `n` a badge's 32-bit
+  integers hold, a `u8` is `string.char(n)`.
+
+**What they cost.** The work is done in C, so it is charged to the callback's 200 000
+instructions by the time it takes:
+
+| | Instructions |
+|---|---|
+| `crypto.sha256` | 50, plus 1 per 4 bytes |
+| `crypto.on_curve` | 5 000 |
+| `crypto.verify` | 40 000, plus 1 per 2 bytes of message |
+| `solana.pda` | 5 000 for each bump it tries (two on average), charged before trying it |
+| `solana.encode`, `solana.decode` | 20, plus n × n / 16 for n bytes or characters (84 for an address) |
+
+So one callback fits four signature checks, or about nineteen addresses: do more over
+several timers or ticks. An address whose search tries many bumps costs that many times
+5 000 (seeds that need many can be found ahead of time): past the callback's budget the
+search stops with "Script took too long", like a loop would, and about 40 tries fit one
+callback (~0.2 s on a badge). Measured on a badge (2.1.0): a signature check takes 57 ms, an
+on-curve test 4.7 ms, an address 7 ms (4.8 ms a bump tried), and the screen doesn't redraw during a callback: check signatures one at a
+time, not in a loop. None of them takes any of the app's heap beyond the strings they
+return.
+
+```lua
+-- Is there a proposal for transaction 12 of a Squads multisig? Its account sits at an
+-- address made from the multisig's address and the transaction's number.
+-- app.json: "permissions": ["rpc"]
+local SQUADS = solana.decode("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf")
+local MULTISIG = solana.decode("Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr")   -- your multisig's address
+local label = ui.label(8, 8, "Looking...")
+
+local proposal, bump = solana.pda(
+  {"multisig", MULTISIG, "transaction", string.pack("<i8", 12), "proposal"}, SQUADS)
+rpc.call("getAccountInfo", {solana.encode(proposal), {encoding = "base64", dataSlice = {offset = 0, length = 0}}},
+  function(ok, r)
+    if not ok then label:text(r) return end
+    label:text(r.value and "Proposal 12 exists" or "No proposal 12 yet")
+  end)
+```
+
 ### Build on the badge, sign on a phone
 
 A player's phone wallet can sign and send a transaction the badge builds. Phantom and
@@ -1509,7 +1609,8 @@ the QR code, so your server sits in between:
 
 No key is on the badge or on your server: the only signature is the wallet's.
 
-`lib/solana.lua`, addresses and messages (copy it into your app):
+`lib/solana.lua`, addresses and messages (copy it into your app; on a badge that has
+`solana`, see above, `solana.decode` and `solana.encode` do its `decode` and `encode` faster):
 
 ```lua
 -- lib/solana.lua: Solana addresses and transaction messages, built on the badge.
@@ -1802,8 +1903,8 @@ Bun.serve({
 - **Scan in the wallet app**, with its own scan button. A phone's camera app may not
   open `solana:` links, or may open them in whichever wallet was installed first.
 - **Memory:** while it waits, the example holds about 25 KB of Lua heap. Compiled on
-  the badge (Run on badge) it peaks at 36 KB of the 96 KB; installed from the store it
-  runs from flash and needs less.
+  the badge (Run on badge) it peaks at 36 KB (of 6 MB, or 96 KB below 2.0.0); installed
+  from the store it runs from flash and needs less.
 - The message travels as hex, which keeps the Lua short: messages up to about 1,000
   bytes fit in `http`'s 2 KB. A transfer is limited to 2,147,483,647 lamports, because
   the badge's integers are 32-bit.

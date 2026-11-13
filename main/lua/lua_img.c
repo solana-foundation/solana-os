@@ -2,8 +2,8 @@
 // ui.anim.
 //
 // Pixels are RGB565, two bytes each, with LH_PX_CLEAR for see-through, and
-// live in Lua userdata ("ui.img"), so they count against the app's 96 KB like
-// anything else it keeps; PNG decoding's scratch goes through the same
+// live in Lua userdata ("ui.img"), so they count against the app's Lua heap
+// (6 MB in PSRAM from 2.0.0, 96 KB before) like anything else it keeps; PNG decoding's scratch goes through the same
 // allocator and is freed before ui.load returns. Nothing is ever drawn at the
 // size it is shown: a view (an lv_image_dsc_t of our own, flagged
 // LV_IMAGE_FLAGS_USER1) points LVGL's lv_image at the pixels and a scale, and
@@ -162,9 +162,9 @@ void lh_img_init(void)
 static lh_pix_t *new_pix(lua_State *L, const char *what, int w, int h)
 {
     size_t bytes = (size_t)w * h * 2;
-    if (bytes > LUA_HOST_HEAP_MAX) {
+    if (bytes > lh_get(L)->heap_max) {
         luaL_error(L, "%s: %d x %d pixels take %d KB, more than an app's %d KB", what, w, h,
-                   (int)(bytes / 1024), LUA_HOST_HEAP_MAX / 1024);
+                   (int)(bytes / 1024), (int)(lh_get(L)->heap_max / 1024));
     }
     lh_pix_t *p = lua_newuserdatauv(L, sizeof(lh_pix_t) + bytes, 0);
     p->w = (uint16_t)w;
@@ -255,9 +255,9 @@ static lh_pix_t *load_gif(lua_State *L, lh_t *s, const char *rel, long size, con
         luaL_error(L, "%s: %s: %s", what, rel, err);
     }
     size_t need = (shared ? 0 : sizeof(*w)) + (size_t)g.w * g.h * 2;
-    if (need > LUA_HOST_HEAP_MAX) {
+    if (need > s->heap_max) {
         luaL_error(L, "%s: %s (%d x %d) takes %d KB to load, more than an app's %d KB", what, rel, g.w, g.h,
-                   (int)(need / 1024), LUA_HOST_HEAP_MAX / 1024);
+                   (int)(need / 1024), (int)(s->heap_max / 1024));
     }
     lh_charge_steps(L, (unsigned)(size / LH_FS_BYTES_PER_STEP + (size_t)g.w * g.h / PX_PER_STEP));
     lh_pix_t *p = new_clear_pix(L, what, g.w, g.h);
@@ -301,9 +301,9 @@ static lh_pix_t *load_file(lua_State *L, int idx, const char *what)
         luaL_error(L, "%s: %s: %s", what, rel, !strcmp(err, "not a PNG") ? "not a PNG or GIF" : err);
     }
     size_t raw_n = lh_png_raw_size(&info), need = raw_n + sizeof(lh_png_work_t) + (size_t)info.w * info.h * 2;
-    if (need > LUA_HOST_HEAP_MAX) {
+    if (need > s->heap_max) {
         luaL_error(L, "%s: %s (%d x %d) takes %d KB to load, more than an app's %d KB (fewer colours help: "
-                   "save it with a palette)", what, rel, info.w, info.h, (int)(need / 1024), LUA_HOST_HEAP_MAX / 1024);
+                   "save it with a palette)", what, rel, info.w, info.h, (int)(need / 1024), (int)(s->heap_max / 1024));
     }
     lh_charge_steps(L, (unsigned)(size / LH_FS_BYTES_PER_STEP + raw_n / 8));
     lh_pix_t *p = new_pix(L, what, info.w, info.h);
@@ -472,6 +472,7 @@ static lh_view_t *new_view(lua_State *L, int scale)
 // Shows the view on top of the stack (popped) as a new object of kind; pushes its handle.
 static void show_view(lua_State *L, lh_t *s, lh_kind_t kind, int x, int y)
 {
+    lh_ui_room(L, kind == LH_IMAGE ? "ui.image" : kind == LH_CANVAS ? "ui.canvas" : "ui.anim", LH_UI_OBJ_SRAM + LH_UI_IMG_LINE);
     lh_view_t *v = lua_touserdata(L, -1);
     // The view is in the registry before LVGL gets a pointer to it, and stays
     // until the object goes: nothing that can fail comes in between, so a

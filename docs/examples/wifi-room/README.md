@@ -32,8 +32,9 @@ What to know about `ws` on a badge (LUA_API.md "ws"):
 - **One connection.** While the socket is open the badge isn't connected to the badge
   server: the app's other server calls answer `"socket open"` and `badge.online()` is
   false. Make those calls before `ws.open`, or close the socket first.
-- **Memory.** A secure connection needs 56 KB of the badge's heap free to start, so the app
-  opens its socket first, while it is small, and would load big data after.
+- **Memory.** On a badge below Solana OS 2.0.0 a secure connection needs 56 KB of the
+  badge's heap free to start, so the app opens its socket first, while it is small, and would
+  load big data after. From 2.0.0 the connection takes PSRAM and the order doesn't matter.
 - **Rate.** 20 opens a minute per badge: the app reconnects after 2 seconds, doubling up to
   30, and waits a second after the last room change before opening the new room.
 

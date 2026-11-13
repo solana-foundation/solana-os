@@ -6,6 +6,210 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 2.1.0 (2026-11-13)
+
+- **A faster screen.** Measured on a prototype badge:
+  - The LCD's pixel clock is 40 MHz (`BOARD_LCD_PCLK_HZ`, 20 before): redrawing the whole
+    app area every tick went from 15 fps (64 ms a frame) to 25 fps (35 ms). The card keeps
+    its own 20 MHz on the same bus.
+  - Lua's `on_tick` runs every 30 ms (`LH_TICK_MS`, 50 before) and LVGL refreshes every
+    20 ms (`CONFIG_LV_DEF_REFR_PERIOD`, 33 before): the LVGL task sleeps in whole 10 ms
+    RTOS ticks plus one, so 33 ms came out as 40. A store game that moves from `on_tick`
+    (Cube Shift): at most 20 fps before, 21 to 25 with the clock and the tick, 28 to 31
+    with the refresh period too.
+  - Dirty areas: LVGL's list holds 256 (`LV_INV_BUF_SIZE`, a compile definition in
+    `CMakeLists.txt`; 32 by default, which made LVGL redraw the whole screen once 17
+    sprites moved), and `merge_dirty()` in `bsp_display.c` merges nearby ones (each area
+    costs ~1 ms with 120 objects on screen, 0.2 ms of it the panel's window commands).
+    With 120 objects on screen and sprites in rows, a frame went from 10.9 to 2.8 ms with
+    8 moving, 46 to 4.5 ms with 20, 47 to 9 ms with 40 (19 to 30 fps), 50 to 18 ms with 80
+    (17 to 28 fps), 52 to 31 ms with 120 (16 to 20 fps); scattered sprites now take 13.5,
+    23.5, 37 and 51 ms for 20, 40, 80 and 120. Cube Shift: 30 to 32 fps, frames of 8 to
+    12 ms, no full-redraw spikes. The emulator keeps LVGL's 32 entries
+    (`bsp_display.c` is the badge's). Costs 3.8 KB of SRAM: the launcher has ~151.5 KB
+    free (2.0.1: ~155 KB).
+  - Tried and dropped: LVGL built with `-O2` (106 KB more flash, no measurable gain); the
+    longer list without merging (80 and 120 sprites got slower: 98 and 149 ms).
+  - Not verified: a production panel at 40 MHz (measured on one prototype, colour
+    inversion off), how the physical screen looks (screenshots come from LVGL's memory,
+    not the panel), battery power. An app that counts ticks instead of using `ms` runs
+    1.67 times faster; every app the server seeds uses `ms`.
+  - HW Debug > Display shows the clock the build uses.
+- **`crypto` and `solana` for Lua apps** (no permission; `docs/LUA_API.md` "crypto and
+  solana"). `crypto.sha256`, `crypto.on_curve` (is this a point of the Ed25519 curve) and
+  `crypto.verify` (an Ed25519 signature); `solana.encode` and `solana.decode` (base58, up
+  to 128 bytes) and `solana.pda` (a program-derived address and its bump, as
+  `findProgramAddress` gives them). An app can now find a program's accounts by itself,
+  for instance a Squads proposal from the multisig's address and a transaction number,
+  where it used to need the addresses worked out elsewhere, and can check a signature made
+  by a key it trusts with Wi-Fi off. There is no signing and no key generation: a badge
+  holds no keys. `main/core/ed25519.*` (portable C: ten 26-bit limbs, the complete
+  point formulas TweetNaCl uses, both scalars walked at once, its own SHA-512),
+  `main/lua/lua_crypto.c` (the two modules; SHA-256 is PSA's, as for store installs),
+  `tests/t-crypto` (values from Node's SHA-256 and Ed25519, RFC 8032 and
+  @solana/web3.js).
+- **What it costs.** 7.5 KB of flash (image 2 299 187 to 2 306 659 bytes) and no RAM while
+  unused; the deepest call, a signature check, takes about 1.7 KB of the Lua task's stack.
+  Counted in QEMU on the ESP32-C5 build of `ed25519.c` (`-Os`): 1.04 million instructions
+  for the on-curve test and 11.5 million for a signature, so about 4 to 9 ms and 50 to
+  100 ms at 240 MHz. **Measured on a badge** (a prototype, `tests/t-crypto`: every check
+  passes): `crypto.verify` 52 ms (51.4 to 53.8, a good signature or a bad one alike),
+  `crypto.on_curve` 4.7 ms, `solana.pda` 7.3 ms (with ~2 bumps), `crypto.sha256` of 4 KB
+  1.6 ms; the badge's Lua runs about 3 000 VM instructions a millisecond. The instruction
+  charges in `lua_crypto.c` (5 000, 40 000 and 10 000 of a callback's 200 000) stay: a
+  callback of nothing but one of them takes at most ~260 ms (5 signature checks), within
+  the half second they were sized for. The emulator builds them (`bun run firmware`) and
+  `tests/t-crypto` passes there too.
+- **Example: Squads pager** (`docs/examples/squads-pager`): reads one Squads multisig over
+  `rpc`, finds its newest proposals with `solana.pda` and blinks when one waits for the
+  wallet linked at `/profile`. Run only against a made-up multisig with `rpc` stubbed, not
+  on a badge or in the emulator.
+- **Fixes from the review of this release** (Greptile on solana-os#17):
+  - **`crypto.verify` refuses small-order keys and R** (`ed25519_verify`, security). With the
+    neutral point as the key (`"\1"` and 31 zero bytes) and the neutral point as R with
+    s = 0, every message "verified": no private key needed, and the other seven
+    small-order points forge one message in eight. It now checks what Solana checks of a
+    transaction's signature (ed25519-dalek's `verify_strict`): s below the group order
+    (as before), and neither the key nor R of small order, in any encoding (`8P` is the
+    neutral point). R is still compared byte for byte with the canonical encoding of
+    s*B - h*A, so the few non-canonical R encodings `verify_strict` takes are refused;
+    no signer makes them. `crypto.on_curve` is unchanged: those points are on the curve,
+    and a program-derived address test mustn't change. Tests: `tests/t-crypto` has six
+    new negative vectors (all returned `true` on the build before), and
+    `tests/crypto/ed25519_test.py` checks the C code on the host against a Python
+    reference: RFC 8032, 200 random signatures, every small-order point and six
+    non-canonical encodings as key and as R, and an R of small order with a real key's
+    s = h*a (1 053 cases; 47 failed before). Measured on a badge: 57.5 ms a signature
+    (52 before); the 40 000-instruction charge stays.
+  - **`solana.pda` pays per bump** (`lua_crypto.c`): 5 000 instructions for each bump
+    tried, charged before trying it, where it charged 10 000 for the whole search. Seeds
+    that need many tries can be found ahead of time: on the build before, ten calls with
+    seeds needing 18 ran 180 hashes and curve tests in one callback, 854 ms under the
+    LVGL lock, for 100 000 of its 200 000 instructions. Now about 40 tries fit a callback
+    (4.8 ms each on a badge: ~0.2 s), then "Script took too long" stops the search, with
+    nothing half done. `tests/t-pda`.
+  - **Setters can't take the badge's SRAM** (`lua_ui.c`). 2.0.1 checked SRAM only when an
+    object was made, so an app could make empty labels and lists until the check refused,
+    then fill them: `label:text`, a list's rows, `ui.hint`, `ui.toast` and `qr:text` grew
+    SRAM unchecked. They all ask `lh_ui_room` now, as do `ui.hint`'s bar (made without a
+    check before), `ui.confirm`'s and `ui.input`'s text and `ui.qr`'s two scratch buffers;
+    an app sees the same catchable "label:text: the badge is low on memory" as when it
+    makes an object. What a list, the keyboard or an image can grow by on its own (rows
+    redrawn on a key: 1.3 KB a list) is kept free by every check. And the check measures
+    SRAM that malloc can still take (`OS_MEM_SRAM_MALLOC`): `OS_MEM_SRAM` also counts the
+    32 KB pool `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` keeps for DMA, which malloc never
+    uses, so 2.0.1's 32 KB floor was mostly that pool. `tests/t-uiset` (60 empty labels,
+    lists and rects until refused, then the fills), measured on a prototype with Wi-Fi
+    off: before, every fill went through and the SRAM malloc could take fell to 92 bytes
+    (small allocations then go to PSRAM); now the fills are refused and it stays at
+    40 KB or more. The console's `heap` adds a `sram:` line with that figure. An app gets
+    about 32 KB less UI than 2.0.1 allowed (60 labels and six lists with Wi-Fi off). The
+    emulator's SRAM is its whole wasm heap, so it refuses nothing there, as for making
+    objects.
+  - **Server calls' bodies in PSRAM** (`lua_json.c`): the JSON encoder's buffer (16
+    queued calls of up to 4 KB each, `storage`, mesh messages, meets) is allocated in
+    PSRAM when there is some, so a full queue no longer holds 64 KB of SRAM.
+  - **Squads pager**: it read 1 500 bytes of the multisig and took the members that fit for
+    all of them, so a wallet among the last of a big multisig was "not a member" and got
+    no alerts; it read 420 bytes of each proposal and, past 10 approvals, could ask for a
+    signature already given; and a proposal account that existed but didn't parse counted
+    as no proposal ("No open proposals"). Lists are now read whole (2 400 bytes a call, at
+    most three more: about 260 members or votes, else "Too many members to read"); a
+    proposal that exists but can't be read stops the round with "Can't read proposal #n",
+    and that stays on screen. `test.lua` runs it on a computer against mocked RPC answers
+    (9 cases; 6 failed before). From the second review: the extra reads could pass the 30
+    RPC calls a minute a badge gets (a 120-member multisig with eight long proposals: 40
+    calls refused in five minutes), so the app now counts its calls and starts a round
+    only when one as long as the last fits the minute; and pieces of one list read by
+    separate calls could come from two states of the account (a vote landing between
+    them made a valid proposal "can't read"), so pieces not answered from one slot are
+    checked against the account's first bytes and read again if it moved. 12 cases.
+    Still not run on a badge or in the emulator.
+
+## 2.0.1 (2026-11-13)
+
+Fixes from the 2.0.0 review.
+
+- **UI objects check SRAM.** With the Lua heap in PSRAM the allocator's reserve no longer
+  guards the SRAM that LVGL's objects use, and one `ui.list` slot is up to 43 LVGL objects:
+  an app making lists could run SRAM out while its heap stayed small. Every call that makes
+  objects (`ui.label`, `rect`, `bar`, `gradient`, `list`, `qr`, `image`, `canvas`, `anim`,
+  `confirm`, `input`) now first checks that what it adds leaves 32 KB of SRAM free
+  (`lh_ui_room`, `LUA_HOST_SYS_RESERVE`), else raises "ui.list: the badge is low on memory".
+- **A scan is silent on the badge's own channel too.** While `mesh.scan` visited the mesh
+  channel, the badge still sent its HELLOs, `mesh.send` worked and `on_mesh` heard app
+  messages; elsewhere none of that happened. Now a running scan sends nothing and passes
+  nothing on, wherever it is (`on_channel()` in `core/os_mesh.c` counts a scan as off the
+  channel): `mesh.send` answers `nil, "scanning"`, `mesh.meet` `"the mesh is off"`, and
+  what it hears (HELLOs, the app's messages) only goes into its results.
+- **`mesh.resume()` then `mesh.scan()` in one callback scans.** The resume only queued
+  its acquire for the OS task, which waits for the LVGL lock the callback holds, so the
+  scan found the mesh released and answered `nil, "the mesh is off"`. `mesh.scan` now takes
+  a pending resume's acquire itself (`mesh_hold_apply` in `lua/lua_net.c`), and each queued
+  pause or resume applies the app's latest ask, so a pause, a resume and a scan in one
+  callback no longer end that scan when the pause lands. A pause ends a running scan at
+  once (it dropped the scan's callback but left it running until the release landed, so a
+  scan right after a pause and a resume answered `"scanning"`). `tests/t-chan` checks all
+  three, measured on a badge.
+
+## 2.0.0 (2026-11-12)
+
+- **PSRAM.** Every badge's ESP32-C5HR8 carries 8 MB of quad PSRAM in its package (production
+  rev 1.0 and the prototypes' rev 1.2 alike), which Solana OS left off until now. It runs at
+  80 MHz, is brought up by the app's startup code (not the bootloader, so a badge updated
+  over the air gets it too) and goes into the heap: `malloc()` puts blocks over 16 KB there,
+  Wi-Fi and lwIP buffers prefer it (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`), FatFS's
+  buffers too, and mbedTLS allocates from it first (`tls_calloc` in `os_http.c`,
+  `CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`), so a TLS handshake no longer touches SRAM. A chip
+  without PSRAM still boots and gets 1.x's limits (`CONFIG_SPIRAM_IGNORE_NOTFOUND`).
+  `core/os_mem.h` says which heap is which; the guards follow it: a new TLS connection
+  (`os_http`, `os_ws`) checks PSRAM, `ble.on()` SRAM. Measured: SRAM 163 KB free at the
+  launcher with no network joined (1.1.2: 156 KB), 154 KB with Wi-Fi joined and the
+  server connection open (HYQ5VS on 1.1.2: 143 KB); a full handshake takes 27 KB of PSRAM;
+  Bluetooth still takes about 30 KB of SRAM while on. Boot takes about a second longer,
+  the PSRAM's memory test (`CONFIG_SPIRAM_MEMTEST`). On rev 1.0 chips PSRAM isn't
+  encrypted even with flash encryption (an ESP32-C5 erratum; badges don't encrypt flash).
+- **ESP-IDF's flash driver again, not the ROM's.** With PSRAM mapped, the ROM's esp_flash
+  driver (`CONFIG_SPI_FLASH_ROM_IMPL`, used since 0.5.13) overwrites MMU entries in the
+  middle of it: entry 129 (`0x42810000`) during `nvs_flash_init()`, 130 later. Those 128 KB
+  of PSRAM then read `0x0addbad0` (the C5's answer for an unmapped page) and lose every
+  write, so the heap broke as soon as anything reached them (a store access fault in
+  `tlsf_malloc`, on both kinds of badge). ESP-IDF's driver keeps every entry: all 8 MB
+  write and verify, and a 2 MB erase and write of the other OTA slot with a Lua app holding
+  6 MB of PSRAM verified on both sides. It costs about 9 KB of SRAM.
+- **Lua apps get 6 MB of heap** (`docs/LUA_API.md` "Limits"; 96 KB before), all of it in
+  PSRAM (`lh_alloc` uses `heap_caps_realloc(..., OS_MEM_PSRAM)` and never spills into
+  SRAM), and the badge keeps 512 KB of PSRAM for itself while an app runs
+  (`LUA_HOST_PSRAM_RESERVE`). Without PSRAM: 96 KB in SRAM and the 32 KB reserve, as in 1.x
+  (`lua_host_heap_max()`). With the heap out of SRAM, the app's SRAM-bound limits double:
+  128 UI objects (64) and 12 KB of label text (6 KB); and `fs.read`/`fs.json` take up to
+  256 KB a call (16 KB), a whole bundled file. `sys.memory()` (new) answers `{used, max}`;
+  "Out of memory" says "the app needs more than 6 MB"; `lua mem` names the heap. Measured
+  with `tests/t-psram` (new: 124 labels, then 64 KB strings a timer callback at a time): it
+  reached 6,243,450 bytes of Lua heap and "not enough memory" at the cap, with 1.9 to
+  2.1 MB of PSRAM and 116 KB of SRAM still free, and gave all of it back on exit. Snake
+  installed from the store ran from its flash slot as before. `tests/t-heap` is now the
+  test for a badge without PSRAM.
+- **The console shows both heaps.** `heap`'s first line is SRAM, as before the change
+  (the heap whose limits matter most), then `psram: … free, … min, … largest block, …
+  total`; `info` adds `PSRAM: 8192 KB, … KB free`; HW Debug > System shows both. The
+  emulator emulates 8 MB of PSRAM (`MALLOC_CAP_SPIRAM` in its heap shim), so apps get a
+  badge's limits there too.
+- Includes 1.1.2 (Invert colours).
+
+## 1.1.2 (2026-11-12)
+
+- **Production badges show true colours again.** Their panels need colour inversion,
+  which 0.4.3 turned off for good after testing on the October badges, which turned out
+  to be prototypes (ESP32-C5 rev 1.2 modules; production badges carry rev 1.0). The
+  two panels read the same over SPI (same ILI9341, same registers), so inversion is on
+  by default again and **Settings > Invert colours** turns it off on a prototype. It
+  applies at once and at every boot (`os_invert_apply()` from `os_splash()`). The
+  setting keeps 0.4.1's NVS key (`settings/lcd_invert`, 1 = on), so a badge that saved
+  it off then (a prototype) stays right. The console's `info` prints the panel's state.
+  `components/bsp/bsp_display.c` (`bsp_display_invert()`, under the LVGL lock and the
+  LCD hold of `bsp_bus.h`), `main/core/os_settings.*`, `main/apps/settings/`.
+
 ## 1.1.1 (2026-11-12)
 
 - **Fixes to 1.1.0's scans and app channels.** A scan's callback no longer depends on its

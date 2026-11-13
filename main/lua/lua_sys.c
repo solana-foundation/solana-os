@@ -234,6 +234,20 @@ static int l_battery(lua_State *L)
     return 1;
 }
 
+// The app's Lua heap: what it uses and its cap on this badge (2.0.0), so an app
+// can size its caches for a badge without PSRAM, or one not updated yet (whose
+// sys has no memory: 96 KB).
+static int l_memory(lua_State *L)
+{
+    lh_t *s = lh_get(L);
+    lua_createtable(L, 0, 2);
+    lua_pushinteger(L, (lua_Integer)s->mem);
+    lua_setfield(L, -2, "used");
+    lua_pushinteger(L, (lua_Integer)s->heap_max);
+    lua_setfield(L, -2, "max");
+    return 1;
+}
+
 // The keys held right now, as a set: { up = true, left = true }. Raw buttons through
 // the calibrated map; empty while a dialog has the keys: the app's own ui.confirm or
 // ui.input, or the OS's (a confirm, the bridge panel).
@@ -431,7 +445,8 @@ void lh_open_sys(lua_State *L)
     };
     static const luaL_Reg timer[] = {{"after", l_after}, {"every", l_every}, {"cancel", l_cancel}, {NULL, NULL}};
     static const luaL_Reg sys[] = {
-        {"millis", l_millis}, {"time", l_time}, {"battery", l_battery}, {"keys", l_keys}, {"exit", l_exit}, {NULL, NULL},
+        {"millis", l_millis}, {"time", l_time}, {"battery", l_battery}, {"keys", l_keys}, {"memory", l_memory},
+        {"exit", l_exit}, {NULL, NULL},
     };
     static const luaL_Reg badge[] = {
         {"id", l_badge_id}, {"owner", l_badge_owner}, {"online", l_badge_online}, {NULL, NULL},

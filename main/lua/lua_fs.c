@@ -234,13 +234,13 @@ static int l_read(lua_State *L)
     luaL_argcheck(L, off >= 0, 2, "offsets count from 0");
     bool whole = lua_isnoneornil(L, 3);
     lua_Integer len = whole ? 0 : luaL_checkinteger(L, 3);
-    luaL_argcheck(L, len >= 0 && len <= LH_FS_READ_MAX, 3, "at most 16 KB per read");
+    luaL_argcheck(L, len >= 0 && len <= LH_FS_READ_MAX, 3, "at most 256 KB per read");
     if (!fs_open(L, s, rel)) {
         return not_found(L);
     }
     long left = off < s->fs_size ? s->fs_size - (long)off : 0;
     if (whole && left > LH_FS_READ_MAX) {
-        return luaL_error(L, "fs.read: %s is %d bytes; read it in pieces of at most 16 KB: "
+        return luaL_error(L, "fs.read: %s is %d bytes; read it in pieces of at most 256 KB: "
                           "fs.read(path, offset, length)", rel, (int)s->fs_size);
     }
     push_range(L, s, rel, (long)off, whole || len > left ? left : (long)len);
@@ -306,7 +306,7 @@ static int l_json(lua_State *L)
         return not_found(L);
     }
     if (s->fs_size > LH_FS_READ_MAX) {
-        return luaL_error(L, "fs.json: %s is over 16 KB", rel);
+        return luaL_error(L, "fs.json: %s is over 256 KB", rel);
     }
     push_range(L, s, rel, 0, s->fs_size);
     int top = lua_gettop(L);

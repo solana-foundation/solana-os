@@ -322,7 +322,9 @@ approve it in `/admin/apps` (store details alone publish at once).
 
 - Characters are made in `/admin/characters`: id, name, title, bio, colour (6 hex),
   an **idle line** (what they say when there's no quest business), and optionally a
-  Text-to-Speech voice, a chat persona and a sprite sheet.
+  Text-to-Speech voice, a chat persona and a sprite: drop ordinary images (a still, a
+  strip of frames or an animated GIF) for idle, talk and listen there and the page
+  builds the sheet.
 - Every character a quest uses (`giver` and every step's `at`) needs at least one
   adopted beacon (`/admin/beacons`), or players can't do those steps.
 - Moving a character to another beacon is an edit in `/admin/beacons`; it takes effect

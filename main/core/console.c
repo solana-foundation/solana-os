@@ -24,6 +24,7 @@
 #include "os_cloud.h"
 #include "os_cmd.h"
 #include "os_http.h"
+#include "os_mem.h"
 
 static const char *TAG = "console";
 
@@ -40,7 +41,14 @@ static int cmd_info(int argc, char **argv)
            BOARD_RGB_COUNT, BOARD_RGB_GPIO, BOARD_BAT_ADC_GPIO, BOARD_BAT_DIVIDER, BOARD_UART_TX, BOARD_UART_RX);
     int mv = bsp_battery_mv();
     printf("Battery: %d mV (%d%%)\nButtons: 0x%02lX\nHeap: %u bytes free\n", mv, bsp_battery_percent(mv),
-           (unsigned long)bsp_buttons_get(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+           (unsigned long)bsp_buttons_get(), (unsigned)heap_caps_get_free_size(OS_MEM_SRAM));
+    if (os_mem_psram()) {
+        printf("PSRAM: %u KB, %u KB free\n", (unsigned)(heap_caps_get_total_size(OS_MEM_PSRAM) / 1024),
+               (unsigned)(heap_caps_get_free_size(OS_MEM_PSRAM) / 1024));
+    } else {
+        printf("PSRAM: none\n");
+    }
+    printf("LCD: colour inversion %s\n", bsp_display_inverted() ? "on" : "off");
     bsp_sd_print_card();
     return 0;
 }
@@ -300,9 +308,20 @@ static int cmd_shot(int argc, char **argv)
 
 static int cmd_heap(int argc, char **argv)
 {
-    printf("heap: %u free, %u min, %u largest block\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
-           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT),
-           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+    // The first line is the SRAM, as in 1.x (the heap whose limits matter
+    // most: stacks, DMA, LVGL, Bluetooth); PSRAM follows when there is some.
+    printf("heap: %u free, %u min, %u largest block\n", (unsigned)heap_caps_get_free_size(OS_MEM_SRAM),
+           (unsigned)heap_caps_get_minimum_free_size(OS_MEM_SRAM),
+           (unsigned)heap_caps_get_largest_free_block(OS_MEM_SRAM));
+    if (os_mem_psram()) {
+        // Of that, what malloc can still take: not the 32 KB DMA pool (os_mem.h).
+        printf("sram: %u free for malloc, %u min\n", (unsigned)heap_caps_get_free_size(OS_MEM_SRAM_MALLOC),
+               (unsigned)heap_caps_get_minimum_free_size(OS_MEM_SRAM_MALLOC));
+        printf("psram: %u free, %u min, %u largest block, %u total\n", (unsigned)heap_caps_get_free_size(OS_MEM_PSRAM),
+               (unsigned)heap_caps_get_minimum_free_size(OS_MEM_PSRAM),
+               (unsigned)heap_caps_get_largest_free_block(OS_MEM_PSRAM),
+               (unsigned)heap_caps_get_total_size(OS_MEM_PSRAM));
+    }
     if (argc > 1 && !strcmp(argv[1], "stacks")) {
         // Bytes each task has never touched since boot (its worst case so far).
         static const char *const names[] = {"taskLVGL", "os", "mesh", "cloud", "lua", "console_repl", "lua_inst", "buttons"};
@@ -315,6 +334,7 @@ static int cmd_heap(int argc, char **argv)
     }
     return 0;
 }
+
 
 static int cmd_reboot(int argc, char **argv)
 {

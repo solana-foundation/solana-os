@@ -39,6 +39,38 @@ print("t-chan radar: " .. tostring(select(2, mesh.channel(52))))
 print("t-chan 14: " .. tostring(select(2, mesh.channel(14))))
 show()
 
+-- Pause and resume around scans (2.0.0). Paused: a scan answers "paused".
+-- After a pause that took effect, resume + scan in one callback scans (it
+-- answered "the mesh is off"), and pause + resume + scan in one callback keeps
+-- its scan (a scan takes ~10 s with Wi-Fi joined, so the second waits): both print "t-chan resume-scan ok" / "t-chan flip-scan ok", then
+-- "... done N" when the scan's callback runs.
+mesh.pause()
+print("t-chan pause-scan: " .. tostring(select(2, mesh.scan(function() end))))
+local function check(name)
+  local ok, err = mesh.scan({band = "2.4", dwell = 500}, function(chs)
+    print(("t-chan %s done %d"):format(name, #chs))
+  end)
+  print(("t-chan %s %s"):format(name, ok and "ok" or ("FAIL " .. tostring(err))))
+end
+timer.after(3000, function()
+  mesh.resume()
+  check("resume-scan")
+end)
+timer.after(16000, function()
+  mesh.pause()
+  mesh.resume()
+  check("flip-scan")
+end)
+-- A pause ends a running scan at once (its callback never runs), so pause +
+-- resume + scan mid-scan restarts it: "busy ok" (no done), "restart ok", then
+-- "restart done N".
+timer.after(30000, function()
+  check("busy")
+  mesh.pause()
+  mesh.resume()
+  check("restart")
+end)
+
 timer.every(1000, function()
   mesh.send("*", {hi = 1})
   show()

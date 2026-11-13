@@ -1,6 +1,8 @@
 // Settings: user preferences (core/os_settings) plus shortcuts to system
 // tools. One row per item; SELECT (or LEFT/RIGHT on a choice) changes it.
 // Brightness steps with LEFT/RIGHT (SELECT goes round from brightest to dimmest).
+// Invert colours flips with SELECT or LEFT/RIGHT, at once, so wrong colours
+// (RED on cyan: a prototype's panel) are put right where they're seen.
 // Software update opens the update screen (apps/update). Factory reset asks
 // again in an OS confirm dialog (SELECT twice).
 
@@ -13,7 +15,7 @@
 #include "core/os_settings.h"
 #include "core/ui.h"
 
-enum { ROW_THEME, ROW_BRIGHTNESS, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
+enum { ROW_THEME, ROW_BRIGHTNESS, ROW_INVERT, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
 
 static ui_list_t *s_list;
 
@@ -41,6 +43,15 @@ static void row(int i, ui_row_t *r, void *ctx)
         }
         bar[OS_BRIGHTNESS_MAX] = 0;
         strlcpy(r->right, bar, sizeof(r->right));
+        r->right_color = COL_TEXT;
+        break;
+    }
+    case ROW_INVERT: {
+        bool on = os_setting(OS_SET_LCD_INVERT) != 0;
+        strlcpy(r->title, "Invert colours", sizeof(r->title));
+        strlcpy(r->sub, on ? "Turn it off only if red looks cyan" : "For prototype badges; on if red looks cyan",
+                sizeof(r->sub));
+        strlcpy(r->right, on ? "On" : "Off", sizeof(r->right));
         r->right_color = COL_TEXT;
         break;
     }
@@ -132,7 +143,7 @@ static bool on_key(os_key_t k, bool repeat)
         set_brightness(k);
         return true;
     }
-    bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && i == ROW_THEME);
+    bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && (i == ROW_THEME || i == ROW_INVERT));
     if (!change || repeat) {
         return k != OS_KEY_BACK;
     }
@@ -140,6 +151,11 @@ static bool on_key(os_key_t k, bool repeat)
     case ROW_THEME:
         os_setting_set(OS_SET_THEME, ui_light() ? OS_THEME_DARK : OS_THEME_LIGHT);
         os_theme_apply();       // rebuilds this app too; s_list is new afterwards
+        break;
+    case ROW_INVERT:
+        os_setting_set(OS_SET_LCD_INVERT, !os_setting(OS_SET_LCD_INVERT));
+        os_invert_apply();
+        ui_list_refresh(s_list);
         break;
     case ROW_UPDATE:
         os_launch(&app_update);

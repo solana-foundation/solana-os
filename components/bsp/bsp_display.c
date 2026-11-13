@@ -8,6 +8,8 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_ili9341.h"
 #include "esp_lvgl_port.h"
+#include "display/lv_display_private.h"     // the dirty-area list, for merge_dirty()
+#include "misc/lv_area_private.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "bsp.h"
@@ -15,6 +17,8 @@
 
 static const char *TAG = "bsp_display";
 static SemaphoreHandle_t s_lcd_idle;    // see bsp_bus.h
+static esp_lcd_panel_handle_t s_panel;
+static bool s_inverted;
 
 void bsp_lcd_hold(void)
 {
@@ -33,6 +37,45 @@ void bsp_lcd_release(void)
 static void flush_start(lv_event_t *e)
 {
     bsp_lcd_hold();
+}
+
+// LVGL renders and flushes every dirty area on its own, and each one costs a
+// walk of every object on the screen plus the panel's window commands: about
+// 1 ms with 120 objects (0.2 ms of it the commands), whatever its size. Drawn
+// one by one, 40 moving sprites took as long as the whole screen (46 ms) and
+// 120 three times that. Here, after LVGL joined the areas that overlap, areas
+// are merged as long as the pixels between them cost less than the area saved:
+// sprites on one row become one strip. (LV_INV_BUF_SIZE, CMakeLists.txt, is
+// 256 so that the list doesn't overflow into a full redraw before this runs.)
+#define MERGE_AREA_PX   1200    // an area costs about what drawing this many pixels does
+#define MERGE_PASSES    4       // each pass is n^2 / 2 cheap checks
+
+static void merge_dirty(lv_event_t *e)
+{
+    lv_display_t *d = lv_event_get_user_data(e);
+    for (int pass = 0, merged = 1; merged && pass < MERGE_PASSES; pass++) {
+        merged = 0;
+        for (uint32_t i = 0; i < d->inv_p; i++) {
+            if (d->inv_area_joined[i]) {
+                continue;
+            }
+            lv_area_t *a = &d->inv_areas[i];
+            uint32_t a_px = lv_area_get_size(a);
+            for (uint32_t j = i + 1; j < d->inv_p; j++) {
+                if (d->inv_area_joined[j]) {
+                    continue;
+                }
+                lv_area_t both;
+                lv_area_join(&both, a, &d->inv_areas[j]);
+                if (lv_area_get_size(&both) < a_px + lv_area_get_size(&d->inv_areas[j]) + MERGE_AREA_PX) {
+                    *a = both;
+                    a_px = lv_area_get_size(a);
+                    d->inv_area_joined[j] = 1;
+                    merged = 1;
+                }
+            }
+        }
+    }
 }
 
 // Replaces esp_lvgl_port's own callback, which only calls lv_display_flush_ready()
@@ -132,9 +175,11 @@ lv_display_t *bsp_display_start(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io, &panel_cfg, &panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-    // Production panels show true colours without inversion; with it, RED reads on
-    // cyan and GREEN on magenta. (The prototype's panel was the other way round.)
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, false));
+    // Production panels need inversion; without it RED reads on cyan and GREEN on
+    // magenta. The prototypes' panels are the other way round (bsp.h).
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
+    s_inverted = true;
+    s_panel = panel;
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
@@ -146,7 +191,7 @@ lv_display_t *bsp_display_start(void)
         .panel_handle = panel,
         // 2 x 7.5 KB of DMA memory (12 rows; 24 rows took 30 KB, 0.5.13). The
         // second buffer renders while the first flushes, so a full frame is
-        // 20 flushes of ~3 ms at 20 MHz instead of 10 of ~6 ms.
+        // 20 flushes of ~1.5 ms at 40 MHz instead of 10 of ~3 ms.
         .buffer_size = BOARD_LCD_H_RES * 12,
         .double_buffer = true,
         .hres = BOARD_LCD_H_RES,
@@ -162,7 +207,34 @@ lv_display_t *bsp_display_start(void)
     const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = flush_done };
     ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io, &cbs, disp));
     lv_display_add_event_cb(disp, flush_start, LV_EVENT_FLUSH_START, NULL);
+    lv_display_add_event_cb(disp, merge_dirty, LV_EVENT_RENDER_START, disp);
     bsp_backlight(true);
     ESP_LOGI(TAG, "LCD %dx%d ready", BOARD_LCD_H_RES, BOARD_LCD_V_RES);
     return disp;
+}
+
+void bsp_display_invert(bool on)
+{
+    if (!s_panel || on == s_inverted) {
+        return;
+    }
+    // The LVGL lock keeps the LVGL task from queueing a flush meanwhile (esp_lcd's
+    // in-flight count isn't shared safely), and holding the LCD waits for the one
+    // in flight and keeps the card off the bus (bsp_bus.h). The lock is recursive,
+    // so callers that hold it already (app callbacks) are fine.
+    lvgl_port_lock(0);
+    bsp_lcd_hold();
+    esp_err_t err = esp_lcd_panel_invert_color(s_panel, on);
+    bsp_lcd_release();
+    lvgl_port_unlock();
+    if (err == ESP_OK) {
+        s_inverted = on;
+    } else {
+        ESP_LOGW(TAG, "invert: %s", esp_err_to_name(err));
+    }
+}
+
+bool bsp_display_inverted(void)
+{
+    return s_inverted;
 }

@@ -105,6 +105,19 @@ uint8_t bsp_backlight_get_level(void)
     return s_bl_pct;
 }
 
+// The canvas has no panel to correct: the setting only reads back.
+static bool s_inverted = true;
+
+void bsp_display_invert(bool on)
+{
+    s_inverted = on;
+}
+
+bool bsp_display_inverted(void)
+{
+    return s_inverted;
+}
+
 lv_display_t *bsp_display_start(void)
 {
     bsp_backlight(false);

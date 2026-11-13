@@ -1,4 +1,6 @@
--- Regression test (not shipped): the Lua heap limits. Makes 60 labels first
+-- Regression test (not shipped): the Lua heap limits of a badge without PSRAM
+-- (1.x, or 2.0.0 on a chip without it; with PSRAM see t-psram, since this one's
+-- single callback can't fill 6 MB and stops with "Script took too long"). Makes 60 labels first
 -- (their LVGL objects live on the badge's heap, ~15 KB, so on a badge the 32 KB
 -- reserve is what the app meets, not the 96 KB cap), then fills the Lua heap
 -- with 200-byte strings, smaller than the allocator's per-KB check step, until

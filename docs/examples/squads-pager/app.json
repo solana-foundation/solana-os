@@ -1,0 +1,11 @@
+{
+  "id": "squads-pager",
+  "name": "Squads pager",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Blinks when a proposal of your Squads multisig waits for your signature.",
+  "icon": "bell",
+  "accent": "FF754A",
+  "category": "tools",
+  "permissions": ["rpc", "profile", "led"]
+}
