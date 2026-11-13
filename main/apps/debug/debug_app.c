@@ -18,6 +18,7 @@
 #include "esp_idf_version.h"
 #include "bsp.h"
 #include "core/os.h"
+#include "core/os_glow.h"
 #include "core/os_mem.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
@@ -595,6 +596,8 @@ static void enter(lv_obj_t *root)
     lv_obj_set_scrollable(s_page, false);
     s_hint = ui_hint(root, "");
     s_led_mode = LED_OFF;
+    os_glow_hold(OS_GLOW_HOLD_DEBUG, true);     // the RGB page drives the LEDs itself
+    leds_off();
     build_page(PAGE_INPUT);
 }
 
@@ -602,6 +605,7 @@ static void on_leave(void)
 {
     s_led_mode = LED_OFF;
     leds_off();
+    os_glow_hold(OS_GLOW_HOLD_DEBUG, false);
 }
 
 static bool on_key(os_key_t k, bool repeat)

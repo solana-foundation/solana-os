@@ -9,6 +9,7 @@
 #include "core/os_keys.h"
 #include "core/os_cloud.h"
 #include "core/os_data.h"
+#include "core/os_glow.h"
 #include "core/os_wifi.h"
 #include "lua_priv.h"
 
@@ -86,6 +87,82 @@ void lh_led_flush(lh_t *s)
     bsp_rgb_show();
     s->led_dirty = false;
     s->led_used = true;
+}
+
+// led.keep(scene): the OS keeps running a scene after the app closes (core/os_glow.c).
+
+static lua_Integer field_int(lua_State *L, int t, const char *k, lua_Integer def, lua_Integer lo, lua_Integer hi)
+{
+    lua_getfield(L, t, k);
+    int ok;
+    lua_Integer v = lua_tointegerx(L, -1, &ok);
+    lua_pop(L, 1);
+    v = ok ? v : def;
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+static void keep_led(lua_State *L, int t, const char *where, bool per_led, os_glow_led_t *out)
+{
+    if (!lua_istable(L, t)) {
+        luaL_error(L, "led.keep: %s must be a table {fx=, c1=, c2=, speed=}", where);
+    }
+    lua_getfield(L, t, "fx");
+    const char *name = lua_tostring(L, -1);
+    int fx = os_glow_fx_parse(name);
+    if (fx < 0) {
+        luaL_error(L, "led.keep: %s.fx: unknown effect '%s'", where, name ? name : "nil");
+    }
+    if (per_led && os_glow_fx_spatial(fx)) {
+        luaL_error(L, "led.keep: %s.fx: '%s' runs across the strip, so only with mode \"all\"", where, name);
+    }
+    lua_pop(L, 1);
+    out->fx = (uint8_t)fx;
+    out->c1 = (uint32_t)field_int(L, t, "c1", 0, 0, 0xFFFFFF);
+    out->c2 = (uint32_t)field_int(L, t, "c2", 0, 0, 0xFFFFFF);
+    out->speed = (uint8_t)field_int(L, t, "speed", 5, 1, 10);
+}
+
+static int l_led_keep(lua_State *L)
+{
+    led_session(L);
+    if (lua_isnoneornil(L, 1) || (lua_isboolean(L, 1) && !lua_toboolean(L, 1))) {
+        os_glow_set(NULL);
+        return 0;
+    }
+    luaL_checktype(L, 1, LUA_TTABLE);
+    os_glow_scene_t sc = {0};
+    sc.bright = (uint8_t)field_int(L, 1, "bright", 100, 1, 100);
+    lua_getfield(L, 1, "mode");
+    const char *mode = luaL_optstring(L, -1, "all");
+    luaL_argcheck(L, !strcmp(mode, "all") || !strcmp(mode, "each"), 1, "mode is \"all\" or \"each\"");
+    sc.each = !strcmp(mode, "each");
+    lua_pop(L, 1);
+    if (sc.each) {
+        lua_getfield(L, 1, "leds");
+        luaL_argcheck(L, lua_istable(L, -1), 1, "mode \"each\" needs leds = { 8 tables }");
+        int leds = lua_gettop(L);
+        for (int i = 0; i < OS_GLOW_LEDS; i++) {
+            char where[12];
+            snprintf(where, sizeof(where), "leds[%d]", i + 1);
+            lua_geti(L, leds, i + 1);
+            keep_led(L, lua_gettop(L), where, true, &sc.led[i]);
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    } else {
+        lua_getfield(L, 1, "all");
+        keep_led(L, lua_gettop(L), "all", false, &sc.led[0]);
+        lua_pop(L, 1);
+    }
+    os_glow_set(&sc);
+    return 0;
+}
+
+static int l_led_kept(lua_State *L)
+{
+    led_session(L);
+    lua_pushboolean(L, os_glow_on());
+    return 1;
 }
 
 void lh_led_off(void)
@@ -441,7 +518,8 @@ static int l_wifi_off(lua_State *L)
 void lh_open_sys(lua_State *L)
 {
     static const luaL_Reg led[] = {
-        {"set", l_led_set}, {"hex", l_led_hex}, {"fill", l_led_fill}, {"off", l_led_off}, {NULL, NULL},
+        {"set", l_led_set}, {"hex", l_led_hex}, {"fill", l_led_fill}, {"off", l_led_off},
+        {"keep", l_led_keep}, {"kept", l_led_kept}, {NULL, NULL},
     };
     static const luaL_Reg timer[] = {{"after", l_after}, {"every", l_every}, {"cancel", l_cancel}, {NULL, NULL}};
     static const luaL_Reg sys[] = {
