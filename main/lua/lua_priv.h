@@ -353,6 +353,9 @@ void lh_ble_init(lh_t *s);                              // at launch: no refs ye
 void lh_ble_run(lh_t *s);                               // Lua task: owed callbacks and os_ble's events
 void lh_ble_stop(lh_t *s);                              // any task: the app stops, Bluetooth goes off
 
+// lua_crypto.c: crypto (SHA-256, Ed25519 checks) and solana (base58, program-derived addresses)
+void lh_open_crypto(lua_State *L);
+
 // lua_net.c: mesh, lamps, items, profile, quest, http
 void lh_open_net(lua_State *L);
 void lh_calls_run(lh_t *s);                             // answer finished calls

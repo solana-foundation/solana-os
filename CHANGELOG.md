@@ -6,6 +6,31 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## Unreleased
+
+- **`crypto` and `solana` for Lua apps** (no permission; `docs/LUA_API.md` "crypto and
+  solana"). `crypto.sha256`, `crypto.on_curve` (is this a point of the Ed25519 curve) and
+  `crypto.verify` (an Ed25519 signature); `solana.encode` and `solana.decode` (base58, up
+  to 128 bytes) and `solana.pda` (a program-derived address and its bump, as
+  `findProgramAddress` gives them). An app can now find a program's accounts by itself,
+  for instance a Squads proposal from the multisig's address and a transaction number,
+  where it used to need the addresses worked out elsewhere, and can check a signature made
+  by a key it trusts with Wi-Fi off. There is no signing and no key generation: a badge
+  holds no keys. `main/core/ed25519.*` (portable C: ten 26-bit limbs, the complete
+  point formulas TweetNaCl uses, both scalars walked at once, its own SHA-512),
+  `main/lua/lua_crypto.c` (the two modules; SHA-256 is PSA's, as for store installs),
+  `tests/t-crypto` (values from Node's SHA-256 and Ed25519, RFC 8032 and
+  @solana/web3.js).
+- **What it costs.** 7.5 KB of flash (image 2 299 187 to 2 306 659 bytes) and no RAM while
+  unused; the deepest call, a signature check, takes about 1.7 KB of the Lua task's stack.
+  Counted in QEMU on the ESP32-C5 build of `ed25519.c` (`-Os`): 1.04 million instructions
+  for the on-curve test and 11.5 million for a signature, so about 4 to 9 ms and 50 to
+  100 ms at 240 MHz. **Not yet run on a badge**: the instruction charges in
+  `lua_crypto.c` (5 000, 40 000 and 10 000 of a callback's 200 000) come from those
+  counts and want checking against a badge's clock, and `tests/t-crypto` has only run
+  against this firmware's Lua on a computer. The emulator build compiles these files but
+  wasn't built for this change.
+
 ## 2.0.1 (2026-11-13)
 
 Fixes from the 2.0.0 review.

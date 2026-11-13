@@ -138,6 +138,7 @@ HOME always returns to the launcher. The screen below the status bar is
 | HTTP | 60 requests a minute per badge, ≤ 2 KB sent, ≤ about 3.5 KB of answer, 6 s to answer |
 | RPC | 30 calls a minute per badge (6 of them `sendTransaction`), ≤ 2 KB of params, ≤ about 3.5 KB of answer, 6 s to answer |
 | WebSocket | one at a time, 20 opens a minute per badge, ≤ 4 KB per message either way, 8 waiting to go |
+| Crypto | of a callback's 200 000 instructions: a signature check takes 40 000, an on-curve test 5 000, a program-derived address 10 000 (see `crypto` and `solana`) |
 | Numbers | 32-bit integers (they wrap at ±2^31) and 32-bit floats (about 7 digits) |
 
 A runtime error stops the app and shows the message with the line number. CANCEL
@@ -1497,6 +1498,87 @@ function on_key(k)
 end
 ```
 
+### `crypto` and `solana` (always allowed, the release after Solana OS 1.0.0)
+
+SHA-256, the two Ed25519 checks that need no key, base58 and program-derived addresses,
+done by the badge itself: in Lua they would take most of a callback's instructions, or
+more. No permission is needed, since nothing here leaves the badge. Both tables are `nil`
+on Solana OS 1.0.0 and earlier: check `if crypto then`.
+
+```lua
+crypto.sha256(data)                     -- the 32 bytes of data's SHA-256
+crypto.on_curve(bytes)                  -- true when the 32 bytes are a point of the Ed25519 curve
+crypto.verify(key, message, signature)  -- true when signature (64 bytes) is key's (32 bytes) over message
+
+solana.encode(bytes)                    -- base58, as Solana writes addresses and signatures
+solana.decode(text)                     -- the bytes, or nil and "not base58" or "too long"
+solana.pda(seeds, program)              -- a program-derived address (32 bytes) and its bump
+```
+
+Everything is a string of bytes (`string.pack`, `string.byte`), as with `ble`: an address
+is its 32 bytes, and `solana.encode` turns it into the text `rpc` and people read.
+
+- **`crypto.sha256(data)`** hashes a string of any length.
+- **`crypto.on_curve(bytes)`** tells the two kinds of Solana address apart: an address that
+  is a point of the curve can have a key (a wallet), one that isn't is a program-derived
+  address. Anything but 32 bytes is `false`.
+- **`crypto.verify(key, message, signature)`** checks an Ed25519 signature: a
+  transaction's (the message is the transaction's message bytes) or the one a wallet makes
+  for `signMessage`. It is `false` for a signature that doesn't match, a key or a
+  signature of the wrong length, and a signature whose second half isn't below the
+  curve's group order. It says that the holder of `key` signed `message`, so the key has to
+  come from somewhere you trust: your server's public key can ship in `main.lua` (a public
+  key is no secret), and then a badge can check a statement your server signed after
+  another badge handed it over the mesh or Bluetooth, with Wi-Fi off.
+- **No signing and no keys.** There is nothing here to make a key pair or a signature with,
+  on purpose: a badge is not a wallet (see the warning under `rpc`).
+- **`solana.encode(bytes)`** takes up to 128 bytes (more is a Lua error); a 64-byte
+  signature is 88 characters or fewer. **`solana.decode(text)`** returns `nil` and
+  `"not base58"` or `"too long"` (over 128 bytes) instead of raising, since text from
+  outside is untrusted. Check the length of what comes back: an address is 32 bytes.
+- **`solana.pda(seeds, program)`** gives what `findProgramAddress` gives everywhere else:
+  the address made from the seeds, the program's address and the highest bump (255 down)
+  that lands off the curve, and that bump. `seeds` is a list of up to 15 strings of at most
+  32 bytes each, `program` is 32 bytes; anything else is a Lua error. It returns `nil` if no
+  bump works, which doesn't happen in practice. A number among the seeds is its bytes, as
+  the program wrote them: a `u64` is `string.pack("<i8", n)` for an `n` a badge's 32-bit
+  integers hold, a `u8` is `string.char(n)`.
+
+**What they cost.** The work is done in C, so it is charged to the callback's 200 000
+instructions by the time it takes:
+
+| | Instructions |
+|---|---|
+| `crypto.sha256` | 50, plus 1 per 4 bytes |
+| `crypto.on_curve` | 5 000 |
+| `crypto.verify` | 40 000, plus 1 per 2 bytes of message |
+| `solana.pda` | 10 000 |
+| `solana.encode`, `solana.decode` | 20, plus n × n / 16 for n bytes or characters (84 for an address) |
+
+So one callback fits four signature checks, or about nineteen addresses: do more over
+several timers or ticks. A signature check is estimated at 50 to 100 ms and an on-curve
+test or an address at 4 to 20 ms (from the instructions a badge build runs, not yet timed
+on a badge), and the screen doesn't redraw during a callback: check signatures one at a
+time, not in a loop. None of them takes any of the app's heap beyond the strings they
+return.
+
+```lua
+-- Is there a proposal for transaction 12 of a Squads multisig? Its account sits at an
+-- address made from the multisig's address and the transaction's number.
+-- app.json: "permissions": ["rpc"]
+local SQUADS = solana.decode("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf")
+local MULTISIG = solana.decode("Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr")   -- your multisig's address
+local label = ui.label(8, 8, "Looking...")
+
+local proposal, bump = solana.pda(
+  {"multisig", MULTISIG, "transaction", string.pack("<i8", 12), "proposal"}, SQUADS)
+rpc.call("getAccountInfo", {solana.encode(proposal), {encoding = "base64", dataSlice = {offset = 0, length = 0}}},
+  function(ok, r)
+    if not ok then label:text(r) return end
+    label:text(r.value and "Proposal 12 exists" or "No proposal 12 yet")
+  end)
+```
+
 ### Build on the badge, sign on a phone
 
 A player's phone wallet can sign and send a transaction the badge builds. Phantom and
@@ -1520,7 +1602,8 @@ the QR code, so your server sits in between:
 
 No key is on the badge or on your server: the only signature is the wallet's.
 
-`lib/solana.lua`, addresses and messages (copy it into your app):
+`lib/solana.lua`, addresses and messages (copy it into your app; on a badge that has
+`solana`, see above, `solana.decode` and `solana.encode` do its `decode` and `encode` faster):
 
 ```lua
 -- lib/solana.lua: Solana addresses and transaction messages, built on the badge.

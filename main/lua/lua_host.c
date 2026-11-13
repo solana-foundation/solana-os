@@ -463,6 +463,7 @@ static int boot(lua_State *L)
     lh_open_ws(L);
     lh_open_ble(L);
     lh_open_fs(L);
+    lh_open_crypto(L);
     lh_storage_load(s);
 
     // Then collect generationally: apps churn short-lived strings and
