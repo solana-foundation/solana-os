@@ -58,7 +58,8 @@ site changes that came with them live in the parent repository.
   1.6 ms; the badge's Lua runs about 3 000 VM instructions a millisecond. The instruction
   charges in `lua_crypto.c` (5 000, 40 000 and 10 000 of a callback's 200 000) stay: a
   callback of nothing but one of them takes at most ~260 ms (5 signature checks), within
-  the half second they were sized for. The emulator builds them (`bun run firmware`).
+  the half second they were sized for. The emulator builds them (`bun run firmware`) and
+  `tests/t-crypto` passes there too.
 - **Example: Squads pager** (`docs/examples/squads-pager`): reads one Squads multisig over
   `rpc`, finds its newest proposals with `solana.pda` and blinks when one waits for the
   wallet linked at `/profile`. Run only against a made-up multisig with `rpc` stubbed, not
