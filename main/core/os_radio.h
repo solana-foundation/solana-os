@@ -14,8 +14,10 @@
 #define OS_RADIO_FRAME_MAX  250         // ESP-NOW v1 payload limit
 
 // Called for every frame heard, from the radio's own task (the Wi-Fi task on
-// the badge): copy the frame and return quickly.
-typedef void (*os_radio_rx_cb_t)(const uint8_t mac[6], const uint8_t *data, int len, int rssi);
+// the badge): copy the frame and return quickly. channel: where it was heard
+// (0 if unknown), which a scan needs: the radio may have hopped by the time
+// the frame is read.
+typedef void (*os_radio_rx_cb_t)(const uint8_t mac[6], const uint8_t *data, int len, int rssi, int channel);
 
 // After os_wifi_init(): the Wi-Fi driver must be started.
 esp_err_t os_radio_init(os_radio_rx_cb_t cb);

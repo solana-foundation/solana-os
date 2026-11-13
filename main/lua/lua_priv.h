@@ -207,6 +207,7 @@ typedef struct lh {
     // mesh
     int mesh_sub;
     int64_t mesh_sent[LH_MESH_PER_S];
+    int scan_ref;               // mesh.scan's callback, LUA_NOREF when none waits
     struct lh_meet *meet;       // mesh.meet's handshakes (lua_meet.c), made on first use
 
     // Server calls
@@ -235,7 +236,7 @@ typedef struct {
 extern lh_stats_t lh_stats;
 
 // Events for the Lua task.
-typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_MEET, LH_EV_QUIT } lh_ev_kind_t;
+typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_MEET, LH_EV_SCAN, LH_EV_QUIT } lh_ev_kind_t;
 
 typedef struct {
     uint8_t kind;
@@ -346,6 +347,8 @@ void lh_calls_run(lh_t *s);                             // answer finished calls
 void lh_net_stop(lh_t *s);                              // OS task, after the Lua task ended
 void lh_calls_free(lh_t *s);
 void lh_mesh_event(lh_t *s, char *data);
+void lh_mesh_scan_run(lh_t *s);                         // mesh.scan's callback once its results wait
+void lh_mesh_end_app(void);                             // stop the app's scan and channel (any task)
 void lh_mesh_start(lh_t *s);                            // OS task
 void lh_mesh_mute(void);                                // stop queueing messages
 void lh_mesh_stop(void);                                // OS task

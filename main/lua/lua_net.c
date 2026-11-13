@@ -810,11 +810,13 @@ void lh_mesh_stop(void)
     if (s_mesh_sub >= 0) {
         os_mesh_unsubscribe(s_mesh_sub);    // waits for a handler that is running
         s_mesh_sub = -1;
+        os_mesh_scan_stop();                // gives back Wi-Fi it lent, before the release does
     }
     if (s_mesh_acquired) {
         os_mesh_release();
         s_mesh_acquired = false;
     }
+    os_mesh_app_channel(0);                 // after the release: no Wi-Fi suspended for a moment
 }
 
 // Protected: on_mesh(from, msg).
@@ -903,6 +905,8 @@ static int l_mesh_send(lua_State *L)
             lua_pushliteral(L, "too fast: the bridge is busy");
         } else if (e == ESP_ERR_NOT_FOUND) {
             lua_pushliteral(L, "not nearby");
+        } else if (os_mesh_scanning()) {
+            lua_pushliteral(L, "scanning");
         } else {
             lua_pushliteral(L, "the mesh is off");
         }
@@ -927,6 +931,7 @@ static void mesh_hold(void *arg)
     if (want) {
         os_mesh_acquire();
     } else {
+        os_mesh_scan_stop();                // a pause ends a scan, without its callback
         os_mesh_release();
     }
     s_mesh_acquired = want;
@@ -935,8 +940,13 @@ static void mesh_hold(void *arg)
 static int mesh_hold_post(lua_State *L, bool want)
 {
     lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    lh_t *s = lh_get(L);
+    if (!want && s->scan_ref != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, s->scan_ref);  // the pause ends the scan: its callback never runs
+        s->scan_ref = LUA_NOREF;
+    }
     s_mesh_paused = !want;
-    os_post(mesh_hold, (void *)(uintptr_t)((lh_get(L)->gen & 0x7fffffff) << 1 | want));
+    os_post(mesh_hold, (void *)(uintptr_t)((s->gen & 0x7fffffff) << 1 | want));
     return 0;
 }
 
@@ -959,9 +969,13 @@ static int l_mesh_info(lua_State *L)
     int ch = os_mesh_channel();
     os_wifi_info_t w;
     os_wifi_get_info(&w);
-    lua_createtable(L, 0, 4);
+    lua_createtable(L, 0, 6);
     lua_pushinteger(L, ch);
     lua_setfield(L, -2, "channel");
+    lua_pushinteger(L, os_mesh_event_channel());
+    lua_setfield(L, -2, "event");
+    lua_pushboolean(L, os_mesh_scanning());
+    lua_setfield(L, -2, "scanning");
     lua_pushstring(L, os_mesh_band(ch));
     lua_setfield(L, -2, "band");
     lua_pushboolean(L, ch && w.state == OS_WIFI_CONNECTED && w.channel == ch);
@@ -969,6 +983,194 @@ static int l_mesh_info(lua_State *L)
     lua_pushboolean(L, s_mesh_paused);
     lua_setfield(L, -2, "paused");
     return 1;
+}
+
+// mesh.channel([n]): this badge's mesh on channel n while the app runs, or
+// back to the event's (LUA_API.md "Choosing a channel"). lh_mesh_stop clears it.
+static int l_mesh_channel(lua_State *L)
+{
+    lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    lua_Integer n = luaL_opt(L, luaL_checkinteger, 1, 0);
+    if (n < 0 || n > 255 || !os_mesh_app_channel((int)n)) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "not a mesh channel");
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mesh.scan([opts], cb): os_mesh hops and listens; its done callback (mesh
+// task) only queues LH_EV_SCAN for this launch.
+#define SCAN_DWELL_MS   2600            // longer than a HELLO period (1.5-2.5 s)
+
+static void scan_done(void *ctx)
+{
+    lh_ev_t ev = { .kind = LH_EV_SCAN, .gen = (uint32_t)(uintptr_t)ctx };
+    lh_post(&ev);                       // only a wake: lh_mesh_scan_run finds the results if the queue was full
+}
+
+static const uint8_t s_ch24[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+static const uint8_t s_ch5[] = {36, 40, 44, 48, 149, 153, 157, 161, 165};
+
+static int add_band(uint8_t *ch, int n, const char *band)
+{
+    if (strcmp(band, "5")) {
+        memcpy(ch + n, s_ch24, sizeof(s_ch24));
+        n += sizeof(s_ch24);
+    }
+    if (strcmp(band, "2.4")) {
+        memcpy(ch + n, s_ch5, sizeof(s_ch5));
+        n += sizeof(s_ch5);
+    }
+    return n;
+}
+
+static int l_mesh_scan(lua_State *L)
+{
+    lh_need_perm(L, LUA_PERM_MESH, "mesh");
+    lh_t *s = lh_get(L);
+    int top = lua_gettop(L);
+    luaL_argcheck(L, (top == 1 || top == 2) && lua_isfunction(L, top), top ? top : 1, "mesh.scan([opts], cb)");
+    uint8_t ch[OS_MESH_SCAN_CH_MAX];
+    int n = 0;
+    lua_Integer dwell = SCAN_DWELL_MS;
+    const char *band = NULL;
+    if (top == 2 && !lua_isnil(L, 1)) {
+        luaL_checktype(L, 1, LUA_TTABLE);
+        if (lua_getfield(L, 1, "channels") != LUA_TNIL) {
+            luaL_argcheck(L, lua_istable(L, -1), 1, "channels is a list of mesh channels");
+            lua_Integer len = luaL_len(L, -1);
+            luaL_argcheck(L, len >= 1 && len <= OS_MESH_SCAN_CH_MAX, 1, "channels: 1 to 22 of them");
+            for (lua_Integer i = 1; i <= len; i++) {
+                lua_geti(L, -1, i);
+                int isnum = 0;
+                lua_Integer c = lua_tointegerx(L, -1, &isnum);
+                if (!isnum || c < 1 || c > 255 || !os_mesh_channel_ok((int)c)) {
+                    return luaL_argerror(L, 1, "channels: each a mesh channel (1-13, 36-48, 149-165, no radar ones)");
+                }
+                ch[n++] = (uint8_t)c;
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        if (lua_getfield(L, 1, "band") != LUA_TNIL) {
+            band = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+            luaL_argcheck(L, !strcmp(band, "2.4") || !strcmp(band, "5") || !strcmp(band, "all"), 1,
+                          "band is \"2.4\", \"5\" or \"all\"");
+            luaL_argcheck(L, !n, 1, "channels or band, not both");
+        }
+        lua_pop(L, 1);                  // band stays alive: opts still holds it
+        if (lua_getfield(L, 1, "dwell") != LUA_TNIL) {
+            int isnum = 0;
+            dwell = lua_tointegerx(L, -1, &isnum);
+            luaL_argcheck(L, isnum && dwell >= 500 && dwell <= 5000, 1, "dwell: 500 to 5000 ms");
+        }
+        lua_pop(L, 1);
+    }
+    if (!n) {
+        n = add_band(ch, 0, band ? band : os_mesh_band(os_mesh_channel()));
+    }
+    if (s_mesh_paused) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "paused");
+        return 2;
+    }
+    lua_pushvalue(L, top);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    esp_err_t e = os_mesh_scan(ch, n, (int)dwell, s->pkg.id, scan_done, (void *)(uintptr_t)s->gen);
+    if (e != ESP_OK) {
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        lua_pushnil(L);
+        if (e == ESP_ERR_NOT_FINISHED) {
+            lua_pushliteral(L, "scanning");
+        } else if (e == ESP_ERR_NO_MEM) {
+            lua_pushliteral(L, "not enough memory");
+        } else if (os_bridge_count() > 0) {
+            lua_pushliteral(L, "bridge open");
+        } else {
+            lua_pushliteral(L, "the mesh is off");
+        }
+        return 2;
+    }
+    luaL_unref(L, LUA_REGISTRYINDEX, s->scan_ref);      // a scan a pause ended
+    s->scan_ref = ref;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// Protected: cb(channels), one entry per channel visited.
+static int scan_deliver(lua_State *L)
+{
+    lh_t *s = lua_touserdata(L, 1);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, s->scan_ref);
+    luaL_unref(L, LUA_REGISTRYINDEX, s->scan_ref);
+    s->scan_ref = LUA_NOREF;
+    // Scratch space from the script's heap, so an error below can't leak it.
+    os_mesh_scan_hit_t *hits = lua_newuserdatauv(L, OS_MESH_SCAN_HITS * sizeof(os_mesh_scan_hit_t), 0);
+    uint8_t ch[OS_MESH_SCAN_CH_MAX];
+    int n_ch = 0;
+    int n = os_mesh_scan_take(ch, &n_ch, hits, OS_MESH_SCAN_HITS);
+    lua_createtable(L, n_ch, 0);
+    for (int c = 0; c < n_ch; c++) {
+        int badges = 0, beacons = 0, app = 0, k = 0;
+        lua_createtable(L, 0, 7);
+        lua_pushinteger(L, ch[c]);
+        lua_setfield(L, -2, "channel");
+        lua_pushstring(L, os_mesh_band(ch[c]));
+        lua_setfield(L, -2, "band");
+        lua_newtable(L);
+        for (int i = 0; i < n; i++) {
+            const os_mesh_scan_hit_t *h = &hits[i];
+            if (h->channel != ch[c]) {
+                continue;
+            }
+            bool beacon = h->kind == OS_PEER_BEACON;
+            beacons += beacon;
+            badges += !beacon;
+            app += h->app;
+            lua_createtable(L, 0, 6);
+            lua_pushstring(L, h->id);
+            lua_setfield(L, -2, "id");
+            lua_pushstring(L, beacon ? "beacon" : "badge");
+            lua_setfield(L, -2, "kind");
+            lua_pushstring(L, h->name);
+            lua_setfield(L, -2, "name");
+            lua_pushinteger(L, h->level);
+            lua_setfield(L, -2, "level");
+            lua_pushinteger(L, h->rssi);
+            lua_setfield(L, -2, "rssi");
+            lua_pushboolean(L, h->app);
+            lua_setfield(L, -2, "app");
+            lua_rawseti(L, -2, ++k);
+        }
+        lua_setfield(L, -2, "peers");
+        lua_pushinteger(L, badges);
+        lua_setfield(L, -2, "badges");
+        lua_pushinteger(L, beacons);
+        lua_setfield(L, -2, "beacons");
+        lua_pushinteger(L, app);
+        lua_setfield(L, -2, "app");
+        lua_rawseti(L, -2, c + 1);
+    }
+    lua_remove(L, -2);                  // the scratch
+    lua_call(L, 1, 0);
+    return 0;
+}
+
+void lh_mesh_scan_run(lh_t *s)
+{
+    // Results that still exist: not a scan a pause, a bridge or a newer scan
+    // ended (which freed them), and not one still running.
+    if (s->L && !s->failed && s->scan_ref != LUA_NOREF && os_mesh_scan_ready()) {
+        lh_callback(s, scan_deliver, s);
+    }
+}
+
+void lh_mesh_end_app(void)
+{
+    os_mesh_scan_stop();
+    os_mesh_app_channel(0);
 }
 
 // mesh.meets([after], cb): this owner's meets in the app, as the server holds
@@ -1056,7 +1258,8 @@ void lh_open_net(lua_State *L)
     static const luaL_Reg quest[] = {{"report", l_report}, {"active", l_active}, {NULL, NULL}};
     static const luaL_Reg mesh[] = {{"nearby", l_mesh_nearby}, {"send", l_mesh_send}, {"bridge", l_mesh_bridge},
                                     {"meet", lh_mesh_meet}, {"meets", l_mesh_meets}, {"pause", l_mesh_pause},
-                                    {"resume", l_mesh_resume}, {"info", l_mesh_info}, {NULL, NULL}};
+                                    {"resume", l_mesh_resume}, {"info", l_mesh_info}, {"channel", l_mesh_channel},
+                                    {"scan", l_mesh_scan}, {NULL, NULL}};
     static const luaL_Reg http[] = {{"get", l_http_get}, {"post", l_http_post}, {"request", l_http_request},
                                     {NULL, NULL}};
     static const luaL_Reg rpc[] = {{"call", l_rpc_call}, {NULL, NULL}};

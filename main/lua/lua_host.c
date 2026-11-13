@@ -240,6 +240,9 @@ static void close_state(lh_t *s)
         lua_close(s->L);
         s->L = NULL;
         s->gif_work = NULL;                 // it was a userdata
+        if (s->pkg.perms & LUA_PERM_MESH) {
+            lh_mesh_end_app();              // again: on_exit (or a finalizer) may have scanned or moved
+        }
     }
     lh_fs_close(s);
     lh_code_close(s);                       // nothing points into it now
@@ -281,6 +284,7 @@ static void fail(lh_t *s, int rc, const char *msg_in)
     strlcpy(s->err, msg, sizeof(s->err));
     s->failed = true;
     lh_mesh_mute();
+    lh_mesh_end_app();                      // no scan or app channel outlives the script (close_state repeats it after on_exit)
     lh_ws_stop(s);                          // give the badge its server connection back now
     lh_ble_stop(s);                         // and its Bluetooth heap
     show_error(s, title, msg);
@@ -528,11 +532,12 @@ static void run_events(lh_t *s, const lh_ev_t *ev)
             lh_mesh_event(s, ev->data);
         } else if (ev->kind == LH_EV_MEET) {
             lh_meet_event(s, ev->data);
-        }
+        }                                   // LH_EV_SCAN only wakes us: lh_mesh_scan_run below
     }
     lh_calls_run(s);
     lh_ws_run(s);
     lh_ble_run(s);
+    lh_mesh_scan_run(s);
     if (s->L && !s->failed) {
         lh_meet_run(s);
     }
@@ -744,7 +749,7 @@ static void host_enter(lv_obj_t *root)
     s->gen = ++s_gen;
     s->t0 = lh_now();
     s->area = area;
-    s->modal_ref = s->store_ref = LUA_NOREF;
+    s->modal_ref = s->store_ref = s->scan_ref = LUA_NOREF;
     lh_ble_init(s);
     s->loading = ui_label(area, &sol_font_14, COL_DIM, "Starting...");
     lv_obj_center(s->loading);

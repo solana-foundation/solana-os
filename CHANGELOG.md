@@ -6,6 +6,42 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 1.1.1 (2026-11-12)
+
+- **Fixes to 1.1.0's scans and app channels.** A scan's callback no longer depends on its
+  completion event reaching the Lua task: the host delivers finished results
+  (`os_mesh_scan_ready`) even if its event queue was full. `mesh.pause()` drops a
+  waiting callback, so a paused scan never calls back with nothing. Each frame now
+  carries the channel it was heard on (`rx_ctrl.channel`, through reassembly), so a
+  HELLO read after a hop isn't counted on the next channel. A scan that ends after
+  `mesh.channel(n)` (or the server) moved the mesh off the joined network's channel
+  leaves Wi-Fi suspended for the app instead of rejoining it. A bridge taking Wi-Fi
+  stops a running scan (no callback), and a script error stops the app's scan and
+  gives back its channel at once, not when the error screen is dismissed. The host clears both
+  again once the script's state is closed, so an `on_exit` (or a finalizer) that scans
+  or calls `mesh.channel` can't leave either behind, whatever ended the app.
+  `main/core/os_mesh.*`, `main/core/os_radio.*`, `main/lua/lua_net.c`,
+  `main/lua/lua_host.c`; `docs/LUA_API.md` lists every way a scan ends.
+
+## 1.1.0 (2026-11-11)
+
+- **Lua apps choose their mesh channel and scan for one** (`docs/LUA_API.md` "Choosing a
+  channel", `docs/MESH.md` "App channels and scans"). `mesh.channel(n)` moves this badge's
+  mesh to any mesh channel (1 to 13, or the nine 5 GHz ones without radar rules) while
+  the app runs, `mesh.channel()` goes back, and closing the app always does: nothing is
+  saved, and the server's announcements change only `mesh.info().event` meanwhile.
+  Peers heard on the old channel drop out of `mesh.nearby()`, and Wi-Fi joined on the
+  old channel is suspended for the app, as at its start. `mesh.scan([opts,] cb)` hops
+  through channels (`channels`, or `band` "2.4"/"5"/"all"; `dwell` 500 to 5000 ms,
+  2600 by default), only listening, and answers per channel the badges and beacons
+  whose HELLOs it heard (24 in all) and which of them sent this app's messages. Wi-Fi
+  joined on the mesh channel is lent to the scan and comes back after it; `mesh.pause()`
+  or closing the app ends it. `mesh.info()` gains `event` and `scanning`.
+  `main/core/os_mesh.*` (`os_mesh_app_channel`, `os_mesh_scan*`: the mesh task hops,
+  results in ~1.2 KB allocated only while an app scans; a mesh holder now also takes the
+  radio from a network off the mesh channel whenever the channel changes, not only at
+  acquire), `main/lua/lua_net.c`, `tests/t-chan`, `mesh status` lines for both.
+
 ## 1.0.0 (2026-11-10)
 
 - **Bluetooth LE for Lua apps** (`ble`, permission `ble`; `docs/LUA_API.md` "ble"). An app
