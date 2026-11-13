@@ -25,6 +25,13 @@
 #include "lua_xip.h"
 
 #define LH_OBJ_MAX          128         // UI objects at a time (SRAM: ~250 B each; 64 before 2.0.0)
+// SRAM for UI (2.0.0): LVGL's objects and label text stay in SRAM while a Lua
+// heap in PSRAM grows, so the allocator's PSRAM reserve can't protect them.
+// Every call that makes LVGL objects first checks that the SRAM left after it
+// stays above LUA_HOST_SYS_RESERVE (lh_ui_room). The object cap alone isn't
+// enough: one ui.list slot is up to 43 LVGL objects (ui_list_create_at).
+#define LH_UI_OBJ_SRAM      512         // one object, with headroom (~250 B measured)
+#define LH_UI_LIST_SRAM     (12 * 1024) // a ui.list (8 rows of 5 objects + 3) or the ui.input keyboard
 #define LH_TEXT_MAX         200         // bytes per label; longer text ends in "..."
 #define LH_TEXT_TOTAL       (12 * 1024) // label text per app (LVGL keeps it in SRAM; 6 KB before 2.0.0)
 #define LH_QR_MAX           1           // ui.qr codes at a time: each canvas is size^2 / 8 bytes of system heap
@@ -283,6 +290,9 @@ lv_color_t lh_color(lua_State *L, int idx);
 lh_t *lh_ui_session(lua_State *L);
 lh_obj_t *lh_ui_new_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref);
 lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what);
+// Raises "<what>: the badge is low on memory" unless `need` more bytes of
+// SRAM would leave LUA_HOST_SYS_RESERVE free. Before any LVGL object is made.
+void lh_ui_room(lua_State *L, const char *what, size_t need);
 
 // lua_img.c: ui.load, ui.image, ui.canvas
 void lh_img_init(void);                                 // at boot, with the LVGL lock held

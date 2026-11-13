@@ -126,7 +126,7 @@ HOME always returns to the launcher. The screen below the status bar is
 |---|---|
 | Memory | 6 MB of Lua heap, in the badge's 8 MB of PSRAM (Solana OS 2.0.0). Past it the app stops with "Out of memory: the app needs more than 6 MB". The badge keeps 512 KB of PSRAM for itself while an app runs, and the allocator's own overhead (up to about a quarter for very many small tables or strings) comes out of the rest, so an app made of millions of tiny objects can be stopped a little earlier with "The badge is low on memory". The app's UI objects, label text and 12 KB task stack are in the badge's other memory, capped by the rows below, not in the 6 MB, and Bluetooth no longer shrinks it. `sys.memory()` tells an app where it stands. Badges below 2.0.0 (until they update) give 96 KB (48 KB below 0.5.13), shared with Wi-Fi, TLS and Bluetooth: there an app with 60 labels gets about 80 KB with Wi-Fi joined, about 49 KB with Bluetooth on as well. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it. A big heap is a slower one: PSRAM is slower than the chip's own memory, and the collector walks everything an app keeps, so a few MB of live tables can pause a callback noticeably |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
-| UI objects | 128 at a time (64 below 2.0.0), one of them a QR code |
+| UI objects | 128 at a time (64 below 2.0.0), one of them a QR code. They live in the badge's SRAM, not the Lua heap: a call that makes one (`ui.label`, `ui.list`, `ui.image`, …) raises "ui.list: the badge is low on memory" (with its own name) when it would leave the badge less than 32 KB, a catchable error (2.0.1). A `ui.list` costs about 12 KB of it, a label about 250 bytes |
 | Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
 | Text | 200 bytes per label (longer text ends in "..."), 12 KB of label text on screen (6 KB below 2.0.0) |
 | Timers | 8 at a time, ≥ 20 ms |
@@ -474,10 +474,10 @@ nothing is saved. Meanwhile:
 - The server announcing a new event channel changes `event`, not your app's channel.
 
 `mesh.scan([opts,] cb)` hops through channels, listening on each for a moment, and
-calls `cb(channels)` once at the end. It sends nothing on the channels it visits (the
-others don't see a scan), so it finds badges and beacons by their HELLOs, which they
-send every 1.5 to 2.5 s, and badges running **your** app by the `mesh.send` messages
-they broadcast meanwhile. `opts`:
+calls `cb(channels)` once at the end. It sends nothing on the channels it visits, the
+badge's own included (the others don't see a scan), so it finds badges and beacons by
+their HELLOs, which they send every 1.5 to 2.5 s, and badges running **your** app by the
+`mesh.send` messages they broadcast meanwhile. `opts`:
 
 | Field | |
 |---|---|
@@ -498,9 +498,10 @@ The whole 2.4 GHz band takes about 34 s at the default dwell, both bands about 5
 badge that runs your app but sends nothing isn't marked, so broadcast now and then
 (once a second or two) if your players should find each other by scanning. `peers` holds
 at most 24 badges and beacons in all, the first heard. Nothing in a scan is proof:
-anyone can send a HELLO or claim an id. While a scan runs the badge is on its own
-channel only while visiting it: `mesh.send` to a badge in range answers
-`nil, "scanning"`, `on_mesh` hears nothing, `mesh.nearby()` keeps what it heard before
+anyone can send a HELLO or claim an id. While a scan runs the badge is off the mesh,
+even while it visits its own channel: it sends no HELLOs, `mesh.send` answers
+`nil, "scanning"`, `on_mesh` hears nothing (what it hears goes only into the scan's
+results), `mesh.nearby()` keeps what it heard before
 (30 s), and Wi-Fi joined on the mesh channel pauses until the scan ends. One scan at a
 time: another answers `nil, "scanning"`; between `mesh.pause()` and `mesh.resume()`,
 `nil, "paused"`; with a bridge open, `nil, "bridge open"` (a bridge keeps Wi-Fi joined,

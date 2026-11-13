@@ -518,9 +518,12 @@ static bool paused(void)
     return os_wifi_state() == OS_WIFI_SUSPENDED && !s_took_wifi;
 }
 
+// A scan counts as off the channel even while it visits the mesh's own: it
+// sends nothing (no HELLOs, no messages) and passes nothing on, wherever it is
+// (LUA_API.md "mesh.scan"). Not with s_lock held: os_mesh_scanning takes it.
 static bool on_channel(void)
 {
-    return !paused() && s_channel && os_radio_channel() == s_channel;
+    return !paused() && s_channel && os_radio_channel() == s_channel && !os_mesh_scanning();
 }
 
 bool os_mesh_ready(void)
@@ -1389,8 +1392,8 @@ static void deliver(uint8_t type, const uint8_t *mac, const char *src, int rssi,
         printf("mesh rx type %d from %s (%d B, %s, %d dBm): %.80s\n", type, src, len,
                bridged ? "bridged" : frags == 1 ? "1 frag" : "frags", rssi, json);
     }
-    if (!bridged && scan_note(type, src, rssi, ch, json) && (ch ? ch != s_channel : !on_channel())) {
-        return;                             // heard on a channel the scan visits: noted, nothing more
+    if (!bridged && scan_note(type, src, rssi, ch, json)) {
+        return;                             // heard during a scan, even on our own channel: noted, nothing more
     }
 
     if (type == OS_MESH_HELLO) {

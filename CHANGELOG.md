@@ -6,6 +6,32 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 2.0.1 (2026-11-13)
+
+Fixes from the 2.0.0 review.
+
+- **UI objects check SRAM.** With the Lua heap in PSRAM the allocator's reserve no longer
+  guards the SRAM that LVGL's objects use, and one `ui.list` slot is up to 43 LVGL objects:
+  an app making lists could run SRAM out while its heap stayed small. Every call that makes
+  objects (`ui.label`, `rect`, `bar`, `gradient`, `list`, `qr`, `image`, `canvas`, `anim`,
+  `confirm`, `input`) now first checks that what it adds leaves 32 KB of SRAM free
+  (`lh_ui_room`, `LUA_HOST_SYS_RESERVE`), else raises "ui.list: the badge is low on memory".
+- **A scan is silent on the badge's own channel too.** While `mesh.scan` visited the mesh
+  channel, the badge still sent its HELLOs, `mesh.send` worked and `on_mesh` heard app
+  messages; elsewhere none of that happened. Now a running scan sends nothing and passes
+  nothing on, wherever it is (`on_channel()` in `core/os_mesh.c` counts a scan as off the
+  channel): `mesh.send` answers `nil, "scanning"`, `mesh.meet` `"the mesh is off"`, and
+  what it hears (HELLOs, the app's messages) only goes into its results.
+- **`mesh.resume()` then `mesh.scan()` in one callback scans.** The resume only queued
+  its acquire for the OS task, which waits for the LVGL lock the callback holds, so the
+  scan found the mesh released and answered `nil, "the mesh is off"`. `mesh.scan` now takes
+  a pending resume's acquire itself (`mesh_hold_apply` in `lua/lua_net.c`), and each queued
+  pause or resume applies the app's latest ask, so a pause, a resume and a scan in one
+  callback no longer end that scan when the pause lands. A pause ends a running scan at
+  once (it dropped the scan's callback but left it running until the release landed, so a
+  scan right after a pause and a resume answered `"scanning"`). `tests/t-chan` checks all
+  three, measured on a badge.
+
 ## 2.0.0 (2026-11-12)
 
 - **PSRAM.** Every badge's ESP32-C5HR8 carries 8 MB of quad PSRAM in its package (production

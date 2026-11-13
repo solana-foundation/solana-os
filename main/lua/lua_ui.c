@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "core/os_mem.h"
 #include "lua_priv.h"
 
 typedef struct {
@@ -217,6 +218,13 @@ static lh_obj_t *check_kind(lua_State *L, lh_kind_t kind, const char *what)
 lh_t *lh_ui_session(lua_State *L)
 {
     return ui_session(L);
+}
+
+void lh_ui_room(lua_State *L, const char *what, size_t need)
+{
+    if (heap_caps_get_free_size(OS_MEM_SRAM) < LUA_HOST_SYS_RESERVE + need) {
+        luaL_error(L, "%s: the badge is low on memory", what);
+    }
 }
 
 lh_obj_t *lh_ui_new_ref(lua_State *L, lh_t *s, lh_kind_t kind, lv_obj_t *obj, int ref)
@@ -490,6 +498,7 @@ static int l_label(lua_State *L)
     }
     size_t len = strlen(text);
     check_text(L, s, 0, len);
+    lh_ui_room(L, "ui.label", LH_UI_OBJ_SRAM + len);
     lv_obj_t *l = lv_label_create(s->area);
     lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, color, 0);
@@ -526,6 +535,7 @@ static int l_rect(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.rect", LH_UI_OBJ_SRAM);
     lv_obj_t *r = base_obj(s->area, x, y, w, h);
     lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(r, color, 0);
@@ -547,6 +557,7 @@ static int l_bar(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.bar", LH_UI_OBJ_SRAM);
     lv_obj_t *b = lv_bar_create(s->area);
     lv_obj_remove_style_all(b);
     lv_obj_set_pos(b, x, y);
@@ -573,6 +584,7 @@ static int l_gradient(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.gradient", LH_UI_OBJ_SRAM);
     lv_obj_t *g = ui_gradient_bar(s->area, x, y, w, h);
     lv_obj_set_style_radius(g, 0, 0);
     new_obj(L, s, LH_GRADIENT, g);
@@ -592,6 +604,7 @@ static int l_list(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.list", LH_UI_LIST_SRAM);
     // A box of our own holds the list, so pos/show/remove work like any object.
     lv_obj_t *box = base_obj(s->area, x, y, w, h);
     lh_obj_t *o = new_obj(L, s, LH_LIST, box);      // pushes the handle
@@ -630,6 +643,7 @@ static int l_qr(lua_State *L)
     if (n >= LH_QR_MAX) {
         luaL_error(L, "ui.qr: %d QR code at a time (change its text, or remove it first)", LH_QR_MAX);
     }
+    lh_ui_room(L, "ui.qr", LH_UI_OBJ_SRAM + (size_t)size * size / 8);
     lv_obj_t *q = lv_qrcode_create(s->area);
     lv_qrcode_set_size(q, size);
     if (!lv_canvas_get_draw_buf(q)) {
@@ -707,6 +721,7 @@ static int l_confirm(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.confirm", 4 * LH_UI_OBJ_SRAM);
     dialog_ref(L, s, 2);
     lv_obj_t *dim = base_obj(s->area, 0, 0, OS_ROOT_W, OS_ROOT_H);
     lv_obj_set_style_bg_opa(dim, LV_OPA_70, 0);
@@ -733,6 +748,7 @@ static int l_input(lua_State *L)
     if (!s) {
         return 0;
     }
+    lh_ui_room(L, "ui.input", LH_UI_LIST_SRAM);
     dialog_ref(L, s, 3);
     s->kb = ui_kb_create(s->area, title, max < 1 ? 1 : max);
     s->modal = lv_obj_get_child(s->area, -1);   // the keyboard's box, kept on top
