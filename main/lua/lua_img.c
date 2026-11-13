@@ -472,7 +472,7 @@ static lh_view_t *new_view(lua_State *L, int scale)
 // Shows the view on top of the stack (popped) as a new object of kind; pushes its handle.
 static void show_view(lua_State *L, lh_t *s, lh_kind_t kind, int x, int y)
 {
-    lh_ui_room(L, kind == LH_IMAGE ? "ui.image" : kind == LH_CANVAS ? "ui.canvas" : "ui.anim", LH_UI_OBJ_SRAM);
+    lh_ui_room(L, kind == LH_IMAGE ? "ui.image" : kind == LH_CANVAS ? "ui.canvas" : "ui.anim", LH_UI_OBJ_SRAM + LH_UI_IMG_LINE);
     lh_view_t *v = lua_touserdata(L, -1);
     // The view is in the registry before LVGL gets a pointer to it, and stays
     // until the object goes: nothing that can fail comes in between, so a

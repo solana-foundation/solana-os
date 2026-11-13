@@ -48,6 +48,30 @@ part(function()
   check("verify short key", crypto.verify(pub2:sub(1, 31), "\x72", sig2), false)
 end)
 
+-- Small-order keys and R (2.1.0, from review): the neutral point as a key
+-- "verified" every message with no private key. Rejected as Solana rejects
+-- them (ed25519-dalek's verify_strict); still on the curve.
+local Z32 = ("\0"):rep(32)
+local NEUTRAL = "\1" .. ("\0"):rep(31)
+local ORDER2 = bin("ec" .. ("ff"):rep(30) .. "7f")
+local ORDER8 = bin("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85")
+part(function()
+  check("verify neutral key, any message", crypto.verify(NEUTRAL, "anything at all", NEUTRAL .. Z32), false)
+  check("verify neutral key, empty message", crypto.verify(NEUTRAL, "", NEUTRAL .. Z32), false)
+  check("verify order 2 key", crypto.verify(ORDER2, "hello", ORDER2 .. Z32), false)
+  check("verify order 8 key", crypto.verify(ORDER8, "hello", ORDER8 .. Z32), false)
+end)
+part(function()
+  -- y = p + 1: a non-canonical encoding of the neutral point
+  check("verify non-canonical neutral key", crypto.verify(bin("ee" .. ("ff"):rep(30) .. "7f"), "hello", NEUTRAL .. Z32), false)
+  -- RFC 8032 test 1's key with R the neutral point and s = h * a: passes a plain check
+  check("verify small-order R", crypto.verify(pub1, "strict R", bin("01" .. ("00"):rep(31) ..
+    "5e56bff9e588f80e628453e25722383f6c32da233c99b1259644a22c175aef00")), false)
+  check("verify rfc 1 still", crypto.verify(pub1, "", sig1), true)
+  check("on_curve neutral", crypto.on_curve(NEUTRAL), true)
+  check("on_curve order 8", crypto.on_curve(ORDER8), true)
+end)
+
 -- base58
 local SQUADS = "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"
 local squads = solana.decode(SQUADS)

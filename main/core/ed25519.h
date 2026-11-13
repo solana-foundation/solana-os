@@ -14,7 +14,11 @@
 // must fail it. As there, a y of p or more counts as y - p.
 bool ed25519_on_curve(const uint8_t p[32]);
 
-// sig (R then s) is pub's signature of msg. False for an s of the group order
-// or more, a pub that isn't on the curve, and an R that isn't the canonical
-// encoding of s*B - h*A.
+// sig (R then s) is pub's signature of msg, checked as Solana checks one
+// (ed25519-dalek's verify_strict). False for an s of the group order or more,
+// a pub that isn't on the curve, a pub or an R of small order (the eight
+// points of order 1, 2, 4 or 8, in any encoding: the neutral point as a key
+// "verifies" every message without a private key), and an R that isn't the
+// canonical encoding of s*B - h*A. ed25519_on_curve still says yes to those
+// eight points: they are on the curve.
 bool ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t len, const uint8_t sig[64]);

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "core/os_mem.h"
 #include "lua_priv.h"
 
 // ---------------------------------------------------------------------------
@@ -32,7 +33,9 @@ static bool put(lh_jbuf_t *b, const char *s, size_t n)
         if (cap > b->max + 1) {
             cap = b->max + 1;
         }
-        char *p = realloc(b->p, cap);
+        // In PSRAM when there is some: up to 16 queued server calls keep
+        // their bodies (4 KB each) until sent, so SRAM would be a lot (2.1.0).
+        char *p = heap_caps_realloc(b->p, cap, os_mem_bulk_caps());
         if (!p) {
             b->err = "out of memory";
             return false;

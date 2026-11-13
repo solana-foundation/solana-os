@@ -16,6 +16,9 @@ local POLL_MS = 20000           -- 3 RPC calls a round, of the 30 a minute a bad
 local RECENT = 8                -- the newest transactions looked at
 local BATCH = 4                 -- proposals per getMultipleAccounts: the answer must stay under 3.5 KB
 local SLICE = 420               -- bytes read of each proposal: room for 10 approvals
+local FIRST = 1500              -- bytes read of the multisig first: room for about 40 members
+local CHUNK = 2400              -- a further read of one account (3.2 KB as base64)
+local MORE = 3                  -- further reads an account may take a round: then it's too big
 
 -- What differs between the two programs: where the fields sit (bytes from the
 -- start of the account) and the first seed of their addresses.
@@ -38,7 +41,7 @@ if not (solana and solana.pda) then
   return
 end
 
-for id, lay in pairs(PROGRAMS) do lay.key = solana.decode(id) end
+for id, lay in pairs(PROGRAMS) do lay.key, lay.id = solana.decode(id), id end
 
 local cluster = storage.get("cluster") == "devnet" and "devnet" or "mainnet"
 local address                   -- the multisig, as text
@@ -52,6 +55,7 @@ local phase = "idle"            -- "multisig" > "derive" > "proposals" > "idle"
 local waiting = 0               -- proposal batches not answered yet
 local round = 0                 -- answers of an older round, or of another multisig, are dropped
 local last_ok                   -- sys.millis() of the last complete round
+local problem                   -- why the last round failed, until one doesn't
 local alerted = {}              -- transaction numbers already announced
 local alarm = false             -- something waits for the owner
 local progress, threshold = 0, 0
@@ -92,18 +96,22 @@ local function unbase64(s)
   return pad > 0 and bytes:sub(1, -pad - 1) or bytes
 end
 
+-- The readers below take the bytes read so far and return what they read,
+-- or nil and how many bytes they need when a list goes on past them (the
+-- round then reads the rest, more_of): a list that is cut short is never
+-- taken for the whole list. Anything else that doesn't fit raises an error:
+-- the account isn't what it should be.
+
 -- A list of addresses as the programs store one: a count, then 32 bytes each.
--- Returns a set of those that are in the bytes we have, the count, and where
--- the list ends.
+-- Returns the set, the count and where the list ends, or nil and the bytes
+-- the list needs.
 local function keys(data, pos)
   local n = string.unpack("<I4", data, pos)
-  pos = pos + 4
+  local stop = pos + 4 + n * 32
+  if stop - 1 > #data then return nil, stop - 1 end
   local set = {}
-  for i = 1, n do
-    local k = data:sub(pos + (i - 1) * 32, pos + i * 32 - 1)
-    if #k == 32 then set[k] = true end
-  end
-  return set, n, pos + n * 32
+  for i = 1, n do set[data:sub(pos + 4 + (i - 1) * 32, pos + 3 + i * 32)] = true end
+  return set, n, stop
 end
 
 -- A number of 8 bytes, which must fit a badge's 32-bit integers.
@@ -123,26 +131,28 @@ local function read_multisig(data, lay)
   pos = pos + (data:byte(pos) == 1 and 33 or 1) + lay.skip  -- an optional address, then the bump
   local n = string.unpack("<I4", data, pos)
   pos = pos + 4
-  for i = 1, n do
-    local k = data:sub(pos, pos + 31)
-    local perms = data:byte(pos + 32)
-    if #k < 32 or not perms then break end                -- more members than the bytes we asked for
-    m.members[k] = perms
+  if pos + n * 33 - 1 > #data then return nil, pos + n * 33 - 1 end   -- more members than we have read
+  for _ = 1, n do
+    m.members[data:sub(pos, pos + 31)] = data:byte(pos + 32)
     pos = pos + 33
   end
+  m.count = n
   return m
 end
 
 local function read_proposal(data, lay)
   local pos = lay.status + 1
   local p = {status = data:byte(pos)}
+  if not STATUS[p.status] then error("no such status") end
   pos = pos + (p.status == 4 and 1 or 9) + 1              -- every status but Executing has a time; then the bump
-  p.approved, p.approvals, pos = keys(data, pos)
-  if pos + 3 <= #data then
-    p.rejected, p.rejections = keys(data, pos)
-  else
-    p.rejected, p.rejections = {}, 0                      -- more approvals than the bytes we asked for
-  end
+  local need
+  p.approved, need, pos = keys(data, pos)
+  if not p.approved then return nil, need end
+  p.approvals = need
+  if pos + 3 > #data then return nil, pos + 3 end         -- the rejections' count is past what we read
+  p.rejected, need = keys(data, pos)
+  if not p.rejected then return nil, need end
+  p.rejections = need
   return p
 end
 
@@ -190,6 +200,8 @@ end
 
 local function fail(text)
   phase = "idle"
+  problem = text
+  round = round + 1                                      -- the rest of this round's answers are dropped
   note:text(text)
 end
 
@@ -214,10 +226,53 @@ end)
 -- ---------------------------------------------------------------------------
 -- A round: the multisig, the addresses of its newest proposals, the proposals
 
+-- An account's data from rpc, checked: nil when it isn't base64 of the
+-- program's account.
+local function account_data(acc, lay)
+  if type(acc) ~= "table" or acc.owner ~= lay.id or type(acc.data) ~= "table" then return nil end
+  return unbase64(acc.data[1])
+end
+
+-- Reads on from `data` (the account's first bytes) until read(data, lay)
+-- has all it needs, CHUNK bytes a call and at most MORE calls, then calls
+-- done(value) or done(nil, why). `why` is "big" when it took too many reads.
+local function more_of(addr, data, read, lay, mine, done)
+  local tries = 0
+  local function step()
+    local good, v, need = pcall(read, data, lay)
+    if not good then return done(nil, "bad") end
+    if v then return done(v) end
+    if tries == MORE then return done(nil, "big") end
+    tries = tries + 1
+    rpc.call("getAccountInfo", {addr, {encoding = "base64", commitment = "confirmed",
+      dataSlice = {offset = #data, length = math.min(CHUNK, need - #data)}}}, {cluster = cluster}, function(ok, r)
+        if mine ~= round then return end
+        if not ok then return done(nil, tostring(r)) end
+        local more = account_data(type(r) == "table" and r.value, lay)
+        if not more or #more == 0 then return done(nil, "bad") end   -- gone, or shorter than its own lists
+        data = data .. more
+        step()
+      end)
+  end
+  step()
+end
+
+local function round_done()
+  phase = "idle"
+  problem = nil
+  last_ok = sys.millis()
+  show()
+end
+
 local function fetch_proposals()
   local mine = round
   phase = "proposals"
   waiting = 0
+  local function settle()
+    if mine ~= round then return end                     -- the round failed meanwhile
+    waiting = waiting - 1
+    if waiting == 0 then round_done() end
+  end
   for from = 1, #wanted, BATCH do
     local numbers, addrs = {}, {}
     for i = from, math.min(from + BATCH - 1, #wanted) do
@@ -231,25 +286,33 @@ local function fetch_proposals()
         if mine ~= round then return end
         if not ok or type(r) ~= "table" or type(r.value) ~= "table" then return fail("Proposals: " .. tostring(r)) end
         for i, n in ipairs(numbers) do
-          local acc = r.value[i]
-          local data = type(acc) == "table" and type(acc.data) == "table" and unbase64(acc.data[1])
-          local good, p = pcall(read_proposal, data or "", squad.lay)
-          proposals[n] = data and good and p or nil     -- no account: a transaction without a proposal
+          if mine ~= round then return end
+          local acc = r.value[i]                         -- null: no account, a transaction without a proposal
+          if acc == nil then
+            proposals[n] = nil
+          else
+            -- There is an account: it is read whole, or the round fails. One
+            -- that can't be read is never shown as "no proposal".
+            local data = account_data(acc, squad.lay)
+            if not data then return fail("Can't read proposal #" .. n) end
+            waiting = waiting + 1
+            more_of(addrs[i], data, read_proposal, squad.lay, mine, function(p, why)
+              if not p then
+                return fail(why == "big" and "Proposal #" .. n .. " has too many votes to read"
+                            or "Can't read proposal #" .. n .. (why == "bad" and "" or ": " .. why))
+              end
+              proposals[n] = p
+              settle()
+            end)
+          end
         end
-        waiting = waiting - 1
-        if waiting == 0 then
-          phase = "idle"
-          last_ok = sys.millis()
-          show()
-        end
+        settle()
       end)
   end
-  if waiting == 0 then
-    phase = "idle"
-    last_ok = sys.millis()
-    show()
-  end
+  if waiting == 0 then round_done() end
 end
+
+local took                      -- defined below poll
 
 local function poll()
   if phase ~= "idle" or not address then return end
@@ -263,25 +326,37 @@ local function poll()
     end)
   end
   rpc.call("getAccountInfo", {address, {encoding = "base64", commitment = "confirmed",
-    dataSlice = {offset = 0, length = 1500}}}, {cluster = cluster}, function(ok, r)
+    dataSlice = {offset = 0, length = FIRST}}}, {cluster = cluster}, function(ok, r)
       if mine ~= round then return end
       if not ok then return fail("Can't read the multisig: " .. tostring(r)) end
       local acc = type(r) == "table" and r.value
       if type(acc) ~= "table" then return fail("No such account on " .. cluster .. ". RIGHT changes it") end
       local lay = PROGRAMS[acc.owner]
       if not lay then return fail("Not a Squads multisig (the vault's address?). RIGHT changes it") end
-      local data = type(acc.data) == "table" and unbase64(acc.data[1])
-      local good, m = pcall(read_multisig, data or "", lay)
-      if not good then return fail("Can't read that account") end
-      squad = m
-      if typed then
-        typed = false
-        storage.set("multisig", address)
-      end
-      wanted = {}
-      for n = m.tx, math.max(m.stale + 1, m.tx - RECENT + 1, 1), -1 do wanted[#wanted + 1] = n end
-      phase = "derive"                                   -- on_tick works the addresses out, one a tick
+      local data = account_data(acc, lay)
+      if not data then return fail("Can't read that account") end
+      -- A big multisig's members go on past the first read: read them all,
+      -- since the linked wallet may be among the last.
+      more_of(address, data, read_multisig, lay, mine, function(m, why)
+        if not m then
+          if why == "big" then return fail("Too many members to read (" .. FIRST + MORE * CHUNK .. " bytes)") end
+          return fail("Can't read that account" .. (why == "bad" and "" or ": " .. why))
+        end
+        took(m)
+      end)
     end)
+end
+
+-- The multisig is read: which proposals to look at, then their addresses.
+took = function(m)
+  squad = m
+  if typed then
+    typed = false
+    storage.set("multisig", address)
+  end
+  wanted = {}
+  for n = m.tx, math.max(m.stale + 1, m.tx - RECENT + 1, 1), -1 do wanted[#wanted + 1] = n end
+  phase = "derive"                                       -- on_tick works the addresses out, one a tick
 end
 
 function on_tick()
@@ -305,7 +380,7 @@ local function watch(text)
   if not k or #k ~= 32 then return false end
   address, seeds_key = text, k
   squad, proposal_at, proposals, wanted, alerted = nil, {}, {}, {}, {}
-  alarm, progress, threshold = false, 0, 0
+  alarm, progress, threshold, last_ok, problem = false, 0, 0, nil, nil
   round = round + 1                                      -- drops what the old address still has on its way
   phase = "idle"
   title:text(short(address) .. "  " .. cluster)
@@ -355,7 +430,9 @@ end
 timer.every(POLL_MS, poll)
 timer.every(5000, function()
   if phase == "idle" and last_ok and squad then
-    note:text(who .. ", " .. (sys.millis() - last_ok) // 1000 .. " s ago")
+    -- After a failed round the screen still shows the last good one: say why
+    -- it is that old, rather than hiding the error.
+    note:text((problem or who) .. ", " .. (problem and "last read " or "") .. (sys.millis() - last_ok) // 1000 .. " s ago")
   end
 end)
 

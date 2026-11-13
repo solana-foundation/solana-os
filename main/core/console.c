@@ -314,6 +314,9 @@ static int cmd_heap(int argc, char **argv)
            (unsigned)heap_caps_get_minimum_free_size(OS_MEM_SRAM),
            (unsigned)heap_caps_get_largest_free_block(OS_MEM_SRAM));
     if (os_mem_psram()) {
+        // Of that, what malloc can still take: not the 32 KB DMA pool (os_mem.h).
+        printf("sram: %u free for malloc, %u min\n", (unsigned)heap_caps_get_free_size(OS_MEM_SRAM_MALLOC),
+               (unsigned)heap_caps_get_minimum_free_size(OS_MEM_SRAM_MALLOC));
         printf("psram: %u free, %u min, %u largest block, %u total\n", (unsigned)heap_caps_get_free_size(OS_MEM_PSRAM),
                (unsigned)heap_caps_get_minimum_free_size(OS_MEM_PSRAM),
                (unsigned)heap_caps_get_largest_free_block(OS_MEM_PSRAM),

@@ -299,6 +299,20 @@ bool ed25519_on_curve(const uint8_t p[32])
     return point_unpack_neg(q, p);
 }
 
+// p is one of the eight points of small order (1, 2, 4 or 8: 8p is the
+// neutral point), whatever encoding it came from. 8p has x = 0 only then: the
+// other point with x = 0, (0, -1), has order 2, and the curve has no point of
+// order 16.
+static NOINLINE bool point_small_order(const point p)
+{
+    point q;
+    memcpy(q, p, sizeof(point));
+    for (int i = 0; i < 3; i++) {
+        point_add(q, q);
+    }
+    return gf_equal(q[0], GF0);
+}
+
 // ---------------------------------------------------------------------------
 // SHA-512 (FIPS 180-4)
 
@@ -487,11 +501,23 @@ static NOINLINE void challenge(uint8_t h[32], const uint8_t pub[32], const uint8
     scalar_reduce(h, digest);
 }
 
+// As Solana checks transaction signatures (ed25519-dalek's verify_strict): s
+// below the group order, and neither the key nor R of small order. A key of
+// small order needs no private key at all: with A the neutral point, (R, s) =
+// (the neutral point, 0) verifies for every message, and the other seven give
+// an R that does for one message in eight. R must also be the canonical
+// encoding of s*B - h*A: it is compared byte for byte (verify_strict compares
+// the points, so it also takes the few R encodings with a y of p or more; no
+// signer makes those).
 bool ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t len, const uint8_t sig[64])
 {
     const uint8_t *s = sig + 32;
     point tab[3];               // B, -A, B - A
-    if (!scalar_canonical(s) || !point_unpack_neg(tab[1], pub)) {
+    if (!scalar_canonical(s) || !point_unpack_neg(tab[1], pub) || point_small_order(tab[1])) {
+        return false;
+    }
+    point rp;
+    if (!point_unpack_neg(rp, sig) || point_small_order(rp)) {
         return false;
     }
     gf_copy(tab[0][0], BX);

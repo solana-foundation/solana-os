@@ -27,11 +27,18 @@
 #define LH_OBJ_MAX          128         // UI objects at a time (SRAM: ~250 B each; 64 before 2.0.0)
 // SRAM for UI (2.0.0): LVGL's objects and label text stay in SRAM while a Lua
 // heap in PSRAM grows, so the allocator's PSRAM reserve can't protect them.
-// Every call that makes LVGL objects first checks that the SRAM left after it
-// stays above LUA_HOST_SYS_RESERVE (lh_ui_room). The object cap alone isn't
-// enough: one ui.list slot is up to 43 LVGL objects (ui_list_create_at).
+// Every call that makes LVGL objects or grows what they hold (label:text,
+// ui.hint, qr:text, ...; 2.1.0) first checks that the SRAM malloc can take
+// (OS_MEM_SRAM_MALLOC, not the DMA pool) stays above LUA_HOST_SYS_RESERVE
+// after it, plus what the app's lists, keyboard and images can still grow by
+// without a call (rows redrawn on a key, the keyboard's text, an image's line
+// buffer while it's drawn): lh_ui_room. The object cap alone isn't enough:
+// one ui.list slot is up to 43 LVGL objects (ui_list_create_at).
 #define LH_UI_OBJ_SRAM      512         // one object, with headroom (~250 B measured)
 #define LH_UI_LIST_SRAM     (12 * 1024) // a ui.list (8 rows of 5 objects + 3) or the ui.input keyboard
+#define LH_UI_LIST_TEXT     (8 * 160)   // a list's rows' text (8 x 40 + 56 + 20 bytes, plus the allocator's)
+#define LH_UI_KB_TEXT       128         // the keyboard's text (64 bytes and "_")
+#define LH_UI_IMG_LINE      (320 * 4 + 64)  // the line an image is drawn through (one at a time)
 #define LH_TEXT_MAX         200         // bytes per label; longer text ends in "..."
 #define LH_TEXT_TOTAL       (12 * 1024) // label text per app (LVGL keeps it in SRAM; 6 KB before 2.0.0)
 #define LH_QR_MAX           1           // ui.qr codes at a time: each canvas is size^2 / 8 bytes of system heap

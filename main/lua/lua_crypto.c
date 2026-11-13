@@ -21,12 +21,16 @@
 // What each call costs of the 200 000 a callback gets, sized so that a
 // callback of nothing but these stays within about half a second. Timed on a
 // badge (2.1.0; its Lua runs ~3 000 VM instructions a ms): 4.7 ms for the
-// on-curve test, 52 ms for a signature, 7.3 ms for an address (~2 bumps), so
-// the worst such callback is 5 signature checks, ~260 ms.
+// on-curve test, 57.5 ms for a signature (52 before it also tested the key and
+// R for small order), 7.3 ms for an address (~2 bumps, 4.8 ms a bump), so
+// the worst such callback is 5 signature checks, ~290 ms. solana.pda pays per
+// bump it tries, before trying it: seeds that need many retries can be found
+// ahead of time, so one charge for the whole search let a callback run 256
+// hashes and curve tests for 10 000 (2.1.0, from review).
 #define STEPS_HASH          50                  // crypto.sha256, plus 1 per 4 bytes (4 KB: 1.6 ms)
 #define STEPS_CURVE         5000                // crypto.on_curve: 4.7 ms
-#define STEPS_VERIFY        40000               // crypto.verify: 52 ms, plus 1 per 2 bytes of message
-#define STEPS_PDA           10000               // solana.pda, however many bumps it tries (2 on average): 7.3 ms
+#define STEPS_VERIFY        40000               // crypto.verify: 57.5 ms, plus 1 per 2 bytes of message
+#define STEPS_PDA_BUMP      5000                // solana.pda, per bump tried (2 on average: 7.3 ms)
 #define STEPS_B58           20                  // solana.encode / decode, plus n * n / 16
 
 static int l_sha256(lua_State *L)
@@ -192,8 +196,10 @@ static int l_pda(lua_State *L)
         total += sl;
         lua_pop(L, 1);
     }
-    lh_charge_steps(L, STEPS_PDA);
     for (int bump = 255; bump >= 0; bump--) {
+        // Before the work, and with nothing to undo: past the budget this
+        // raises "Script took too long" and the search stops here.
+        lh_charge_steps(L, STEPS_PDA_BUMP);
         uint8_t b = (uint8_t)bump, out[32];
         size_t len = 0;
         psa_hash_operation_t c = PSA_HASH_OPERATION_INIT;

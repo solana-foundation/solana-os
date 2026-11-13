@@ -8,6 +8,9 @@ threshold in grey. The badge only reads; you sign wherever your key is.
 
 - `main.lua`, `app.json`: the app (permissions `rpc`, `profile`, `led`). No server and no
   hosts: every read goes through `rpc`.
+- `test.lua`: runs the app on a computer against mocked RPC answers (`lua test.lua` in
+  this folder, Lua 5.5): a small multisig, a big one, one too big, missing, unreadable and
+  heavily voted proposals. It isn't part of the app; leave it out of what you load.
 - It needs the `solana` module (`solana.pda`, Solana OS 2.1.0) and says
   so on a badge that doesn't have it.
 - Squads v4 multisigs and smart accounts both work: the app tells them apart by the
@@ -32,17 +35,31 @@ that holds the funds. LEFT switches between mainnet and devnet.
 
 ## How it reads
 
-Every 20 seconds, three calls of the 30 a minute a badge gets:
+Every 20 seconds, three calls of the 30 a minute a badge gets (more for a big multisig,
+below):
 
 1. `getAccountInfo` on the multisig: the threshold, the members and their permissions, the
-   number of its latest transaction and the one below which proposals are stale.
+   number of its latest transaction and the one below which proposals are stale. The
+   first read takes 1,500 bytes, about 40 members.
 2. For the newest 8 transactions that aren't stale, the proposal's address:
    `solana.pda({prefix, multisig, "transaction", number, "proposal"}, program)`. An address
-   costs 10 000 of a callback's instructions, so the app works one out per tick and
-   remembers it.
-3. `getMultipleAccounts` on those, four at a time with a `dataSlice`, so that the answer
-   stays under 3.5 KB. That reads up to 10 approvals per proposal; with more, the count is
-   still right and the badge may ask you to sign one you already did.
+   costs 5,000 of a callback's instructions for each bump it tries (two on average), so
+   the app works one out per tick and remembers it.
+3. `getMultipleAccounts` on those, four at a time with a `dataSlice` of 420 bytes each
+   (up to 10 approvals), so that the answer stays under 3.5 KB.
+
+**Lists are read whole.** When the members, or a proposal's approvals or rejections, go
+on past what the first read held, the app reads the rest of that account with
+`getAccountInfo` and a `dataSlice` offset, 2,400 bytes a call and at most three more calls
+(about 260 members, or as many votes). A multisig bigger than that shows *Too many members
+to read*, and such a proposal *Proposal #n has too many votes to read*: the app never takes
+part of a list for all of it, so it never says your wallet isn't a member, or asks for a
+signature you already gave, because it stopped reading.
+
+**Missing is not unreadable.** A transaction without a proposal account is skipped. A
+proposal account that exists but isn't the program's, or doesn't parse, stops the round
+with *Can't read proposal #n*, and the screen keeps what the last good round read (the
+seconds since then count up). It is never shown as "No open proposals".
 
 Account data comes back as base64, which the app decodes itself, and every field is
 checked before use: an answer that doesn't parse is shown as an error, not trusted.
@@ -50,5 +67,5 @@ checked before use: an answer that doesn't parse is shown as an error, not trust
 **Trust.** What the badge shows is what one RPC node says. Use it as a nudge to go and
 look, and read the transaction where you sign it.
 
-Reference: [`crypto` and `solana`](../../LUA_API.md#crypto-and-solana-always-allowed-the-release-after-solana-os-100),
+Reference: [`crypto` and `solana`](../../LUA_API.md#crypto-and-solana-always-allowed-solana-os-210),
 [`rpc`](../../LUA_API.md#rpc-permission-rpc-solana-os-052).

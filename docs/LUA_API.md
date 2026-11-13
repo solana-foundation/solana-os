@@ -126,7 +126,7 @@ HOME always returns to the launcher. The screen below the status bar is
 |---|---|
 | Memory | 6 MB of Lua heap, in the badge's 8 MB of PSRAM (Solana OS 2.0.0). Past it the app stops with "Out of memory: the app needs more than 6 MB". The badge keeps 512 KB of PSRAM for itself while an app runs, and the allocator's own overhead (up to about a quarter for very many small tables or strings) comes out of the rest, so an app made of millions of tiny objects can be stopped a little earlier with "The badge is low on memory". The app's UI objects, label text and 12 KB task stack are in the badge's other memory, capped by the rows below, not in the 6 MB, and Bluetooth no longer shrinks it. `sys.memory()` tells an app where it stands. Badges below 2.0.0 (until they update) give 96 KB (48 KB below 0.5.13), shared with Wi-Fi, TLS and Bluetooth: there an app with 60 labels gets about 80 KB with Wi-Fi joined, about 49 KB with Bluetooth on as well. A store app's compiled code runs from flash and mostly isn't in it; a library function takes a few bytes once the app first uses it. A big heap is a slower one: PSRAM is slower than the chip's own memory, and the collector walks everything an app keeps, so a few MB of live tables can pause a callback noticeably |
 | CPU | 200 000 VM instructions per callback, coroutines and pattern matching included (else "Script took too long") |
-| UI objects | 128 at a time (64 below 2.0.0), one of them a QR code. They live in the badge's SRAM, not the Lua heap: a call that makes one (`ui.label`, `ui.list`, `ui.image`, …) raises "ui.list: the badge is low on memory" (with its own name) when it would leave the badge less than 32 KB, a catchable error (2.0.1). A `ui.list` costs about 12 KB of it, a label about 250 bytes |
+| UI objects | 128 at a time (64 below 2.0.0), one of them a QR code. They live in the badge's SRAM, not the Lua heap: a call that makes one (`ui.label`, `ui.list`, `ui.image`, …) raises "ui.list: the badge is low on memory" (with its own name) when it would leave the badge less than 32 KB, a catchable error (2.0.1). So does a call that makes what they hold grow (2.1.0): `label:text` with longer text, `ui.hint`, `ui.toast`, `qr:text`, and `ui.confirm` and `ui.input` for their text. The 32 KB are SRAM that the badge can still allocate, not counting the 32 KB set aside for DMA (2.0.1 counted those, so its check left the badge almost nothing), and each list, the keyboard and the first image keep a little more for what they redraw on their own (a list's rows, about 1.3 KB). A `ui.list` costs about 12 KB of it, a label about 250 bytes. Measured on 2.1.0 with Wi-Fi off: 60 labels and six lists, or 128 labels; Wi-Fi joined and Bluetooth on leave less |
 | Images | 2 bytes per pixel of the app's heap (a 48 × 48 PNG: 4.5 KB); up to 1024 pixels a side, shown at up to 16×. The first `ui.anim` reserves 13 KB more for decoding |
 | Text | 200 bytes per label (longer text ends in "..."), 12 KB of label text on screen (6 KB below 2.0.0) |
 | Timers | 8 at a time, ≥ 20 ms |
@@ -1524,9 +1524,14 @@ is its 32 bytes, and `solana.encode` turns it into the text `rpc` and people rea
   address. Anything but 32 bytes is `false`.
 - **`crypto.verify(key, message, signature)`** checks an Ed25519 signature: a
   transaction's (the message is the transaction's message bytes) or the one a wallet makes
-  for `signMessage`. It is `false` for a signature that doesn't match, a key or a
-  signature of the wrong length, and a signature whose second half isn't below the
-  curve's group order. It says that the holder of `key` signed `message`, so the key has to
+  for `signMessage`. It checks what Solana checks of a transaction's signature
+  (ed25519-dalek's `verify_strict`, 2.1.0): it is `false` for a signature that doesn't
+  match, a key or a signature of the wrong length, a signature whose second half isn't
+  below the curve's group order, and a key or a signature's first half (`R`) that is one
+  of the curve's eight points of small order, in any encoding. Such a key belongs to no
+  one: with the neutral point (`"\1" .. string.rep("\0", 31)`) as the key, a made-up
+  signature would otherwise "verify" every message. `crypto.on_curve` still says `true`
+  for those points, since they are on the curve. It says that the holder of `key` signed `message`, so the key has to
   come from somewhere you trust: your server's public key can ship in `main.lua` (a public
   key is no secret), and then a badge can check a statement your server signed after
   another badge handed it over the mesh or Bluetooth, with Wi-Fi off.
@@ -1552,12 +1557,15 @@ instructions by the time it takes:
 | `crypto.sha256` | 50, plus 1 per 4 bytes |
 | `crypto.on_curve` | 5 000 |
 | `crypto.verify` | 40 000, plus 1 per 2 bytes of message |
-| `solana.pda` | 10 000 |
+| `solana.pda` | 5 000 for each bump it tries (two on average), charged before trying it |
 | `solana.encode`, `solana.decode` | 20, plus n × n / 16 for n bytes or characters (84 for an address) |
 
 So one callback fits four signature checks, or about nineteen addresses: do more over
-several timers or ticks. Measured on a badge (2.1.0): a signature check takes 52 ms, an
-on-curve test 4.7 ms and an address 7 ms, and the screen doesn't redraw during a callback: check signatures one at a
+several timers or ticks. An address whose search tries many bumps costs that many times
+5 000 (seeds that need many can be found ahead of time): past the callback's budget the
+search stops with "Script took too long", like a loop would, and about 40 tries fit one
+callback (~0.2 s on a badge). Measured on a badge (2.1.0): a signature check takes 57 ms, an
+on-curve test 4.7 ms, an address 7 ms (4.8 ms a bump tried), and the screen doesn't redraw during a callback: check signatures one at a
 time, not in a loop. None of them takes any of the app's heap beyond the strings they
 return.
 

@@ -64,6 +64,60 @@ site changes that came with them live in the parent repository.
   `rpc`, finds its newest proposals with `solana.pda` and blinks when one waits for the
   wallet linked at `/profile`. Run only against a made-up multisig with `rpc` stubbed, not
   on a badge or in the emulator.
+- **Fixes from the review of this release** (Greptile on solana-os#17):
+  - **`crypto.verify` refuses small-order keys and R** (`ed25519_verify`, security). With the
+    neutral point as the key (`"\1"` and 31 zero bytes) and the neutral point as R with
+    s = 0, every message "verified": no private key needed, and the other seven
+    small-order points forge one message in eight. It now checks what Solana checks of a
+    transaction's signature (ed25519-dalek's `verify_strict`): s below the group order
+    (as before), and neither the key nor R of small order, in any encoding (`8P` is the
+    neutral point). R is still compared byte for byte with the canonical encoding of
+    s*B - h*A, so the few non-canonical R encodings `verify_strict` takes are refused;
+    no signer makes them. `crypto.on_curve` is unchanged: those points are on the curve,
+    and a program-derived address test mustn't change. Tests: `tests/t-crypto` has six
+    new negative vectors (all returned `true` on the build before), and
+    `tests/crypto/ed25519_test.py` checks the C code on the host against a Python
+    reference: RFC 8032, 200 random signatures, every small-order point and six
+    non-canonical encodings as key and as R, and an R of small order with a real key's
+    s = h*a (1 053 cases; 47 failed before). Measured on a badge: 57.5 ms a signature
+    (52 before); the 40 000-instruction charge stays.
+  - **`solana.pda` pays per bump** (`lua_crypto.c`): 5 000 instructions for each bump
+    tried, charged before trying it, where it charged 10 000 for the whole search. Seeds
+    that need many tries can be found ahead of time: on the build before, ten calls with
+    seeds needing 18 ran 180 hashes and curve tests in one callback, 854 ms under the
+    LVGL lock, for 100 000 of its 200 000 instructions. Now about 40 tries fit a callback
+    (4.8 ms each on a badge: ~0.2 s), then "Script took too long" stops the search, with
+    nothing half done. `tests/t-pda`.
+  - **Setters can't take the badge's SRAM** (`lua_ui.c`). 2.0.1 checked SRAM only when an
+    object was made, so an app could make empty labels and lists until the check refused,
+    then fill them: `label:text`, a list's rows, `ui.hint`, `ui.toast` and `qr:text` grew
+    SRAM unchecked. They all ask `lh_ui_room` now, as do `ui.hint`'s bar (made without a
+    check before), `ui.confirm`'s and `ui.input`'s text and `ui.qr`'s two scratch buffers;
+    an app sees the same catchable "label:text: the badge is low on memory" as when it
+    makes an object. What a list, the keyboard or an image can grow by on its own (rows
+    redrawn on a key: 1.3 KB a list) is kept free by every check. And the check measures
+    SRAM that malloc can still take (`OS_MEM_SRAM_MALLOC`): `OS_MEM_SRAM` also counts the
+    32 KB pool `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` keeps for DMA, which malloc never
+    uses, so 2.0.1's 32 KB floor was mostly that pool. `tests/t-uiset` (60 empty labels,
+    lists and rects until refused, then the fills), measured on a prototype with Wi-Fi
+    off: before, every fill went through and the SRAM malloc could take fell to 92 bytes
+    (small allocations then go to PSRAM); now the fills are refused and it stays at
+    40 KB or more. The console's `heap` adds a `sram:` line with that figure. An app gets
+    about 32 KB less UI than 2.0.1 allowed (60 labels and six lists with Wi-Fi off). The
+    emulator's SRAM is its whole wasm heap, so it refuses nothing there, as for making
+    objects.
+  - **Server calls' bodies in PSRAM** (`lua_json.c`): the JSON encoder's buffer (16
+    queued calls of up to 4 KB each, `storage`, mesh messages, meets) is allocated in
+    PSRAM when there is some, so a full queue no longer holds 64 KB of SRAM.
+  - **Squads pager**: it read 1 500 bytes of the multisig and took the members that fit for
+    all of them, so a wallet among the last of a big multisig was "not a member" and got
+    no alerts; it read 420 bytes of each proposal and, past 10 approvals, could ask for a
+    signature already given; and a proposal account that existed but didn't parse counted
+    as no proposal ("No open proposals"). Lists are now read whole (2 400 bytes a call, at
+    most three more: about 260 members or votes, else "Too many members to read"); a
+    proposal that exists but can't be read stops the round with "Can't read proposal #n",
+    and that stays on screen. `test.lua` runs it on a computer against mocked RPC answers
+    (9 cases; 6 failed before). Still not run on a badge or in the emulator.
 
 ## 2.0.1 (2026-11-13)
 
