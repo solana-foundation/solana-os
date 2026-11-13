@@ -310,9 +310,50 @@ led.set(i, r, g, b)         -- 0..255 each; the OS scales to its brightness cap
 led.hex(i, 0x9945FF)
 led.fill(r, g, b)
 led.off()
+led.keep(scene)             -- keep a scene running after the app closes (see below)
+led.keep(nil)               -- stop it: the LEDs go dark
+led.kept()                  -- true while a scene is kept
 ```
 
-Changes show at the end of the current callback. LEDs turn off when the app exits.
+Changes show at the end of the current callback. LEDs turn off when the app exits, unless
+the app keeps a scene.
+
+#### Keeping a scene after the app closes
+
+`led.keep` hands the badge a light scene that it keeps running on its own once the app has
+closed, through other apps and after a restart, until an app keeps another one or calls
+`led.keep(nil)` (or `glow off` on the console). An app usually calls it from `on_exit`. Solana
+OS before it has no `led.keep`: check `if led.keep then`.
+
+```lua
+led.keep({
+  mode = "all",             -- "all": `all` runs across the strip; "each": `leds`, one per LED
+  bright = 60,              -- 1..100 % of the badge's LED brightness cap (default 100)
+  all = {fx = "wave", c1 = 0x9945FF, c2 = 0x14F195, speed = 4},
+  -- mode = "each": leds = { {fx = "breathe", c1 = 0xFF0000, speed = 3}, ... }  (8 tables)
+})
+```
+
+Each `{fx, c1, c2, speed}`: `c1` and `c2` are `0xRRGGBB` (default black), `speed` 1..10
+(default 5; one cycle takes 6000 / speed ms). Effects, with the colours they use:
+
+| `fx` | | `fx` | |
+|---|---|---|---|
+| `solid` | c1 | `rainbow`* | a rainbow moving along the strip |
+| `breathe` | c1 fading in and out | `gradient`* | c1 to c2 along the strip |
+| `blink` | c1 then c2, half a cycle each | `wave`* | c1 waves over c2 |
+| `strobe` | a short c1 flash, then c2 | `comet`* | a c1 comet with a tail, over c2 |
+| `fade` | c1 to c2 and back | `scanner`* | a c1 dot bouncing end to end, over c2 |
+| `hue` | cycles through every colour | `theater`* | every third LED c1, marching, over c2 |
+| `twinkle` | random c1 sparkles over c2 | `police`* | the left half flashes c1, the right half c2 |
+| `candle` | c1 flickering like a flame | `off` | dark |
+
+\* runs across the strip, so only with `mode = "all"`; with `"each"` it is an error. A bad
+scene raises an error and leaves the kept one as it was. While an app with the `led`
+permission is open the scene pauses and the app has the LEDs; it also pauses for the game's
+LED flashes and HW Debug, and carries on after them. Any app with the `led` permission can
+replace or stop the scene. The OS draws it every 30 ms at the badge's LED brightness cap
+times `bright`; each call writes the badge's flash, so keep it to `on_exit` or a user's choice.
 
 ### `timer`
 

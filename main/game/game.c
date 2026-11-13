@@ -10,6 +10,7 @@
 #include "core/os.h"
 #include "core/os_cloud.h"
 #include "core/os_data.h"
+#include "core/os_glow.h"
 #include "core/ui.h"
 #include "game.h"
 #include "beacon.h"
@@ -401,6 +402,7 @@ static void led_frame(void *arg)
     if (f >= s_led_frames) {
         bsp_rgb_fill(0, 0, 0);
         bsp_rgb_show();
+        os_glow_hold(OS_GLOW_HOLD_FLASH, false);
         return;
     }
     if (s_led_sweep) {
@@ -428,6 +430,7 @@ static void led_start(bool sweep, uint32_t rgb, int frames)
         }
     }
     esp_timer_stop(s_led_timer);
+    os_glow_hold(OS_GLOW_HOLD_FLASH, true);     // the glow, if any, resumes when the flash ends
     s_led_sweep = sweep;
     s_led_rgb = rgb;
     s_led_frame = 0;

@@ -6,6 +6,21 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## Unreleased
+
+- **LED scenes that outlast the app** (`led.keep`, `docs/LUA_API.md` "Keeping a scene after
+  the app closes"). An app with the `led` permission hands the badge a scene, one effect
+  across the strip or one per LED, with two colours, a speed and a brightness, and
+  `core/os_glow.c` keeps drawing it every 30 ms on an esp_timer after the app closes,
+  through other apps and restarts (NVS namespace `glow`). 16 effects: `solid`, `breathe`,
+  `blink`, `strobe`, `fade`, `hue`, `twinkle`, `candle`, and across the strip `rainbow`,
+  `gradient`, `wave`, `comet`, `scanner`, `theater`, `police`, plus `off`. `led.kept()` says
+  whether one runs; `glow`, `glow on` and `glow off` on the console show, restart and stop it.
+- Whatever else drives the LEDs holds the scene while it does (`os_glow_hold`): a Lua app
+  with the `led` permission from launch to close (`lua/lua_host.c`; an app without it no
+  longer turns the LEDs off when it closes), `game_led_flash` and `game_led_sweep`, and
+  HW Debug. The scene picks up where its clock is when the hold ends.
+
 ## 2.1.0 (2026-11-13)
 
 - **A faster screen.** Measured on a prototype badge:

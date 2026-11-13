@@ -37,6 +37,7 @@
 #include "core/os_api.h"
 #include "core/os_cloud.h"
 #include "core/os_data.h"
+#include "core/os_glow.h"
 #include "core/os_http.h"
 #include "core/os_mem.h"
 #include "vendor/lualib.h"
@@ -306,7 +307,9 @@ static void fail(lh_t *s, int rc, const char *msg_in)
     s->killed = false;
     lua_sethook(L, step_hook, LUA_MASKCOUNT, LH_HOOK_EVERY);
     close_state(s);
-    lh_led_off();
+    if (s->pkg.perms & LUA_PERM_LED) {
+        lh_led_off();                       // an app without it never lit them: leave the glow alone
+    }
 }
 
 bool lh_callback(lh_t *s, lua_CFunction fn, void *arg)
@@ -621,6 +624,9 @@ static void task_end(lh_t *s)
     xSemaphoreGive(lh_mx);
     if (orphan) {
         // The OS gave up waiting and left the session to us.
+        if (s->pkg.perms & LUA_PERM_LED) {
+            os_glow_hold(OS_GLOW_HOLD_APP, false);  // host_exit left the LEDs held for us
+        }
         lh_calls_free(s);
         free(s);
     } else {
@@ -781,6 +787,9 @@ static void host_enter(lv_obj_t *root)
     if (pkg.perms & LUA_PERM_MESH) {
         lh_mesh_start(s);
     }
+    if (pkg.perms & LUA_PERM_LED) {
+        os_glow_hold(OS_GLOW_HOLD_APP, true);  // the app's led.* own the LEDs until it closes
+    }
     if (xTaskCreate(lua_task, "lua", LH_STACK, s, LH_PRIO, &s->task) != pdPASS) {
         xSemaphoreTake(lh_mx, portMAX_DELAY);
         s_busy = false;
@@ -800,6 +809,7 @@ static void host_exit(void)
     if (!s) {
         return;
     }
+    bool led = s->pkg.perms & LUA_PERM_LED;
     s->quit = true;
     lh_ev_t ev = { .kind = LH_EV_QUIT, .gen = s->gen };
     xQueueSendToFront(s_q, &ev, pdMS_TO_TICKS(50));
@@ -819,7 +829,12 @@ static void host_exit(void)
         lh_calls_free(s);
         free(s);
     }
-    lh_led_off();
+    if (led) {
+        lh_led_off();
+        if (done) {
+            os_glow_hold(OS_GLOW_HOLD_APP, false);  // a scene the app kept (led.keep) runs from here
+        }                                           // else task_end releases it once the app stops
+    }
 }
 
 static bool host_key(os_key_t key, bool repeat)
@@ -898,6 +913,7 @@ void lua_host_init(void)
     s_q = xQueueCreate(LH_QUEUE_LEN, sizeof(lh_ev_t));
     lua_install_init();
     lh_cmd_register();
+    os_glow_init();                         // after the boot sweep: a kept scene comes back
     if (lvgl_port_lock(0)) {
         lh_img_init();
         lvgl_port_unlock();
