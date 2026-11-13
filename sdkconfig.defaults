@@ -17,7 +17,7 @@ CONFIG_SOLANA_OS_SERVER_URL="https://badge-api.solana.com"
 
 # App metadata shown in About / info
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="2.0.1"
+CONFIG_APP_PROJECT_VER="2.1.0"
 
 # Over-the-air updates (core/os_ota.c): a new build boots on trial and the
 # bootloader goes back to the previous slot unless it confirms itself. This
@@ -134,6 +134,10 @@ CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
+# The LVGL task sleeps in whole 10 ms RTOS ticks, one of them after every pass:
+# the default 33 ms refresh came out as 40 ms (25 fps). 20 ms gives a frame
+# every 30 ms, the Lua host's on_tick period.
+CONFIG_LV_DEF_REFR_PERIOD=20
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y

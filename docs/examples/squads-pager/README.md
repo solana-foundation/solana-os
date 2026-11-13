@@ -8,7 +8,7 @@ threshold in grey. The badge only reads; you sign wherever your key is.
 
 - `main.lua`, `app.json`: the app (permissions `rpc`, `profile`, `led`). No server and no
   hosts: every read goes through `rpc`.
-- It needs the `solana` module (`solana.pda`, the release after Solana OS 1.0.0) and says
+- It needs the `solana` module (`solana.pda`, Solana OS 2.1.0) and says
   so on a badge that doesn't have it.
 - Squads v4 multisigs and smart accounts both work: the app tells them apart by the
   program that owns the account.

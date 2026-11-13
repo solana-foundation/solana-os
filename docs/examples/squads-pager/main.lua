@@ -6,8 +6,8 @@
 -- vote on, or one that is approved and that you may execute, blinks the LEDs.
 -- Signing stays where your key is: the badge only reads.
 --
--- Permissions "rpc", "profile", "led". Needs the solana module (the release
--- after Solana OS 1.0.0). Works for Squads v4 multisigs and smart accounts.
+-- Permissions "rpc", "profile", "led". Needs the solana module (Solana OS
+-- 2.1.0). Works for Squads v4 multisigs and smart accounts.
 --
 -- Which multisig: the address you typed on the badge (kept in storage), else
 -- the first word of a bundled multisig.txt, else the app asks.

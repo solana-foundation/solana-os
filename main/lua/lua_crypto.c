@@ -18,15 +18,15 @@
 #define PDA_SEEDS_MAX       15                  // Solana's 16, less the bump
 #define PDA_SEED_MAX        32
 
-// What each call costs of the 200 000 a callback gets. Not yet timed on a
-// badge: they come from the instructions an ESP32-C5 build of core/ed25519.c
-// runs for each (counted in QEMU: 1.04 million for the on-curve test, 11.5
-// million for a signature), at one or two cycles each on a 240 MHz core, so
-// that a callback of nothing but these stays within about half a second.
-#define STEPS_HASH          50                  // crypto.sha256, plus 1 per 4 bytes
-#define STEPS_CURVE         5000                // crypto.on_curve: 4 to 9 ms
-#define STEPS_VERIFY        40000               // crypto.verify: 50 to 100 ms, plus 1 per 2 bytes of message
-#define STEPS_PDA           10000               // solana.pda, however many bumps it tries (2 on average)
+// What each call costs of the 200 000 a callback gets, sized so that a
+// callback of nothing but these stays within about half a second. Timed on a
+// badge (2.1.0; its Lua runs ~3 000 VM instructions a ms): 4.7 ms for the
+// on-curve test, 52 ms for a signature, 7.3 ms for an address (~2 bumps), so
+// the worst such callback is 5 signature checks, ~260 ms.
+#define STEPS_HASH          50                  // crypto.sha256, plus 1 per 4 bytes (4 KB: 1.6 ms)
+#define STEPS_CURVE         5000                // crypto.on_curve: 4.7 ms
+#define STEPS_VERIFY        40000               // crypto.verify: 52 ms, plus 1 per 2 bytes of message
+#define STEPS_PDA           10000               // solana.pda, however many bumps it tries (2 on average): 7.3 ms
 #define STEPS_B58           20                  // solana.encode / decode, plus n * n / 16
 
 static int l_sha256(lua_State *L)

@@ -5,7 +5,7 @@
 //             flash (lua_code.c), else main.lua compiled from the card;
 //             then open the sandboxed libraries (no lock)
 //   run       lock LVGL, run the chunk, then loop: keys, API answers, mesh
-//             messages, timers and the 50 ms on_tick, each a callback under
+//             messages, timers and the 30 ms on_tick, each a callback under
 //             the lock with its own instruction budget
 //   shutdown  the OS closes the app (HOME, CANCEL, sys.exit): on_exit runs
 //             without the lock (UI calls do nothing then), storage is

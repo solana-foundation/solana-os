@@ -6,8 +6,35 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
-## Unreleased
+## 2.1.0 (2026-11-13)
 
+- **A faster screen.** Measured on a prototype badge:
+  - The LCD's pixel clock is 40 MHz (`BOARD_LCD_PCLK_HZ`, 20 before): redrawing the whole
+    app area every tick went from 15 fps (64 ms a frame) to 25 fps (35 ms). The card keeps
+    its own 20 MHz on the same bus.
+  - Lua's `on_tick` runs every 30 ms (`LH_TICK_MS`, 50 before) and LVGL refreshes every
+    20 ms (`CONFIG_LV_DEF_REFR_PERIOD`, 33 before): the LVGL task sleeps in whole 10 ms
+    RTOS ticks plus one, so 33 ms came out as 40. A store game that moves from `on_tick`
+    (Cube Shift): at most 20 fps before, 21 to 25 with the clock and the tick, 28 to 31
+    with the refresh period too.
+  - Dirty areas: LVGL's list holds 256 (`LV_INV_BUF_SIZE`, a compile definition in
+    `CMakeLists.txt`; 32 by default, which made LVGL redraw the whole screen once 17
+    sprites moved), and `merge_dirty()` in `bsp_display.c` merges nearby ones (each area
+    costs ~1 ms with 120 objects on screen, 0.2 ms of it the panel's window commands).
+    With 120 objects on screen and sprites in rows, a frame went from 10.9 to 2.8 ms with
+    8 moving, 46 to 4.5 ms with 20, 47 to 9 ms with 40 (19 to 30 fps), 50 to 18 ms with 80
+    (17 to 28 fps), 52 to 31 ms with 120 (16 to 20 fps); scattered sprites now take 13.5,
+    23.5, 37 and 51 ms for 20, 40, 80 and 120. Cube Shift: 30 to 32 fps, frames of 8 to
+    12 ms, no full-redraw spikes. The emulator keeps LVGL's 32 entries
+    (`bsp_display.c` is the badge's). Costs 3.8 KB of SRAM: the launcher has ~151.5 KB
+    free (2.0.1: ~155 KB).
+  - Tried and dropped: LVGL built with `-O2` (106 KB more flash, no measurable gain); the
+    longer list without merging (80 and 120 sprites got slower: 98 and 149 ms).
+  - Not verified: a production panel at 40 MHz (measured on one prototype, colour
+    inversion off), how the physical screen looks (screenshots come from LVGL's memory,
+    not the panel), battery power. An app that counts ticks instead of using `ms` runs
+    1.67 times faster; every app the server seeds uses `ms`.
+  - HW Debug > Display shows the clock the build uses.
 - **`crypto` and `solana` for Lua apps** (no permission; `docs/LUA_API.md` "crypto and
   solana"). `crypto.sha256`, `crypto.on_curve` (is this a point of the Ed25519 curve) and
   `crypto.verify` (an Ed25519 signature); `solana.encode` and `solana.decode` (base58, up
@@ -25,11 +52,17 @@ site changes that came with them live in the parent repository.
   unused; the deepest call, a signature check, takes about 1.7 KB of the Lua task's stack.
   Counted in QEMU on the ESP32-C5 build of `ed25519.c` (`-Os`): 1.04 million instructions
   for the on-curve test and 11.5 million for a signature, so about 4 to 9 ms and 50 to
-  100 ms at 240 MHz. **Not yet run on a badge**: the instruction charges in
-  `lua_crypto.c` (5 000, 40 000 and 10 000 of a callback's 200 000) come from those
-  counts and want checking against a badge's clock, and `tests/t-crypto` has only run
-  against this firmware's Lua on a computer. The emulator build compiles these files but
-  wasn't built for this change.
+  100 ms at 240 MHz. **Measured on a badge** (a prototype, `tests/t-crypto`: every check
+  passes): `crypto.verify` 52 ms (51.4 to 53.8, a good signature or a bad one alike),
+  `crypto.on_curve` 4.7 ms, `solana.pda` 7.3 ms (with ~2 bumps), `crypto.sha256` of 4 KB
+  1.6 ms; the badge's Lua runs about 3 000 VM instructions a millisecond. The instruction
+  charges in `lua_crypto.c` (5 000, 40 000 and 10 000 of a callback's 200 000) stay: a
+  callback of nothing but one of them takes at most ~260 ms (5 signature checks), within
+  the half second they were sized for. The emulator builds them (`bun run firmware`).
+- **Example: Squads pager** (`docs/examples/squads-pager`): reads one Squads multisig over
+  `rpc`, finds its newest proposals with `solana.pda` and blinks when one waits for the
+  wallet linked at `/profile`. Run only against a made-up multisig with `rpc` stubbed, not
+  on a badge or in the emulator.
 
 ## 2.0.1 (2026-11-13)
 

@@ -101,8 +101,8 @@ calls these globals if you define them:
 function on_key(key, rep)    -- "up" "down" "left" "right" "select" "back"; rep = auto-repeat
   return true                -- handled. Returning false/nil for "back" exits the app.
 end
-function on_tick(ms)         -- every 50 ms, ms = time since the last tick
-end
+function on_tick(ms)         -- every 30 ms (50 ms before 2.1.0): move things by ms,
+end                          -- the time since the last tick, never by counting ticks
 function on_mesh(from, msg)  -- a message from the same app on another badge (needs "mesh")
 end
 function on_meet(from, data) -- another badge asks for a signed meet (needs "mesh", 0.5.15):
@@ -299,7 +299,7 @@ dance:scale(3)  dance:pos(x, y)  dance:show(b)  dance:remove()
 - **Drawing** off the canvas is clipped, not an error. Every pixel written costs
   instructions (1 per 16), so redrawing a whole 80 × 54 canvas each `on_tick` is
   fine; the canvas redraws on screen after the callback. Images and canvases are UI
-  objects (the 64), drawn in the order made, so a label made after a canvas sits on
+  objects (the 128), drawn in the order made, so a label made after a canvas sits on
   top of it. So are animations.
 
 ### `led` (permission `led`)
@@ -1498,12 +1498,12 @@ function on_key(k)
 end
 ```
 
-### `crypto` and `solana` (always allowed, the release after Solana OS 1.0.0)
+### `crypto` and `solana` (always allowed, Solana OS 2.1.0)
 
 SHA-256, the two Ed25519 checks that need no key, base58 and program-derived addresses,
 done by the badge itself: in Lua they would take most of a callback's instructions, or
 more. No permission is needed, since nothing here leaves the badge. Both tables are `nil`
-on Solana OS 1.0.0 and earlier: check `if crypto then`.
+below Solana OS 2.1.0: check `if crypto then`.
 
 ```lua
 crypto.sha256(data)                     -- the 32 bytes of data's SHA-256
@@ -1556,9 +1556,8 @@ instructions by the time it takes:
 | `solana.encode`, `solana.decode` | 20, plus n × n / 16 for n bytes or characters (84 for an address) |
 
 So one callback fits four signature checks, or about nineteen addresses: do more over
-several timers or ticks. A signature check is estimated at 50 to 100 ms and an on-curve
-test or an address at 4 to 20 ms (from the instructions a badge build runs, not yet timed
-on a badge), and the screen doesn't redraw during a callback: check signatures one at a
+several timers or ticks. Measured on a badge (2.1.0): a signature check takes 52 ms, an
+on-curve test 4.7 ms and an address 7 ms, and the screen doesn't redraw during a callback: check signatures one at a
 time, not in a loop. None of them takes any of the app's heap beyond the strings they
 return.
 

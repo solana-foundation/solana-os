@@ -468,7 +468,8 @@ static void build_display(lv_obj_t *p)
         int v = i * 255 / 7;
         lv_obj_set_style_bg_color(g, lv_color_make(v, v, v), 0);
     }
-    lv_obj_t *info = ui_label(p, &sol_mono_12, COL_DIM, "ILI9341 320x240  SPI2 @20 MHz  CS=6 DC=7 BL=3");
+    lv_obj_t *info = ui_label(p, &sol_mono_12, COL_DIM, "");
+    lv_label_set_text_fmt(info, "ILI9341 320x240  SPI2 @%d MHz  CS=6 DC=7 BL=3", BOARD_LCD_PCLK_HZ / 1000000);
     lv_obj_set_pos(info, 8, 122);
     s_led_label = ui_label(p, &sol_font_14, COL_TEXT, "");
     lv_obj_set_pos(s_led_label, 8, 142);

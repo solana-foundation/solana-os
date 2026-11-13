@@ -39,7 +39,7 @@
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
 #define LH_TIMER_MAX        8
 #define LH_TIMER_MIN_MS     20
-#define LH_TICK_MS          50          // on_tick period
+#define LH_TICK_MS          30          // on_tick period (50 before; whole 10 ms RTOS ticks)
 #define LH_STORAGE_MAX      (16 * 1024) // data.json
 #define LH_STORAGE_SAVE_MS  1000        // storage.set writes at most this often
 #define LH_MESH_PER_S       4
