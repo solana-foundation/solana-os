@@ -5,7 +5,9 @@
 -- would see: a small multisig, one whose members don't fit the first read
 -- (the linked wallet last), one too big to read, proposals that are missing,
 -- one that exists but is garbage, one owned by another program, and one with
--- more approvals than the first read holds.
+-- more approvals than the first read holds; a vote that lands between two
+-- pieces of one read; and a big multisig polled for minutes against the
+-- network's 30 calls a minute.
 
 local B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 local function b58(b)
@@ -87,8 +89,12 @@ local ALL = 7                   -- initiate, vote, execute
 -- ---------------------------------------------------------------------------
 -- One run of the app against `accounts` (address -> {owner, data})
 
-local function run(name, accounts, checks, later)
-  local shown = {note = "", title = "", items = {}, toasts = {}}
+-- opts: on_call(nth, accounts) runs before the nth call is answered (the
+-- chain moves on meanwhile); rounds = more 20 s polls to run; same_slot = every
+-- answer comes from one slot (else each call is a later one).
+local function run(name, accounts, checks, later, opts)
+  opts = opts or {}
+  local shown = {note = "", title = "", items = {}, toasts = {}, notes = {}, refused = 0}
   local calls, queue = {}, {}
   local timers, leds = {}, {}
   local env = setmetatable({}, {__index = _G})
@@ -98,7 +104,9 @@ local function run(name, accounts, checks, later)
     input = function() end,
     label = function(_, y, _, _)
       local l = {}
-      function l:text(t) if y == 24 then shown.note = t elseif y == 4 then shown.title = t end end
+      function l:text(t)
+        if y == 24 then shown.note = t shown.notes[#shown.notes + 1] = t elseif y == 4 then shown.title = t end
+      end
       return l
     end,
     list = function(_, _, _, _, items)
@@ -108,15 +116,26 @@ local function run(name, accounts, checks, later)
   }
   env.storage = {get = function() return nil end, set = function() end}
   env.fs = {exists = function(f) return f == "multisig.txt" end, read = function() return MULTISIG end}
-  env.timer = {every = function(ms, f) timers[#timers + 1] = {ms = ms, f = f} end, after = function() end}
-  env.led = {count = 8, set = function(i, r, g, b) leds[i] = {r, g, b} end}
   local now = 0
+  local once = {}
+  env.timer = {every = function(ms, f) timers[#timers + 1] = {ms = ms, f = f} end,
+               after = function(ms, f) once[#once + 1] = {at = now + ms, f = f} return #once end}
+  env.led = {count = 8, set = function(i, r, g, b) leds[i] = {r, g, b} end}
   env.sys = {millis = function() return now end}
   env.profile = {me = function(cb) cb(true, {solana = b58(ME)}) end}
   env.solana = {encode = b58, decode = unb58, pda = pda}
-  env.rpc = {call = function(method, params, opts, cb)
-    calls[#calls + 1] = {method = method, params = params}
+  env.rpc = {call = function(method, params, _, cb)
+    calls[#calls + 1] = {method = method, params = params, at = now}
+    local nth, recent = #calls, 0
+    for _, c in ipairs(calls) do recent = recent + ((not c.refused and now - c.at < 60000) and 1 or 0) end
+    if recent > 30 then                  -- the server's limit: 30 calls a minute a badge
+      calls[nth].refused = true
+      shown.refused = shown.refused + 1
+      queue[#queue + 1] = function() cb(false, "too fast") end
+      return
+    end
     queue[#queue + 1] = function()
+      if opts.on_call then opts.on_call(nth, accounts) end
       local slice = params[2].dataSlice
       local function one(addr)
         local a = accounts[addr]
@@ -137,7 +156,7 @@ local function run(name, accounts, checks, later)
       end
       assert(size + 120 * (method == "getAccountInfo" and 1 or #params[1]) <= 3900,
              name .. ": an answer over 3900 bytes (" .. size .. " of base64)")
-      cb(true, {value = value})
+      cb(true, {context = {slot = opts.same_slot and 1000 or 1000 + nth}, value = value})
     end
   end}
   local chunk = assert(loadfile("main.lua", "t", env))
@@ -145,6 +164,9 @@ local function run(name, accounts, checks, later)
   local function settle()
     for _ = 1, 400 do              -- ticks and answers, one by one, until nothing is left to do
       now = now + 30
+      for _, t in ipairs(once) do
+        if t.f and now >= t.at then local f = t.f t.f = nil f() end
+      end
       if env.on_tick then env.on_tick() end
       local q = table.remove(queue, 1)
       if q then q() end
@@ -155,6 +177,19 @@ local function run(name, accounts, checks, later)
   if later then                    -- the accounts change, and the next round reads them
     later(accounts)
     now = now + 20000
+    fire(20000)
+    settle()
+  end
+  for _ = 1, opts.rounds or 0 do    -- the poll timer, every 20 s, and what timer.after set meanwhile
+    for _ = 1, (20000 - 400 * 30) // 30 do
+      now = now + 30
+      for _, t in ipairs(once) do
+        if t.f and now >= t.at then local f = t.f t.f = nil f() end
+      end
+      if env.on_tick then env.on_tick() end
+      local q = table.remove(queue, 1)
+      if q then q() end
+    end
     fire(20000)
     settle()
   end
@@ -212,7 +247,8 @@ case("120 members, me last", {
   assert(shown.note:find("you are a member"), "member: " .. shown.note)
   has_row(shown, "#2  Active", "SIGN")
   assert(shown.alarm, "LEDs not blinking")
-  assert(count(calls, "getAccountInfo") == 3, count(calls, "getAccountInfo") .. " multisig reads")
+  -- its first bytes, two more pieces, and the first bytes again (the pieces came from different slots)
+  assert(count(calls, "getAccountInfo") == 4, count(calls, "getAccountInfo") .. " multisig reads")
 end)
 
 -- 300 members: more than four reads hold. An error, never a partial list.
@@ -285,6 +321,56 @@ case("15 approvals, mine 14th", {
   assert(row.sub == "15 of 16 approved, 1 rejected", row.sub)
   assert(not shown.alarm, "asked me to sign again")
 end)
+
+-- A vote lands between the two pieces of one proposal's read: the count read
+-- first (11) no longer describes the bytes read next. The pieces are thrown
+-- away and the proposal is read again as it is now (12 approvals, mine among
+-- them): never "can't read", never a wallet's bytes taken for a count.
+local eleven, twelve = {}, {}
+for i = 1, 11 do eleven[i] = member(i) end
+for i = 1, 11 do twelve[i] = member(i) end
+twelve[12] = ME
+local function moving()
+  return {on_call = function(nth, accounts)
+    -- call 1 reads the multisig, 2 the proposals' first bytes, 3 the rest of #1: the vote lands before 3's answer
+    if nth == 3 then accounts[proposal_address(1)] = owned(proposal(1, 1, twelve, {member(15)})) end
+  end}
+end
+local function vote_case(name, opts)
+  case(name, {
+    [MULTISIG] = owned(multisig(16, 1, 0, voters)),
+    [proposal_address(1)] = owned(proposal(1, 1, eleven, {member(15)})),
+  }, function(shown)
+    for _, t in ipairs(shown.notes) do assert(not t:find("Can't read"), "note: " .. t) end
+    local row = has_row(shown, "#1  Active", "")
+    assert(row.sub == "12 of 16 approved, 1 rejected", row.sub)
+    assert(not shown.alarm, "asked me to sign what I signed")
+  end, nil, opts)
+end
+vote_case("a vote lands between two pieces of a read", moving())
+
+-- Pieces answered from one slot are one state of the account: no second look
+-- at its first bytes, so no extra call.
+case("pieces from one slot need no second look", {
+  [MULTISIG] = owned(multisig(16, 1, 0, voters)),
+  [proposal_address(1)] = owned(proposal(1, 1, approvers, {member(15)})),
+}, function(shown, calls)
+  has_row(shown, "#1  Active", "")
+  assert(count(calls, "getAccountInfo") == 2, count(calls, "getAccountInfo") .. " getAccountInfo calls")
+end, nil, {same_slot = true})
+
+-- 120 members and eight proposals of 15 approvals each: every round is many
+-- calls. Polled every 20 s for five minutes, the app never runs into the
+-- 30 calls a minute, and still reads a round at least once a minute.
+local busy = {[MULTISIG] = owned(multisig(16, 8, 0, big))}
+for n = 1, 8 do busy[proposal_address(n)] = owned(proposal(1, n, approvers, {})) end
+case("a big multisig stays under 30 calls a minute", busy, function(shown, calls)
+  assert(shown.refused == 0, shown.refused .. " calls refused as too fast")
+  for _, t in ipairs(shown.notes) do assert(not t:find("too fast"), "note: " .. t) end
+  local reads = count(calls, "getMultipleAccounts") / 2          -- two batches a round
+  assert(reads >= 5, "only " .. reads .. " rounds in five minutes")
+  has_row(shown, "#8  Active", "")
+end, nil, {rounds = 15})
 
 print(failed == 0 and "squads-pager: all ok" or ("squads-pager: " .. failed .. " failed"))
 os.exit(failed == 0 and 0 or 1)

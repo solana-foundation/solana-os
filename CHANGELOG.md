@@ -117,7 +117,14 @@ site changes that came with them live in the parent repository.
     most three more: about 260 members or votes, else "Too many members to read"); a
     proposal that exists but can't be read stops the round with "Can't read proposal #n",
     and that stays on screen. `test.lua` runs it on a computer against mocked RPC answers
-    (9 cases; 6 failed before). Still not run on a badge or in the emulator.
+    (9 cases; 6 failed before). From the second review: the extra reads could pass the 30
+    RPC calls a minute a badge gets (a 120-member multisig with eight long proposals: 40
+    calls refused in five minutes), so the app now counts its calls and starts a round
+    only when one as long as the last fits the minute; and pieces of one list read by
+    separate calls could come from two states of the account (a vote landing between
+    them made a valid proposal "can't read"), so pieces not answered from one slot are
+    checked against the account's first bytes and read again if it moved. 12 cases.
+    Still not run on a badge or in the emulator.
 
 ## 2.0.1 (2026-11-13)
 

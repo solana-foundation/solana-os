@@ -12,7 +12,9 @@
 -- Which multisig: the address you typed on the badge (kept in storage), else
 -- the first word of a bundled multisig.txt, else the app asks.
 
-local POLL_MS = 20000           -- 3 RPC calls a round, of the 30 a minute a badge gets
+local POLL_MS = 20000           -- a round is 3 RPC calls for a small multisig, more for a big one
+local RPC_MINUTE = 30           -- the calls a badge gets a minute (LUA_API.md "rpc")
+local RPC_SPARE = 4             -- of them, kept for a SELECT: polling alone never takes these
 local RECENT = 8                -- the newest transactions looked at
 local BATCH = 4                 -- proposals per getMultipleAccounts: the answer must stay under 3.5 KB
 local SLICE = 420               -- bytes read of each proposal: room for 10 approvals
@@ -198,9 +200,12 @@ local function show()
   title:text(short(address) .. "  " .. squad.threshold .. " to approve  " .. cluster)
 end
 
+local cost_of_failed               -- defined below, with the calls it counts
+
 local function fail(text)
   phase = "idle"
   problem = text
+  cost_of_failed()
   round = round + 1                                      -- the rest of this round's answers are dropped
   note:text(text)
 end
@@ -226,6 +231,41 @@ end)
 -- ---------------------------------------------------------------------------
 -- A round: the multisig, the addresses of its newest proposals, the proposals
 
+-- Every call goes through here, so the app knows what it took of the minute's
+-- calls. A round of a big multisig is many calls (the members and each long
+-- proposal are read in pieces), and three such rounds a minute would run into
+-- "too fast" and leave old alerts on the screen: a round waits instead until
+-- one as long as the last fits (wait_s).
+local sent = {}                 -- sys.millis() of each call of the last minute
+local used = 0                  -- calls of the round that is running
+local cost = 3                  -- calls the last round took: what the next one is expected to
+local function call(method, params, cb)
+  sent[#sent + 1] = sys.millis()
+  used = used + 1
+  rpc.call(method, params, {cluster = cluster}, cb)
+end
+
+-- Seconds until a round fits under `limit` calls a minute; 0 when it does now.
+local function wait_s(limit)
+  local now, keep = sys.millis(), {}
+  for _, t in ipairs(sent) do
+    if now - t < 60000 then keep[#keep + 1] = t end
+  end
+  sent = keep
+  local over = #sent + math.min(cost, limit) - limit
+  if over <= 0 then return 0 end
+  return math.max(1, (sent[over] + 60000 - now + 999) // 1000)   -- when the over-th oldest call is a minute old
+end
+
+-- A round that failed got at least this far: the next is expected to as well.
+cost_of_failed = function() cost = math.max(cost, used) end
+
+-- The slot an answer was read at, or nil.
+local function slot_of(r)
+  local c = type(r) == "table" and r.context
+  return type(c) == "table" and c.slot or nil
+end
+
 -- An account's data from rpc, checked: nil when it isn't base64 of the
 -- program's account.
 local function account_data(acc, lay)
@@ -233,23 +273,48 @@ local function account_data(acc, lay)
   return unbase64(acc.data[1])
 end
 
--- Reads on from `data` (the account's first bytes) until read(data, lay)
--- has all it needs, CHUNK bytes a call and at most MORE calls, then calls
--- done(value) or done(nil, why). `why` is "big" when it took too many reads.
-local function more_of(addr, data, read, lay, mine, done)
-  local tries = 0
-  local function step()
+-- Reads on from `head` (the account's first bytes, read at `slot`) until
+-- read(data, lay) has all it needs, CHUNK bytes a call and at most MORE calls,
+-- then calls done(value) or done(nil, why). `why` is "big" when it took too
+-- many reads.
+--
+-- The pieces come from separate requests, and the account may change between
+-- two of them: a vote lands, the list grows, and what follows it moves, so
+-- the count read first no longer describes the bytes read later. Pieces read
+-- at one slot are one state of the account. Otherwise the first bytes (which
+-- hold the counts the rest was read by) are read again at the end: the same
+-- bytes, and the pieces belong together; different, and they are thrown away
+-- and the account is read again from what it is now, once.
+local function more_of(addr, head, slot, read, lay, mine, done)
+  local data, tries, mixed, again = head, 0, false, false
+  local step
+  local function finish(v, why)
+    if not mixed then return done(v, why) end
+    call("getAccountInfo", {addr, {encoding = "base64", commitment = "confirmed",
+      dataSlice = {offset = 0, length = #head}}}, function(ok, r)
+        if mine ~= round then return end
+        if not ok then return done(nil, tostring(r)) end
+        local now = account_data(type(r) == "table" and r.value, lay)
+        if now == head then return done(v, why) end        -- nothing moved under the pieces
+        if again or not now or #now == 0 then return done(nil, "moved") end
+        again, head, slot = true, now, slot_of(r)
+        data, tries, mixed = head, 0, false
+        step()
+      end)
+  end
+  step = function()
     local good, v, need = pcall(read, data, lay)
-    if not good then return done(nil, "bad") end
-    if v then return done(v) end
-    if tries == MORE then return done(nil, "big") end
+    if not good then return finish(nil, "bad") end
+    if v then return finish(v) end
+    if tries == MORE then return finish(nil, "big") end
     tries = tries + 1
-    rpc.call("getAccountInfo", {addr, {encoding = "base64", commitment = "confirmed",
-      dataSlice = {offset = #data, length = math.min(CHUNK, need - #data)}}}, {cluster = cluster}, function(ok, r)
+    call("getAccountInfo", {addr, {encoding = "base64", commitment = "confirmed",
+      dataSlice = {offset = #data, length = CHUNK}}}, function(ok, r)   -- a whole piece: fewer calls than asking for just what's missing
         if mine ~= round then return end
         if not ok then return done(nil, tostring(r)) end
         local more = account_data(type(r) == "table" and r.value, lay)
-        if not more or #more == 0 then return done(nil, "bad") end   -- gone, or shorter than its own lists
+        if not more or #more == 0 then return finish(nil, "bad") end   -- gone, or shorter than its own lists
+        if not slot or slot_of(r) ~= slot then mixed = true end
         data = data .. more
         step()
       end)
@@ -260,6 +325,7 @@ end
 local function round_done()
   phase = "idle"
   problem = nil
+  cost = used
   last_ok = sys.millis()
   show()
 end
@@ -280,9 +346,9 @@ local function fetch_proposals()
       addrs[#addrs + 1] = proposal_at[wanted[i]]
     end
     waiting = waiting + 1
-    rpc.call("getMultipleAccounts",
+    call("getMultipleAccounts",
       {addrs, {encoding = "base64", commitment = "confirmed", dataSlice = {offset = 0, length = SLICE}}},
-      {cluster = cluster}, function(ok, r)
+      function(ok, r)
         if mine ~= round then return end
         if not ok or type(r) ~= "table" or type(r.value) ~= "table" then return fail("Proposals: " .. tostring(r)) end
         for i, n in ipairs(numbers) do
@@ -296,9 +362,10 @@ local function fetch_proposals()
             local data = account_data(acc, squad.lay)
             if not data then return fail("Can't read proposal #" .. n) end
             waiting = waiting + 1
-            more_of(addrs[i], data, read_proposal, squad.lay, mine, function(p, why)
+            more_of(addrs[i], data, slot_of(r), read_proposal, squad.lay, mine, function(p, why)
               if not p then
                 return fail(why == "big" and "Proposal #" .. n .. " has too many votes to read"
+                            or why == "moved" and "Proposal #" .. n .. " kept changing: reading again soon"
                             or "Can't read proposal #" .. n .. (why == "bad" and "" or ": " .. why))
               end
               proposals[n] = p
@@ -314,8 +381,14 @@ end
 
 local took                      -- defined below poll
 
-local function poll()
+-- Starts a round, unless one is running or the minute's calls don't allow one
+-- yet. `asked`: SELECT (it may use the spare calls). Returns the seconds to
+-- wait when it didn't start for that reason.
+local function poll(asked)
   if phase ~= "idle" or not address then return end
+  local wait = wait_s(asked and RPC_MINUTE or RPC_MINUTE - RPC_SPARE)
+  if wait > 0 then return wait end
+  used = 0
   round = round + 1
   local mine = round
   phase = "multisig"
@@ -325,8 +398,8 @@ local function poll()
       if k and #k == 32 then me = k end
     end)
   end
-  rpc.call("getAccountInfo", {address, {encoding = "base64", commitment = "confirmed",
-    dataSlice = {offset = 0, length = FIRST}}}, {cluster = cluster}, function(ok, r)
+  call("getAccountInfo", {address, {encoding = "base64", commitment = "confirmed",
+    dataSlice = {offset = 0, length = FIRST}}}, function(ok, r)
       if mine ~= round then return end
       if not ok then return fail("Can't read the multisig: " .. tostring(r)) end
       local acc = type(r) == "table" and r.value
@@ -337,9 +410,10 @@ local function poll()
       if not data then return fail("Can't read that account") end
       -- A big multisig's members go on past the first read: read them all,
       -- since the linked wallet may be among the last.
-      more_of(address, data, read_multisig, lay, mine, function(m, why)
+      more_of(address, data, slot_of(r), read_multisig, lay, mine, function(m, why)
         if not m then
           if why == "big" then return fail("Too many members to read (" .. FIRST + MORE * CHUNK .. " bytes)") end
+          if why == "moved" then return fail("The multisig kept changing: reading again soon") end
           return fail("Can't read that account" .. (why == "bad" and "" or ": " .. why))
         end
         took(m)
@@ -386,7 +460,8 @@ local function watch(text)
   title:text(short(address) .. "  " .. cluster)
   note:text("Reading...")
   list:items({"Reading..."})
-  poll()
+  local wait = poll(true)
+  if wait then note:text("Reading in " .. wait .. " s (the network's limit)") end
   return true
 end
 
@@ -404,8 +479,8 @@ end
 
 refresh = function()
   if address then
-    note:text("Reading...")
-    poll()
+    local wait = poll(true)
+    note:text(wait and "Reading in " .. wait .. " s (the network's limit)" or "Reading...")
   else
     ask()
   end
@@ -427,7 +502,16 @@ function on_key(k)
   return false
 end
 
-timer.every(POLL_MS, poll)
+local soon                      -- the timer of a round put off for the minute's calls
+timer.every(POLL_MS, function()
+  local wait = poll(false)
+  if wait and wait * 1000 < POLL_MS and not soon then     -- sooner than the next poll: don't lose the time between
+    soon = timer.after(wait * 1000, function()
+      soon = nil
+      poll(false)
+    end)
+  end
+end)
 timer.every(5000, function()
   if phase == "idle" and last_ok and squad then
     -- After a failed round the screen still shows the last good one: say why

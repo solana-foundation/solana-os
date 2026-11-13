@@ -35,8 +35,15 @@ that holds the funds. LEFT switches between mainnet and devnet.
 
 ## How it reads
 
-Every 20 seconds, three calls of the 30 a minute a badge gets (more for a big multisig,
-below):
+Every 20 seconds, three calls of the 30 a minute a badge gets. A big multisig takes more
+(below), so the app counts its calls: a round starts only when one as long as the last
+fits the minute, and polling leaves four calls for SELECT. A multisig of 120 members with
+eight long proposals is read about once a minute instead of running into "too fast".
+
+A list that doesn't fit one read is read in pieces, by separate calls, and a vote can land
+between two of them. Pieces answered from one slot are one state of the account. Otherwise
+the account's first bytes, which hold the counts the rest was read by, are read once more:
+if they changed, the pieces are thrown away and the account is read again as it is now.
 
 1. `getAccountInfo` on the multisig: the threshold, the members and their permissions, the
    number of its latest transaction and the one below which proposals are stale. The
