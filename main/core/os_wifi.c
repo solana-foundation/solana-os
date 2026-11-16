@@ -1,4 +1,4 @@
-// System Wi-Fi service: STA on both bands, saved network in NVS, joined only
+// System Wi-Fi service: STA on both bands, saved networks in NVS (os_wifi_saved.c), joined only
 // while Wi-Fi is on (at boot if it's in range: os_wifi_boot.c), auto reconnect, async
 // scans, suspend/resume for apps that need the radio, and the park channel
 // the radio returns to whenever no network is joined (ESP-NOW listens there).
@@ -43,40 +43,6 @@ static volatile bool s_scan_done;
 
 #define LOCK()   xSemaphoreTake(s_lock, portMAX_DELAY)
 #define UNLOCK() xSemaphoreGive(s_lock)
-
-static bool nvs_get(const char *key, char *out, size_t n)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return false;
-    }
-    size_t len = n;
-    esp_err_t err = nvs_get_str(h, key, out, &len);
-    nvs_close(h);
-    return err == ESP_OK;
-}
-
-bool os_wifi_saved_ssid(char *out, size_t n)
-{
-    return nvs_get("ssid", out, n) && out[0];
-}
-
-bool os_wifi_saved_pass(char *out, size_t n)
-{
-    return nvs_get("pass", out, n);
-}
-
-static void save_creds(const char *ssid, const char *pass)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "ssid", ssid);
-        nvs_set_str(h, "pass", pass);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "saved network '%s'", ssid);
-    }
-}
 
 static const char *reason_str(int reason)
 {
@@ -261,7 +227,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_retries = 0;
         ESP_LOGI(TAG, "connected to '%s', ip %s", s_ssid, s_ip);
         if (s_save_on_ip) {
-            save_creds(s_ssid, s_pass);
+            os_wifi_saved_put(s_ssid, s_pass);
+            ESP_LOGI(TAG, "saved network '%s'", s_ssid);
             s_save_on_ip = false;
         }
     }

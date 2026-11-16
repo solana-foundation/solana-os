@@ -997,6 +997,11 @@ bool os_mesh_beacon_on(void)
     return on;
 }
 
+bool os_mesh_held(void)
+{
+    return s_acquired > 0;
+}
+
 void os_mesh_release(void)
 {
     bool resume = false, last = false;
