@@ -8,9 +8,12 @@
 #include <sys/stat.h>
 #include "cJSON.h"
 #include "lvgl.h"
+#include "mbedtls/base64.h"
 #include "psa/crypto.h"
 #include "core/os_cloud.h"
 #include "core/os_data.h"
+#include "lua_aot.h"
+#include "lua_host.h"
 #include "lua_install.h"
 #include "lua_pkg.h"
 #include "vendor/lua.h"
@@ -18,7 +21,8 @@
 #define HASH_CHUNK  1024
 
 static const char *const s_perm_names[LUA_PERM_COUNT] = {
-    "led", "wifi", "mesh", "lamps", "items", "profile", "quest", "http", "rpc", "ble",
+    "led", "wifi", "mesh", "lamps", "items", "profile", "quest", "http", "rpc", "ble", "mail", "background", "files",
+    "inventory",
 };
 
 static const char *const s_perm_texts[LUA_PERM_COUNT] = {
@@ -32,6 +36,10 @@ static const char *const s_perm_texts[LUA_PERM_COUNT] = {
     "Talk to servers on the internet",
     "Read and send to Solana",
     "Talk to Bluetooth devices",
+    "Sends you and others notifications",
+    "Runs in the background",
+    "Read the files you copy to its folder",
+    "See the items and Guide pages you hold",
 };
 
 const char *lua_perm_name(int i)
@@ -172,14 +180,14 @@ bool lua_pkg_file_rel(char *rel, size_t n, const char *id, const char *file, siz
     if (!lua_pkg_valid_id(id) || !file) {
         return false;
     }
-    if (!strcmp(file, "main.lua") || !strcmp(file, "app.json")) {
+    if (!strcmp(file, "main.lua") || !strcmp(file, "app.json") || !strcmp(file, "app.wasm")) {
         lua_pkg_rel(rel, n, id, file);
         if (max) {
-            *max = file[0] == 'm' ? LUA_PKG_SRC_MAX : LUA_PKG_JSON_MAX;
+            *max = file[0] == 'm' ? LUA_PKG_SRC_MAX : !strcmp(file, "app.json") ? LUA_PKG_JSON_MAX : LUA_PKG_CODE_MAX;
         }
         return true;
     }
-    if (!lua_pkg_valid_path(file)) {
+    if (!strcmp(file, "app.aot") || !lua_pkg_valid_path(file)) {
         return false;
     }
     snprintf(rel, n, "apps/%s/files/%s", id, file);
@@ -269,6 +277,27 @@ static void copy_str(const cJSON *obj, const char *key, char *out, size_t n)
     out[o] = 0;
 }
 
+// One of a C app's code files in the manifest: {"sha256", "size"} and, for
+// app.aot, the "target" it was compiled for, which must be `target`, and the
+// store's Ed25519 signature ("sig", 64 bytes in standard base64), into sig.
+static bool code_file(const cJSON *f, const char *target, int32_t *size, uint8_t sha[32], uint8_t sig[64])
+{
+    const cJSON *t = cJSON_GetObjectItemCaseSensitive(f, "target");
+    const cJSON *h = cJSON_GetObjectItemCaseSensitive(f, "sha256");
+    const cJSON *n = cJSON_GetObjectItemCaseSensitive(f, "size");
+    const cJSON *g = cJSON_GetObjectItemCaseSensitive(f, "sig");
+    bool ok = (!target || (cJSON_IsString(t) && !strcmp(t->valuestring, target))) && cJSON_IsString(h)
+              && lua_pkg_unhex(h->valuestring, sha) && cJSON_IsNumber(n) && n->valuedouble > 0
+              && n->valuedouble <= LUA_PKG_CODE_MAX;
+    if (ok && sig) {
+        size_t len = 0;
+        ok = cJSON_IsString(g) && strlen(g->valuestring) == 88
+             && mbedtls_base64_decode(sig, 64, &len, (const unsigned char *)g->valuestring, 88) == 0 && len == 64;
+    }
+    *size = ok ? (int32_t)n->valuedouble : 0;
+    return ok;
+}
+
 bool lua_pkg_parse(const char *json, const char *want_id, lua_pkg_t *out)
 {
     cJSON *m = cJSON_Parse(json);
@@ -312,6 +341,15 @@ bool lua_pkg_parse(const char *json, const char *want_id, lua_pkg_t *out)
                 && lua_pkg_unhex(sha->valuestring, out->code_sha) && cJSON_IsNumber(size)
                 && size->valuedouble > 0 && size->valuedouble <= LUA_PKG_CODE_MAX;
     out->code_size = out->code ? (int32_t)size->valuedouble : 0;
+    const cJSON *lang = cJSON_GetObjectItemCaseSensitive(m, "lang");
+    out->lang = cJSON_IsString(lang) && !strcmp(lang->valuestring, "c") ? LUA_PKG_LANG_C : LUA_PKG_LANG_LUA;
+    if (out->lang == LUA_PKG_LANG_C) {
+        out->code = false;                  // code.bin is Lua's
+        out->wasm = code_file(cJSON_GetObjectItemCaseSensitive(code, "wasm"), NULL, &out->wasm_size, out->wasm_sha,
+                              NULL);
+        out->aot = code_file(cJSON_GetObjectItemCaseSensitive(code, "aot"), LW_AOT_TARGET, &out->aot_size,
+                             out->aot_sha, out->aot_sig);
+    }
     cJSON_Delete(m);
     return ok;
 }
@@ -323,16 +361,26 @@ bool lua_pkg_load(const char *id, lua_pkg_t *out)
     if (!lua_pkg_valid_id(id) || !os_data_ready()) {
         return false;
     }
-    lua_pkg_rel(rel, sizeof(rel), id, "main.lua");
-    os_data_path(path, sizeof(path), rel);
-    if (stat(path, &st) != 0) {
-        return false;
-    }
     lua_pkg_rel(rel, sizeof(rel), id, "app.json");
     char *json = os_data_read(rel, LUA_PKG_JSON_MAX, NULL);
     bool ok = json && lua_pkg_parse(json, id, out);
     free(json);
-    return ok;
+    if (!ok) {
+        return false;
+    }
+    // The app's code: main.lua, or a C app's module in either form.
+    static const char *const code[][2] = {{"main.lua", NULL}, {"app.wasm", "app.aot"}};
+    for (int i = 0; i < 2; i++) {
+        const char *f = code[out->lang == LUA_PKG_LANG_C][i];
+        if (f) {
+            lua_pkg_rel(rel, sizeof(rel), id, f);
+            os_data_path(path, sizeof(path), rel);
+            if (stat(path, &st) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 static int by_name(const void *a, const void *b)
@@ -370,6 +418,7 @@ bool lua_pkg_remove(const char *id)
     if (!lua_pkg_valid_id(id) || lua_install_busy(id)) {
         return false;
     }
+    lua_svc_forget(id);                     // its background service stops and is forgotten (2.3.0)
     snprintf(rel, sizeof(rel), "apps/%s", id);
     return os_data_remove(rel);
 }

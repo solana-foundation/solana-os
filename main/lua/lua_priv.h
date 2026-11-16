@@ -46,7 +46,14 @@
 #define LH_QR_MIN           25          // px: a version 1 code and its quiet zone at 1 px per module
 #define LH_TIMER_MAX        8
 #define LH_TIMER_MIN_MS     20
+#define LH_SVC_TIMER_MAX    4           // a service's (2.3.0)
+#define LH_SVC_TIMER_MIN_MS 1000
+#define LH_SVC_TICK_MS      1000        // a service's on_tick
+#define LH_SVC_EVENTS       8           // events waiting per service
+#define LH_SVC_CALLS        1           // server calls waiting per service
+#define LH_SVC_CALLBACK_MS  1000        // wall-clock time per service callback
 #define LH_TICK_MS          30          // on_tick period (50 before; whole 10 ms RTOS ticks)
+#define LH_TICK_MIN_MS      16          // sys.tick's shortest (2.3.0): a 60 Hz game's frame
 #define LH_STORAGE_MAX      (16 * 1024) // data.json
 #define LH_STORAGE_SAVE_MS  1000        // storage.set writes at most this often
 #define LH_MESH_PER_S       4
@@ -54,10 +61,23 @@
 #define LH_MEET_MAX         100         // bytes of JSON per side of a mesh.meet
 #define LH_CALLS_MAX        16          // server calls waiting or in flight per app
 #define LH_CALLS_SENT       3           // at once in os_api, whose queue the OS shares
+#define LH_CURSOR_MAX       128         // a server cursor (profile.items / pages): base64url
 #define LH_JSON_DEPTH       16          // nesting; bounds the decoder's recursion
 #define LH_LED_COUNT        8
 #define LH_FS_READ_MAX      LUA_PKG_FILE_MAX    // fs.read / fs.json per call: a whole file (16 KB before 2.0.0)
 #define LH_FS_LINE_MAX      512         // fs.lines: longer lines come in pieces
+// files (lua_files.c, 2.3.0): the app's folder for the owner's files and its saves
+#define LH_FILES_NAME_MAX   64          // a file's name, without "save/"
+#define LH_FILES_READ_MAX   (256 * 1024)    // per files.read / write / sos_file_read
+#define LH_FILES_SAVE_MAX   (1024 * 1024)   // one save file
+#define LH_FILES_SAVES_MAX  32          // files in save/
+// A C app's console output costs host steps by the byte (sos_log, stdout and
+// stderr, and print reached through sos_call): the console is a blocking UART
+// at 115200 baud, 11 bytes a ms on a badge, so this allows ~6 KB (~0.55 s) a
+// callback. Lua apps' print isn't charged.
+#define LH_OUT_STEPS        32
+// A C app's host work over budget (lua_host.c, lua_wasm.c): with LUA_HOST_STEPS_MAX.
+#define LH_HOST_STEPS_MSG   "Over %d host steps in one callback (copies, output, fs, crypto, drawing)"
 #define LH_FS_OPEN_STEPS    500         // budget per file opened ...
 #define LH_FS_BYTES_PER_STEP 4          // ... and per bytes read or compiled
 #define LH_READ_CHUNK       256         // compiling from the card, a piece at a time
@@ -162,12 +182,31 @@ typedef struct {
     bool copied;                // copied into it at this launch
 } lh_code_stat_t;
 
+// A C app's figures (lua_wasm.c), for "lua mem".
+typedef struct {
+    bool c;                     // the app is C (pkg.lang)
+    bool aot;                   // it ran app.aot (native code), not app.wasm
+    uint32_t module_size;       // bytes of app.wasm / app.aot loaded
+    uint32_t mem_size;          // its linear memory now (pages x 64 KB)
+    uint32_t mem_peak;          // ... at most
+    uint32_t steps_peak;        // most wasm instructions in one callback (interpreter)
+    uint32_t native_peak_us;    // most native time in one callback (app.aot)
+    int slot;                   // app.aot's flash slot, -1 if none
+    bool copied;                // ... copied into it at this launch
+    uint32_t sig_us, map_us;    // launch: the signature check; the slot (copy,) map and hash
+    uint32_t frames, frames_direct;     // ui_frame: frames drawn, and how many without a copy
+} lh_wasm_stat_t;
+
 typedef struct lh {
     lua_State *L;
     lua_pkg_t pkg;
     uint32_t gen;               // launch number; events carry it
     lua_xip_t code;             // the store's compiled code, mapped (lua_code.c); data NULL: compiled here
     lh_code_stat_t code_stat;   // for "lua mem"
+    struct lw *wasm;            // a C app's module and runtime (lua_wasm.c), NULL for Lua
+    lh_wasm_stat_t wasm_stat;   // for "lua mem"
+    uint32_t cb_seq;            // bumped by every lh_callback: a C app's budget starts over
+    uint32_t wasm_cpu;          // a C module's work in this callback, in steps (a service's minute, 2.3.0)
 
     // Limits
     size_t mem, mem_peak;
@@ -177,7 +216,8 @@ typedef struct lh {
     bool mem_hit;               // the allocator refused to go over the cap
     uint32_t steps, steps_peak;
     bool killed;                // over the instruction budget
-    char kill_msg[64];          // "main.lua:12: Script took too long"
+    bool mem_fatal;             // a C app ran out of memory: the error screen says so
+    char kill_msg[96];          // "main.lua:12: Script took too long"
     size_t heap_before;         // SRAM free at launch
     char err[96];               // why the script stopped, "" if it didn't
     int64_t t0;                 // ms at launch
@@ -208,16 +248,24 @@ typedef struct lh {
     lh_timer_t timers[LH_TIMER_MAX];
     int timer_seq;
     int64_t next_tick;
+    int tick_ms;                // on_tick's period: LH_TICK_MS, or sys.tick's
+    bool tick_set;              // sys.tick was called: ticks wake on time (lua_host.c)
 
     // fs: the last file read stays open (lua_fs.c)
     FILE *fs_file;
     long fs_size;
     char fs_path[LUA_PKG_PATH_MAX + 1];
 
-    // storage.*
+    // files: the last file read stays open (lua_files.c)
+    FILE *files_f;
+    long files_size;
+    char files_name[LH_FILES_NAME_MAX + 6];
+
+    // storage.*: one copy per app shared by the app and its service (lua_sys.c)
     int store_ref;
-    char *store_pending;        // encoded data.json waiting to be written
-    size_t store_len;
+    bool store_held;            // this state counts as one of the shared copy's users (released once, at close)
+    bool store_dirty;           // the shared copy may have changes data.json hasn't got
+    uint32_t store_ver;         // the shared copy's version this table was built from
     int64_t store_saved;
 
     // mesh
@@ -234,6 +282,14 @@ typedef struct lh {
 
     // ble
     lh_ble_t ble;
+
+    // Background services (lua_svc.c, 2.3.0)
+    struct lh_svc *svc;         // set: this state is the app's service, not the app on screen
+    uint32_t steps_max;         // instructions per callback: LUA_HOST_STEPS_MAX or LUA_SVC_STEPS_MAX
+    int64_t cb_t0;              // a service's callback began (ms): LH_SVC_CALLBACK_MS
+    char tag[LUA_PKG_ID_MAX + 5];   // print's tag: the app id, "<id>:svc" in a service
+    char mesh_me[7];            // this badge's id when the mesh started for it ("" without one)
+    int svc_start_ref;          // the app: service.start's callback while it waits, else LUA_NOREF
 } lh_t;
 
 // Figures from the last run, for "lua mem".
@@ -246,20 +302,25 @@ typedef struct {
     int code_slot;              // its flash slot, -1 if none
     bool code_copied;           // copied into the slot at this launch
     size_t heap_before;         // SRAM free when the app started
+    lh_wasm_stat_t wasm;        // a C app's figures
     char err[96];               // last error, "" if none
 } lh_stats_t;
 
 extern lh_stats_t lh_stats;
 
 // Events for the Lua task.
-typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_MEET, LH_EV_SCAN, LH_EV_QUIT } lh_ev_kind_t;
+// LH_EV_CALL (2.3.0): data "<global>\0<json>", a named callback (service
+// messages, lua_host_call); LH_EV_SVC_START: data "" (started) or the reason
+// it didn't, for service.start's callback.
+typedef enum { LH_EV_KEY, LH_EV_WAKE, LH_EV_MESH, LH_EV_MEET, LH_EV_SCAN, LH_EV_MAIL, LH_EV_QUIT, LH_EV_CALL,
+               LH_EV_SVC_START } lh_ev_kind_t;
 
 typedef struct {
     uint8_t kind;
     uint8_t key;
     bool repeat;
     uint32_t gen;
-    char *data;                 // LH_EV_MESH, LH_EV_MEET: "<from id>\0<json>", freed by the receiver
+    char *data;                 // LH_EV_MESH, LH_EV_MEET: "<from id>\0<json>"; LH_EV_MAIL: the id; freed by the receiver
 } lh_ev_t;
 
 extern SemaphoreHandle_t lh_mx;     // guards call records, the mesh filter, lh_cur
@@ -271,7 +332,27 @@ static inline lh_t *lh_get(lua_State *L)
 }
 
 int64_t lh_now(void);
+// The app's heap (lh_alloc's body): every byte its Lua state and, for a C app,
+// WAMR allocate goes through here and counts against lh_t.heap_max, in PSRAM
+// with the reserve. realloc semantics: nsize 0 frees; NULL refuses.
+void *lh_mem_realloc(lh_t *s, void *ptr, size_t osize, size_t nsize);
+// One line of the app's text on the console, as print does: tagged "[<id>] ",
+// a new tag after every newline, control characters as '?'.
+void lh_print_text(const char *id, const char *text, size_t len);
+// The Lua task's stack: below this a C level must not start (0 off the task).
+uintptr_t lh_stack_low(void);
+// The calling task runs Lua from here on: slot 0 the app's task, 1 the
+// services' (bottom: the stack's lowest address, about). leave: it stopped.
+void lh_stack_enter(int slot, uintptr_t bottom);
+void lh_stack_leave(int slot);
 bool lh_post(const lh_ev_t *ev);                // to the Lua task; false if full
+bool lh_post_to(lh_t *s, const lh_ev_t *ev);    // to the task running s: the app's or its service's
+// A new state for s: the counted allocator, the session in the extra space,
+// the instruction hook. NULL: no memory.
+lua_State *lh_new_state(lh_t *s);
+// The libraries every state gets (base without loaders, coroutine, string,
+// table, math, utf8, print, collectgarbage). Protected.
+void lh_open_base(lua_State *L);
 void lh_need_perm(lua_State *L, uint32_t perm, const char *module);
 
 // Runs fn(arg) protected, as one callback: a fresh instruction budget, LEDs
@@ -331,10 +412,19 @@ int64_t lh_timers_next(lh_t *s);                        // earliest due time, or
 void lh_timers_run(lh_t *s);
 bool lh_storage_load(lh_t *s);
 void lh_storage_flush(lh_t *s, bool force);
+void lh_storage_close(lh_t *s);                         // after the last flush: the shared copy loses a user
 
 // lua_fs.c: fs and require
 void lh_open_fs(lua_State *L);
 void lh_fs_close(lh_t *s);                              // the cached file, when the app stops
+void lh_open_files(lua_State *L);
+void lh_files_close(lh_t *s);                           // files' cached file, when the app stops
+void lh_files_prepare(lh_t *s);                         // at launch: the folder, for an app with "files"
+int lh_files_kind(const char *p, size_t len);           // 0 not a name, 1 the owner's file, 2 a save
+// A C app's read (sos_file_read): up to len bytes of name from off into dst;
+// the bytes read (0 at the end), or -1 and *err. Adds the host steps it cost to *steps.
+long lh_files_read_into(lh_t *s, const char *name, size_t nlen, uint32_t off, void *dst, uint32_t len,
+                        unsigned *steps, const char **err);
 void lh_fs_check_path(lua_State *L, int idx, char out[LUA_PKG_PATH_MAX + 1]);  // a bundled file's path argument
 FILE *lh_fs_fopen(lh_t *s, const char *rel, long *size);  // a file of the caller's own (not the cache); NULL: none
 
@@ -346,6 +436,24 @@ void lh_code_close(lh_t *s);        // after lua_close
 // the function pushed, a lua_load error and its message, or LH_CODE_NONE
 // (nothing pushed) when the code has no such chunk.
 int lh_code_load(lua_State *L, lh_t *s, const char *rel);
+
+// lua_wasm.c: C apps (docs/C_API.md). The Lua state is the app's API; the
+// module's imports (sdk/c/include/badge_abi.h) work its stack.
+// In boot(), for a C app: reads app.wasm (or app.aot), loads and checks it,
+// and pushes the main chunk, a C function that instantiates it and calls
+// on_start. Raises on failure.
+void lw_boot(lua_State *L, lh_t *s);
+void lw_close(lh_t *s);             // after lua_close: the module and WAMR go
+// lua_img.c: sos_blit. Protected: canvas handle at 1, an lh_blit_t at 2;
+// pushes 0, or -1 when 1 isn't a canvas.
+typedef struct {
+    const uint8_t *px;              // w * h RGB565, little-endian
+    int x, y, w, h;
+} lh_blit_t;
+int lh_cv_blit(lua_State *L);
+// lua_ui.c: the object behind the handle at idx if it is a live `kind`, else
+// NULL. Never raises.
+lh_obj_t *lh_ui_test(lua_State *L, int idx, lh_kind_t kind);
 
 // lua_ws.c: the app's socket
 void lh_open_ws(lua_State *L);
@@ -374,13 +482,35 @@ void lh_mesh_end_app(void);                             // stop the app's scan a
 void lh_mesh_start(lh_t *s);                            // OS task
 void lh_mesh_mute(void);                                // stop queueing messages
 void lh_mesh_stop(void);                                // OS task
-void lh_mesh_me(char out[7]);                           // this badge's id when the app started, "" without one
+void lh_mesh_me(const lh_t *s, char out[7]);            // this badge's id when s's mesh started, "" without one
+bool lh_mesh_app_is(const char *id);                    // any task: the app on screen is <id> and hears the mesh
 
 // lua_meet.c: mesh.meet, a statement two badges sign (docs/MESH.md "Meets")
 int lh_mesh_meet(lua_State *L);
 void lh_meet_event(lh_t *s, const char *data);          // Lua task: a meet message, "<from id>\0<json>"
 void lh_meet_run(lh_t *s);                              // Lua task: repeats and the timeout of an ask
 void lh_meet_free(lh_t *s);                             // after the Lua task ended
+
+// lua_mail.c: mail (Mailbox, 2.3.0, game/mailbox.h)
+#define LH_MAIL_GAP_MS      1000        // mail.send: one a second
+void lh_open_mail(lua_State *L);
+void lh_mail_event(lh_t *s, const char *data);          // Lua task: LH_EV_MAIL, on_mail(m)
+void lh_mail_opened(lh_t *s);                           // Lua task, after the top-level chunk: the mail it was opened on
+
+// lua_svc.c: background services (2.3.0, LUA_API.md "service")
+struct lh_svc;
+void lua_svc_init(void);                                // lua_host_init
+bool lh_svc_callback(lh_t *s, lua_CFunction fn, void *arg);  // lh_callback for a service's state
+bool lh_svc_post(lh_t *s, const lh_ev_t *ev);           // an event for a service (any task)
+lh_t *lh_svc_session(int i);                            // under lh_mx: running service i's state, or NULL
+void lh_open_service(lua_State *L);                     // the app's `service` module
+void lh_svc_app_event(lh_t *s, const lh_ev_t *ev);      // the app's LH_EV_CALL / LH_EV_SVC_START (Lua task)
+void lh_svc_app_closed(lh_t *s);                        // the app's state is closing (Lua task)
+// Delivers LH_EV_CALL's data to the state as a protected callback.
+void lh_call_event(lh_t *s, const char *data);
+bool lh_svc_wamr_busy(void);                            // a C service holds the WebAssembly runtime
+void lh_svc_wamr_yield(void);                           // a C app wants it: C services pause
+void lh_svc_wamr_released(void);                        // the C app closed: paused C services start again
 
 // lua_json.c: JSON <-> Lua. Encoding never raises Lua errors (it may run
 // with C memory to free); decoding may (out of memory).

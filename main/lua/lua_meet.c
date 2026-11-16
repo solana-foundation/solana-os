@@ -275,7 +275,7 @@ int lh_mesh_meet(lua_State *L)
     }
     const char *err = NULL;
     char me[OS_MESH_ID_LEN + 1];
-    lh_mesh_me(me);
+    lh_mesh_me(s, me);
     int64_t now = lh_now();
     struct lh_meet *m = s->meet;
     if (!m && !(m = s->meet = calloc(1, sizeof(*m)))) {
@@ -448,7 +448,7 @@ void lh_meet_event(lh_t *s, const char *data)
 {
     const char *from = data, *json = data + strlen(data) + 1;
     char me[OS_MESH_ID_LEN + 1];
-    lh_mesh_me(me);
+    lh_mesh_me(s, me);
     if (!me[0] || !strcmp(from, me) || (!s->meet && !(s->meet = calloc(1, sizeof(struct lh_meet))))) {
         return;
     }

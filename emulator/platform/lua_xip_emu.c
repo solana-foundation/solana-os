@@ -9,8 +9,9 @@
 #include "mbedtls/sha256.h"
 #include "lua/lua_xip.h"
 
-bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, lua_xip_t *out)
+bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, unsigned flags, lua_xip_t *out)
 {
+    (void)flags;                            // nothing here executes
     memset(out, 0, sizeof(*out));
     out->slot = -1;
     FILE *f = fopen(path, "rb");

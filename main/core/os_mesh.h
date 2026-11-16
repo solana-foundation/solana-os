@@ -42,6 +42,7 @@ typedef enum {
 typedef enum {
     OS_PEER_BADGE,
     OS_PEER_BEACON,
+    OS_PEER_STATION,        // a Collaborator station (MESH.md "Collaborator stations", 2.3.0): APP messages only
 } os_peer_kind_t;
 
 typedef struct {
@@ -171,6 +172,20 @@ void os_mesh_tag(const uint8_t key[16], const char *msg, char out[OS_MESH_TAG_LE
 void os_mesh_beacon(const char *id);
 void os_mesh_beacon_hello(const char *json);    // <= 200 bytes, copied; NULL = silent
 bool os_mesh_beacon_on(void);
+
+// Collaborator stations (game/collab.c, docs/MESH.md "Collaborator stations", 2.3.0).
+// While a station id is set, the mesh task also broadcasts its HELLO
+// ({"k":"s","n":name}; a name starting with '@' loses it) under that id, next to
+// the badge's own, Wi-Fi stays joined (as for a bridge) and the radio awake.
+// The badge's own HELLO and messages go on under its id. NULL or "" ends it.
+void os_mesh_station(const char *id, const char *name);
+bool os_mesh_station_on(void);
+bool os_mesh_station_id(char out[OS_MESH_ID_LEN + 1]);     // false when none
+// An APP message (MESH.md §6) from the station: to_id NULL or "*" broadcasts,
+// else a peer heard over the air (never over a bridge). Only APP: the station
+// never sends anything tagged. ESP_ERR_INVALID_STATE without a station or off
+// the mesh channel, ESP_ERR_NOT_FOUND for an unknown peer. Any task.
+esp_err_t os_mesh_station_send(const char *to_id, const char *json);
 
 typedef struct {
     char id[OS_MESH_ID_LEN + 1];

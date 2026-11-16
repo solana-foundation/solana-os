@@ -59,7 +59,14 @@ char *os_data_read(const char *rel, size_t max, size_t *len_out)
     os_data_path(path, sizeof(path), rel);
     FILE *f = fopen(path, "rb");
     if (!f) {
-        return NULL;
+        // A replace that stopped between removing the old file and renaming
+        // the new one (os_data_write: a power cut, a failed rename) left the
+        // complete new one as .tmp.
+        char tmp[168];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+        if (!(f = fopen(tmp, "rb"))) {
+            return NULL;
+        }
     }
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
@@ -87,20 +94,41 @@ bool os_data_write(const char *rel, const char *data, size_t len)
     }
     os_data_path(path, sizeof(path), rel);
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        fclose(f);
+    } else if (rename(tmp, path) != 0 && errno != ENOENT) {
+        // No file but a .tmp: the last write's rename failed and the .tmp is the
+        // only complete copy. It goes in place before "wb" truncates it; if it
+        // can't, nothing is written, so it stays readable (os_data_read).
+        // (No .tmp at all is ENOENT: nothing to put back.)
+        ESP_LOGW(TAG, "can't put %s back", tmp);
+        return false;
+    }
+    f = fopen(tmp, "wb");
     if (!f) {
         ESP_LOGW(TAG, "can't write %s", tmp);
         return false;
     }
     bool ok = fwrite(data, 1, len, f) == len;
     ok = fclose(f) == 0 && ok;
-    // FatFs rename() refuses to replace an existing file.
-    unlink(path);
-    if (!ok || rename(tmp, path) != 0) {
-        unlink(tmp);
+    if (!ok) {
+        unlink(tmp);                        // the old file stays as it was
         return false;
     }
-    return true;
+    // FatFs rename() refuses to replace an existing file. If the rename fails
+    // after the old one is gone, the complete .tmp stays: os_data_read takes it.
+    unlink(path);
+    return rename(tmp, path) == 0;
+}
+
+bool os_data_exists(const char *rel)
+{
+    char path[160], tmp[168];
+    struct stat st;
+    os_data_path(path, sizeof(path), rel);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    return stat(path, &st) == 0 || stat(tmp, &st) == 0;
 }
 
 bool os_data_append(const char *rel, const char *line)
@@ -167,8 +195,14 @@ static bool remove_tree(const char *path)
 
 bool os_data_remove(const char *rel)
 {
-    char path[160];
+    char path[160], tmp[168];
     os_data_path(path, sizeof(path), rel);
+    // A replace cut short leaves the file's complete copy as .tmp, which
+    // os_data_read takes: removing the file removes that too.
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (unlink(tmp) != 0 && errno != ENOENT) {
+        return false;
+    }
     return remove_tree(path);
 }
 

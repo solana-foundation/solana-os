@@ -1,0 +1,12 @@
+{
+  "id": "ping-c",
+  "name": "Ping",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Ping the badges around you over the mesh, from C.",
+  "icon": "bell",
+  "accent": "EB54BC",
+  "category": "social",
+  "lang": "c",
+  "permissions": ["mesh", "led"]
+}

@@ -30,6 +30,7 @@
 #include "os_http.h"
 #include "os_ota.h"
 #include "os_ota_flash.h"
+#include "os_service.h"
 
 static const char *TAG = "os_ota";
 
@@ -240,6 +241,7 @@ esp_err_t os_ota_start(void)
         bool plain = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || strchr(".-_~", *c);
         n += snprintf(path + n, sizeof(path) - n, plain ? "%c" : "%%%02X", (unsigned char)*c);
     }
+    os_service_stop_apps("Stopped: software update");    // app services stop before the download (2.3.0)
     mkdir(OTA_DIR, 0775);
     unlink(OTA_FILE);
     s_ctx = os_api_token();

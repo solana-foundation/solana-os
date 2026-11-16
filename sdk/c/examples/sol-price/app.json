@@ -1,0 +1,13 @@
+{
+  "id": "sol-price-c",
+  "name": "SOL Price",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "The SOL spot price, fetched with http from C.",
+  "icon": "charge",
+  "accent": "14F195",
+  "category": "tools",
+  "lang": "c",
+  "permissions": ["http"],
+  "hosts": ["api.coinbase.com"]
+}

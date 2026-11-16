@@ -158,7 +158,15 @@ static char s_beacon_hello[BEACON_HELLO_MAX + 1];
 
 static int s_acquired;
 static bool s_took_wifi;                // our acquire suspended Wi-Fi
-static bool s_keep_wifi;                // os_mesh_keep_wifi(): bridges need the network
+static bool s_keep_bridge;              // os_mesh_keep_wifi(): bridges need the network
+static bool s_keep_station;             // a Collaborator station's session rides on the server link
+#define KEPT() (s_keep_bridge || s_keep_station)
+static bool s_awake;                    // what os_radio_stay_awake() was last told
+
+// Collaborator station (os_mesh_station), s_lock: its id and HELLO ("" = none).
+#define STATION_HELLO_MAX 64
+static char s_station[OS_MESH_ID_LEN + 1];
+static char s_station_hello[STATION_HELLO_MAX + 1];
 static bool s_log;                      // console "mesh log on"
 
 static struct {
@@ -597,7 +605,7 @@ static void use_channel(int ch)
                 s_peers[i].last_ms = 0;
             }
         }
-        if (s_acquired > 0 && !s_keep_wifi && !s_took_wifi && wifi_joined(&w) &&
+        if (s_acquired > 0 && !KEPT() && !s_took_wifi && wifi_joined(&w) &&
                 !(w.state == OS_WIFI_CONNECTED && w.channel == ch)) {
             suspend = s_took_wifi = true;
         }
@@ -683,7 +691,7 @@ static bool scan_return_wifi_locked(scan_t *sc)
         return false;
     }
     sc->took_wifi = false;
-    if (s_acquired > 0 && !s_keep_wifi && sc->wifi_ch != s_channel) {
+    if (s_acquired > 0 && !KEPT() && sc->wifi_ch != s_channel) {
         return false;
     }
     s_took_wifi = false;
@@ -730,7 +738,7 @@ esp_err_t os_mesh_scan(const uint8_t *channels, int n, int dwell_ms, const char 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_scan && s_scan->active) {
         err = ESP_ERR_NOT_FINISHED;
-    } else if (!s_acquired || s_keep_wifi || s_beacon[0]) {
+    } else if (!s_acquired || KEPT() || s_beacon[0]) {
         err = ESP_ERR_INVALID_STATE;        // no holder, a bridge keeps Wi-Fi joined, or a beacon
     } else {
         if (!s_took_wifi && wifi_joined(&w)) {
@@ -898,6 +906,20 @@ static bool scan_note(uint8_t type, const char *src, int rssi, int ch, const cha
     return on;
 }
 
+// The radio stays awake (modem sleep misses frames) while anyone needs to
+// hear: a mesh app, a badge beacon or a station. Not with s_lock held.
+static void awake_apply(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool want = s_acquired > 0 || s_beacon[0] || s_station[0];
+    bool change = want != s_awake;
+    s_awake = want;
+    xSemaphoreGive(s_lock);
+    if (change) {
+        os_radio_stay_awake(want);
+    }
+}
+
 void os_mesh_acquire(void)
 {
     bool suspend = false;
@@ -906,14 +928,11 @@ void os_mesh_acquire(void)
         os_wifi_info_t w;
         os_wifi_get_info(&w);
         bool joined = w.state == OS_WIFI_CONNECTED || w.state == OS_WIFI_CONNECTING;
-        suspend = joined && !(w.state == OS_WIFI_CONNECTED && w.channel == s_channel) && !s_keep_wifi;
+        suspend = joined && !(w.state == OS_WIFI_CONNECTED && w.channel == s_channel) && !KEPT();
         s_took_wifi = suspend;
     }
-    bool first = s_acquired == 1;
     xSemaphoreGive(s_lock);
-    if (first) {
-        os_radio_stay_awake(true);
-    }
+    awake_apply();
     if (suspend) {
         ESP_LOGI(TAG, "Wi-Fi is off the mesh channel: suspending it while a mesh app runs");
         os_wifi_suspend();
@@ -921,13 +940,16 @@ void os_mesh_acquire(void)
     }
 }
 
-void os_mesh_keep_wifi(bool keep)
+// Two holders keep Wi-Fi joined (bridges, a station); what changes is whether any does.
+static void keep_set(bool *flag, bool want)
 {
     bool resume = false, suspend = false;
     scan_t *ended = NULL;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (keep != s_keep_wifi) {
-        s_keep_wifi = keep;
+    bool before = KEPT();
+    *flag = want;
+    bool keep = KEPT();
+    if (keep != before) {
         if (keep) {
             if (s_scan && s_scan->active) {
                 // A joined radio can't hop: the scan ends here, without its
@@ -947,18 +969,23 @@ void os_mesh_keep_wifi(bool keep)
     }
     xSemaphoreGive(s_lock);
     if (ended) {
-        ESP_LOGI(TAG, "a bridge needs Wi-Fi: scan stopped");
+        ESP_LOGI(TAG, "a bridge or station needs Wi-Fi: scan stopped");
         free(ended);
     }
     if (resume) {
-        ESP_LOGI(TAG, "a bridge needs Wi-Fi: resuming it");
+        ESP_LOGI(TAG, "a bridge or station needs Wi-Fi: resuming it");
         os_wifi_resume();
     }
     if (suspend) {
-        ESP_LOGI(TAG, "no more bridges: suspending Wi-Fi again while the mesh app runs");
+        ESP_LOGI(TAG, "nothing keeps Wi-Fi now: suspending it again while the mesh app runs");
         os_wifi_suspend();
         xTaskNotifyGive(s_task);
     }
+}
+
+void os_mesh_keep_wifi(bool keep)
+{
+    keep_set(&s_keep_bridge, keep);
 }
 
 void os_mesh_beacon(const char *id)
@@ -975,7 +1002,7 @@ void os_mesh_beacon(const char *id)
         } else {
             ESP_LOGI(TAG, "beacon mode off");
         }
-        os_radio_stay_awake(on);            // modem sleep misses frames
+        awake_apply();                      // modem sleep misses frames
     }
     if (s_task) {
         xTaskNotifyGive(s_task);            // pick up the channel now
@@ -1008,7 +1035,7 @@ void os_mesh_release(void)
     }
     xSemaphoreGive(s_lock);
     if (last) {
-        os_radio_stay_awake(false);
+        awake_apply();
     }
     if (resume) {
         os_wifi_resume();
@@ -1018,17 +1045,14 @@ void os_mesh_release(void)
 // ---------------------------------------------------------------------------
 // Sending
 
-static esp_err_t send_to(const uint8_t *mac, os_mesh_type_t type, const char *json)
+// src: the id the frames carry (the badge's, a beacon's, or a station's).
+static esp_err_t send_from(const char *id, const uint8_t *mac, os_mesh_type_t type, const char *json)
 {
     size_t len = strlen(json);
     int cnt = (len + FRAG_DATA - 1) / FRAG_DATA;
     if (!len || len > OS_MESH_MSG_MAX || cnt > FRAG_MAX) {
         return ESP_ERR_INVALID_SIZE;
     }
-    char id[OS_MESH_ID_LEN + 1];
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    strlcpy(id, s_beacon[0] ? s_beacon : s_id, sizeof(id));
-    xSemaphoreGive(s_lock);
     if (!id[0]) {
         return ESP_ERR_INVALID_STATE;       // MESH.md: no server-assigned id, no transmit
     }
@@ -1070,6 +1094,15 @@ static esp_err_t send_to(const uint8_t *mac, os_mesh_type_t type, const char *js
         ESP_LOGW(TAG, "send type %d: %s", type, esp_err_to_name(err));
     }
     return err;
+}
+
+static esp_err_t send_to(const uint8_t *mac, os_mesh_type_t type, const char *json)
+{
+    char id[OS_MESH_ID_LEN + 1];
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(id, s_beacon[0] ? s_beacon : s_id, sizeof(id));
+    xSemaphoreGive(s_lock);
+    return send_from(id, mac, type, json);
 }
 
 esp_err_t os_mesh_send(os_mesh_type_t type, const char *to_id, const char *json)
@@ -1126,6 +1159,92 @@ static void send_hello(void)
     if (ok && send_to(NULL, OS_MESH_HELLO, json) == ESP_OK) {
         s_n.hello_tx++;
     }
+}
+
+// A Collaborator station's HELLO, next to the badge's own (MESH.md "Collaborator stations").
+static void send_station_hello(void)
+{
+    static char id[OS_MESH_ID_LEN + 1], hj[STATION_HELLO_MAX + 1];     // mesh task only
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(id, s_station, sizeof(id));
+    strlcpy(hj, s_station_hello, sizeof(hj));
+    xSemaphoreGive(s_lock);
+    if (id[0] && hj[0] && send_from(id, NULL, OS_MESH_HELLO, hj) == ESP_OK) {
+        s_n.hello_tx++;
+    }
+}
+
+void os_mesh_station(const char *id, const char *name)
+{
+    bool on = id && strlen(id) == OS_MESH_ID_LEN;
+    char hj[STATION_HELLO_MAX + 1] = "";
+    if (on) {
+        char n[25];
+        clean_copy(n, sizeof(n), name ? name : "");
+        if (n[0] == '@') {
+            n[0] = ' ';                     // only an X handle starts with @ (MESH.md §1)
+        }
+        cJSON *j = cJSON_CreateObject();
+        cJSON_AddStringToObject(j, "k", "s");
+        cJSON_AddStringToObject(j, "n", n[0] ? n : "Station");
+        if (!j || !cJSON_PrintPreallocated(j, hj, sizeof(hj), false)) {
+            hj[0] = 0;
+        }
+        cJSON_Delete(j);
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool was = s_station[0] != 0;
+    strlcpy(s_station, on ? id : "", sizeof(s_station));
+    strlcpy(s_station_hello, on ? hj : "", sizeof(s_station_hello));
+    xSemaphoreGive(s_lock);
+    if (on != was) {
+        if (on) {
+            ESP_LOGI(TAG, "station %s on the air", id);
+        } else {
+            ESP_LOGI(TAG, "station off the air");
+        }
+        keep_set(&s_keep_station, on);
+        awake_apply();
+    }
+}
+
+bool os_mesh_station_on(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool on = s_station[0] != 0;
+    xSemaphoreGive(s_lock);
+    return on;
+}
+
+bool os_mesh_station_id(char out[OS_MESH_ID_LEN + 1])
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(out, s_station, OS_MESH_ID_LEN + 1);
+    xSemaphoreGive(s_lock);
+    return out[0] != 0;
+}
+
+esp_err_t os_mesh_station_send(const char *to_id, const char *json)
+{
+    char id[OS_MESH_ID_LEN + 1];
+    if (!json || !os_mesh_station_id(id)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!on_channel()) {
+        return ESP_ERR_INVALID_STATE;       // off the mesh channel: silent (and never over a bridge)
+    }
+    if (!to_id || !strcmp(to_id, "*")) {
+        return send_from(id, NULL, OS_MESH_APP, json);
+    }
+    uint8_t mac[6];
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    os_mesh_peer_t *p = find_peer_locked(to_id);
+    bool ok = p && !s_meta[p - s_peers].bridged && live(p, now_ms());
+    if (ok) {
+        memcpy(mac, p->mac, 6);
+    }
+    xSemaphoreGive(s_lock);
+    return ok ? send_from(id, mac, OS_MESH_APP, json) : ESP_ERR_NOT_FOUND;
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,6 +1386,7 @@ static bool on_hello(const os_mesh_peer_t *heard, const char *json, int64_t now)
     const char *k = cJSON_GetStringValue(cJSON_GetObjectItem(j, "k"));
     const char *n = cJSON_GetStringValue(cJSON_GetObjectItem(j, "n"));
     bool beacon = k && !strcmp(k, "c");
+    bool station = k && !strcmp(k, "s");
     char toast[48] = "";
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -1284,7 +1404,7 @@ static bool on_hello(const os_mesh_peer_t *heard, const char *json, int64_t now)
     memcpy(p->mac, heard->mac, 6);
     p->rssi = heard->rssi;
     p->last_ms = now;
-    p->kind = beacon ? OS_PEER_BEACON : OS_PEER_BADGE;
+    p->kind = beacon ? OS_PEER_BEACON : station ? OS_PEER_STATION : OS_PEER_BADGE;
     clean_copy(p->name, sizeof(p->name), n);
     if (beacon) {
         const char *col = cJSON_GetStringValue(cJSON_GetObjectItem(j, "col"));
@@ -1652,6 +1772,7 @@ static void mesh_task(void *arg)
             next_hello = now + HELLO_MS + esp_random() % 1000;
             if (on_channel() && s_id[0]) {
                 send_hello();
+                send_station_hello();
             }
         }
     }
@@ -1747,6 +1868,9 @@ static void print_status(void)
     if (s_beacon[0]) {
         printf("  playing beacon %s: %s\n", s_beacon, s_beacon_hello[0] ? s_beacon_hello : "(silent)");
     }
+    if (s_station[0]) {
+        printf("  station %s: %s\n", s_station, s_station_hello);
+    }
     printf("  hello: '%s' Lv %d, %lu sent\n", s_label, s_level, (unsigned long)s_n.hello_tx);
     printf("  tx: %lu msgs, %lu frames, %lu errors\n", (unsigned long)s_n.tx_msgs, (unsigned long)s_n.tx_frames,
            (unsigned long)s_n.tx_err);
@@ -1756,7 +1880,7 @@ static void print_status(void)
            (unsigned long)s_n.reasm_lost);
     printf("  refused: %lu from an unknown or changed MAC, %lu nested too deep\n", (unsigned long)s_n.rx_spoof,
            (unsigned long)s_n.rx_deep);
-    printf("  bridges: %d open%s\n", os_bridge_count(), s_keep_wifi ? ", keeping Wi-Fi joined" : "");
+    printf("  bridges: %d open%s\n", os_bridge_count(), KEPT() ? ", keeping Wi-Fi joined" : "");
     printf("  mesh task stack left %u B\n", (unsigned)uxTaskGetStackHighWaterMark(s_task));
 }
 
@@ -1772,7 +1896,7 @@ static void print_peers(void)
                    (long long)((now - p->last_ms) / 1000), p->name[0] ? p->name : "(unclaimed)", p->level);
             continue;
         }
-        printf("%s %-6s %02x:%02x:%02x:%02x:%02x:%02x %4d dBm %3llds  %s", p->kind == OS_PEER_BEACON ? "beacon" : "badge ",
+        printf("%s %-6s %02x:%02x:%02x:%02x:%02x:%02x %4d dBm %3llds  %s", p->kind == OS_PEER_BEACON ? "beacon" : p->kind == OS_PEER_STATION ? "station" : "badge ",
                p->id, p->mac[0], p->mac[1], p->mac[2], p->mac[3], p->mac[4], p->mac[5], p->rssi,
                (long long)((now - p->last_ms) / 1000), p->name[0] ? p->name : "(unclaimed)");
         if (p->kind == OS_PEER_BEACON) {

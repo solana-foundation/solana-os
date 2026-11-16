@@ -18,6 +18,7 @@
 #include "os.h"
 #include "os_wifi.h"
 #include "os_settings.h"
+#include "os_service.h"
 #include "ui.h"
 
 static const char *TAG = "os";
@@ -123,6 +124,8 @@ os_key_t os_key_parse(const char *name)
 // Status bar
 
 static lv_obj_t *s_bar;
+static lv_obj_t *s_bell;     // background services' unread count (os_service_unread), hidden at 0
+static lv_obj_t *s_mark;     // a service's mark (os_service_mark: Collaborator's eye), hidden without one
 
 static void status_create(lv_obj_t *scr)
 {
@@ -142,6 +145,10 @@ static void status_create(lv_obj_t *scr)
     lv_obj_align(s_batt, LV_ALIGN_RIGHT_MID, -6, 0);
     s_wifi = ui_label(bar, &lv_font_montserrat_14, COL_DIM, LV_SYMBOL_WIFI);
     lv_obj_align(s_wifi, LV_ALIGN_RIGHT_MID, -76, 0);
+    s_bell = ui_label(bar, &lv_font_montserrat_14, COL_PURPLE, "");
+    lv_obj_set_hidden(s_bell, true);
+    s_mark = ui_label(bar, &lv_font_montserrat_14, COL_GREEN, "");
+    lv_obj_set_hidden(s_mark, true);
 
     // Brand gradient hairline under the bar.
     lv_obj_t *line = ui_gradient_bar(bar, 0, OS_STATUS_H - 2, BOARD_LCD_H_RES, 2);
@@ -184,6 +191,22 @@ static void status_update(void)
     }
     lv_obj_set_style_text_color(s_wifi, ui_col(c), 0);
     lv_obj_align_to(s_wifi, s_batt, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+
+    uint32_t mark_col = COL_GREEN;
+    const char *mark = os_service_mark(&mark_col);
+    lv_obj_set_hidden(s_mark, mark == NULL);
+    if (mark) {
+        lv_label_set_text(s_mark, mark);
+        lv_obj_set_style_text_color(s_mark, ui_col(mark_col), 0);
+        lv_obj_align_to(s_mark, s_wifi, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    }
+
+    int unread = os_service_unread();
+    lv_obj_set_hidden(s_bell, unread <= 0);
+    if (unread > 0) {
+        lv_label_set_text_fmt(s_bell, LV_SYMBOL_BELL "%d", unread > 99 ? 99 : unread);
+        lv_obj_align_to(s_bell, mark ? s_mark : s_wifi, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +221,19 @@ static void toast_show(const char *msg)
     lv_obj_move_foreground(s_toast);    // over a panel drawn after it (os_overlay)
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -22);
     s_toast_until = now_ms() + TOAST_MS;
+}
+
+bool os_toast_rows(int *y0, int *y1)
+{
+    if (!s_toast || lv_obj_is_hidden(s_toast)) {
+        return false;
+    }
+    lv_area_t a;
+    lv_obj_update_layout(s_toast);
+    lv_obj_get_coords(s_toast, &a);
+    *y0 = a.y1;
+    *y1 = a.y2;
+    return true;
 }
 
 static void toast_posted(void *arg)
@@ -430,8 +466,21 @@ static void switch_to(const os_app_t *app)
     }
 }
 
+static volatile int64_t s_last_key_ms;     // os_last_key_ms()
+
+int64_t os_last_key_ms(void)
+{
+    return s_last_key_ms;
+}
+
+bool os_held(void)
+{
+    return s_hold != NULL;
+}
+
 static void dispatch(os_key_t key, bool repeat)
 {
+    s_last_key_ms = now_ms();
     if (confirm_key(key, repeat) || overlay_key(key, repeat)) {
         return;
     }
@@ -528,9 +577,23 @@ static void capture_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     if (s_capturing) {
         int w = lv_area_get_width(area);
         static unsigned char b64[BOARD_LCD_H_RES * 2 * 4 / 3 + 8];
+        // A C app's frame went to the panel past LVGL (bsp_display_frame):
+        // the shot shows it as the panel did, over what LVGL has there.
+        int fx, fy, fw, fh;
+        const uint16_t *frame = bsp_display_frame_last(&fx, &fy, &fw, &fh);
+        static uint16_t row[BOARD_LCD_H_RES];
         for (int y = area->y1; y <= area->y2; y++) {
             size_t n = 0;
-            mbedtls_base64_encode(b64, sizeof(b64), &n, px + (y - area->y1) * w * 2, w * 2);
+            const uint8_t *line = px + (y - area->y1) * w * 2;
+            if (frame && y >= fy && y < fy + fh && area->x1 < fx + fw && area->x2 >= fx) {
+                memcpy(row, line, (size_t)w * 2);
+                for (int x = fx > area->x1 ? fx : area->x1; x < fx + fw && x <= area->x2; x++) {
+                    uint16_t v = frame[(y - fy) * fw + (x - fx)];
+                    row[x - area->x1] = (uint16_t)(v << 8 | v >> 8);
+                }
+                line = (const uint8_t *)row;
+            }
+            mbedtls_base64_encode(b64, sizeof(b64), &n, line, w * 2);
             b64[n] = 0;
             printf("SHOT %d %d %d %s\n", (int)area->x1, y, w, b64);
         }

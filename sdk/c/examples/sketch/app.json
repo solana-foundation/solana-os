@@ -1,0 +1,12 @@
+{
+  "id": "sketch-c",
+  "name": "Sketch",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Draw on a canvas and stamp a bundled PNG: images from C.",
+  "icon": "edit",
+  "accent": "FF754A",
+  "category": "demos",
+  "lang": "c",
+  "permissions": []
+}

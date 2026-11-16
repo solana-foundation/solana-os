@@ -10,6 +10,14 @@
 // written, so a power cut or a bad write leaves a slot that never matches.
 // Relaunching an app writes nothing; a new one erases ~50 ms per 4 KB of
 // its code. The slots take turns, which spreads the wear.
+//
+// A C app's native code (app.aot, lua_aot.h) uses the same slots, mapped
+// for instruction fetch (LUA_XIP_EXEC): mappings land above the PSRAM
+// heap's protected region, where the CPU may execute (measured on a badge,
+// lua_aot.c), so the code runs in place and no RAM is ever made executable.
+// For native code the slot's bytes are hashed through the mapping at every
+// launch, not only after a copy: what runs is exactly what the store signed
+// (the caller checked the signature over that SHA-256).
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +30,7 @@
 
 static const char *TAG = "lua_xip";
 
-#define SLOT_SIZE   (1024 * 1024)   // image + header; code.bin is at most LUA_PKG_CODE_MAX
+#define SLOT_SIZE   (1024 * 1024)   // image + header: LUA_XIP_MAX + HDR_SIZE
 #define SLOTS_MAX   8
 #define HDR_SIZE    4096            // a sector, so the image starts aligned
 #define SLOT_MAGIC  0x584C4F53u     // "SOLX"
@@ -72,12 +80,13 @@ static bool copy_in(const esp_partition_t *p, size_t off, const char *path, size
     return ok;
 }
 
-bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, lua_xip_t *out)
+bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, unsigned flags, lua_xip_t *out)
 {
     memset(out, 0, sizeof(*out));
     out->slot = -1;
     const esp_partition_t *p = code_part();
-    if (!p || !size || size > SLOT_SIZE - HDR_SIZE) {
+    _Static_assert(LUA_XIP_MAX == SLOT_SIZE - HDR_SIZE, "lua_xip.h's LUA_XIP_MAX");
+    if (!p || !size || size > LUA_XIP_MAX) {
         return false;
     }
     int slots = MIN((int)(p->size / SLOT_SIZE), SLOTS_MAX), use = -1, oldest = 0;
@@ -108,19 +117,24 @@ bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, lua_xip_t
     }
     const void *ptr;
     esp_partition_mmap_handle_t handle;
-    if (esp_partition_mmap(p, (size_t)use * SLOT_SIZE + HDR_SIZE, size, ESP_PARTITION_MMAP_DATA, &ptr, &handle)
-            != ESP_OK) {
+    bool exec = flags & LUA_XIP_EXEC;
+    if (esp_partition_mmap(p, (size_t)use * SLOT_SIZE + HDR_SIZE, size,
+                           exec ? ESP_PARTITION_MMAP_INST : ESP_PARTITION_MMAP_DATA, &ptr, &handle) != ESP_OK) {
         ESP_LOGW(TAG, "couldn't map slot %d", use);
         return false;
     }
-    if (copied) {
+    if (copied || exec) {
         // Check what reached the flash (the SD read and the write both),
-        // then mark the slot good.
+        // then mark the slot good. Native code: every time.
         uint8_t got[32];
         sha256(ptr, size, got);
-        slot_hdr_t h = { .magic = SLOT_MAGIC, .seq = top + 1, .size = (uint32_t)size };
-        memcpy(h.sha, sha, 32);
-        if (memcmp(got, sha, 32) || esp_partition_write(p, (size_t)use * SLOT_SIZE, &h, sizeof(h)) != ESP_OK) {
+        bool ok = !memcmp(got, sha, 32);
+        if (ok && copied) {
+            slot_hdr_t h = { .magic = SLOT_MAGIC, .seq = top + 1, .size = (uint32_t)size };
+            memcpy(h.sha, sha, 32);
+            ok = esp_partition_write(p, (size_t)use * SLOT_SIZE, &h, sizeof(h)) == ESP_OK;
+        }
+        if (!ok) {
             ESP_LOGW(TAG, "%s: slot %d doesn't match the file's SHA-256", path, use);
             esp_partition_munmap(handle);
             return false;

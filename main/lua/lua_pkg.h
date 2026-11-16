@@ -1,10 +1,15 @@
 #pragma once
 
-// Installed Lua apps on the microSD card (docs/LUA_API.md "The package"):
+// Installed apps on the microSD card (docs/LUA_API.md "The package"):
 // /sdcard/hh/apps/<id>/{main.lua, app.json, data.json}, the bundled files
 // under files/ and, for store installs, code.bin: the store's compiled code
-// (server/API.md "Compiled code"), which the host runs in place from flash. Shared by the host, the installer, the Apps library, the App
-// Store and the console.
+// (server/API.md "Compiled code"), which the host runs in place from flash.
+// A C app (2.3.0, docs/C_API.md; app.json "lang": "c") has no main.lua: its
+// code is app.wasm (WebAssembly, interpreted) and/or app.aot (the store's
+// native form of it for this badge's target, lua_aot.h); only the store
+// installer writes app.aot, after checking the store's signature and its
+// SHA-256, and the host checks the signature again at every launch. Shared by the host,
+// the installer, the Apps library, the App Store and the console.
 //
 // Reading one manifest is a small file read (fine from app callbacks);
 // scanning or removing directories blocks longer and belongs in a worker task.
@@ -22,7 +27,10 @@
 #define LUA_PKG_FILES_TOTAL (1024 * 1024)
 #define LUA_PKG_PATH_MAX    64              // "lib/quiz.lua"
 #define LUA_PKG_PATH_DEPTH  4
-#define LUA_PKG_CODE_MAX    (1536 * 1024)   // code.bin
+#define LUA_PKG_CODE_MAX    (1536 * 1024)   // code.bin, app.wasm, app.aot
+
+#define LUA_PKG_LANG_LUA    0
+#define LUA_PKG_LANG_C      1
 
 typedef enum {
     LUA_PERM_LED = 1 << 0,
@@ -35,9 +43,13 @@ typedef enum {
     LUA_PERM_HTTP = 1 << 7,
     LUA_PERM_RPC = 1 << 8,
     LUA_PERM_BLE = 1 << 9,
+    LUA_PERM_MAIL = 1 << 10,       // Mailbox (2.3.0)
+    LUA_PERM_BACKGROUND = 1 << 11,  // a service.lua that runs while the app is closed (2.3.0)
+    LUA_PERM_FILES = 1 << 12,       // 2.3.0: the app's folder on the card (lua_files.c)
+    LUA_PERM_INVENTORY = 1 << 13,   // 2.3.0: profile.items / profile.pages, the owner's items and Guide pages
 } lua_perm_t;
 
-#define LUA_PERM_COUNT  10
+#define LUA_PERM_COUNT  14
 
 typedef struct {
     char id[LUA_PKG_ID_MAX + 1];
@@ -59,6 +71,19 @@ typedef struct {
     bool code;
     int32_t code_size;
     uint8_t code_sha[32];
+    // A C app: the manifest's "code": {"wasm": {sha256, size}, "aot":
+    // {target, sha256, size, sig}}. aot is true only when its target is this
+    // build's label (LW_AOT_TARGET) and it carries a signature; whether the
+    // signature verifies (lw_aot_sig_ok) and the badge can run it
+    // (lw_aot_usable) are asked where it's used.
+    uint8_t lang;           // LUA_PKG_LANG_*: "lang" absent is Lua
+    bool wasm;
+    int32_t wasm_size;
+    uint8_t wasm_sha[32];
+    bool aot;
+    int32_t aot_size;
+    uint8_t aot_sha[32];
+    uint8_t aot_sig[64];    // the store's Ed25519 signature (lua_aot.h)
 } lua_pkg_t;
 
 // ^[a-z0-9-]{3,24}$ (the store's rule); also keeps ids safe in paths.
@@ -70,10 +95,11 @@ bool lua_pkg_valid_id(const char *id);
 // leave the app's files/ folder.
 bool lua_pkg_valid_path(const char *path);
 
-// A file of app <id> as the console and the installer name it: "main.lua"
-// and "app.json" are the app's own, any other valid path is a bundled file
-// (apps/<id>/files/<path>). Fills `rel` (relative to OS_DATA_DIR) and the
-// size limit; false for an invalid name.
+// A file of app <id> as the console and the installer name it: "main.lua",
+// "app.json" and "app.wasm" (a C app's module) are the app's own, any other
+// valid path is a bundled file (apps/<id>/files/<path>). "app.aot" is never
+// one: native code comes only from the store installer. Fills `rel`
+// (relative to OS_DATA_DIR) and the size limit; false for an invalid name.
 bool lua_pkg_file_rel(char *rel, size_t n, const char *id, const char *file, size_t *max);
 
 // 64 hex digits into 32 bytes. false unless that's exactly what s is.
@@ -87,7 +113,8 @@ void lua_pkg_hex(char *out, const uint8_t *bin, size_t n);     // out: 2n + 1 by
 // want_id, the manifest's id must match it.
 bool lua_pkg_parse(const char *json, const char *want_id, lua_pkg_t *out);
 
-// Read apps/<id>/app.json. false if the card, the app or its main.lua is missing.
+// Read apps/<id>/app.json. false if the card, the app or its code is missing
+// (main.lua; for a C app app.wasm or app.aot).
 bool lua_pkg_load(const char *id, lua_pkg_t *out);
 
 // Installed apps sorted by name; returns the count (≤ max), -1 without a card.
@@ -117,7 +144,7 @@ void lua_pkg_hosts_line(const struct cJSON *hosts, char *out, size_t n);
 // The same from apps/<id>/app.json (a small file read). false without any.
 bool lua_pkg_hosts(const char *id, char *out, size_t n);
 
-// Permission names: "led" ... "ble", and a plain-words description.
+// Permission names: "led" ... "background", and a plain-words description.
 const char *lua_perm_name(int bit_index);
 const char *lua_perm_text(int bit_index);
 uint32_t lua_perm_parse(const char *name);     // 0 if unknown

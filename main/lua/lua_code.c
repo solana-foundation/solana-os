@@ -65,7 +65,7 @@ bool lh_code_open(lh_t *s)
     // A slot may still hold this code after a console upload deleted
     // code.bin (the app's files changed): only the file says it's current.
     struct stat st;
-    if (stat(path, &st) != 0 || !lua_xip_map(path, s->pkg.code_sha, (size_t)s->pkg.code_size, &s->code)) {
+    if (stat(path, &st) != 0 || !lua_xip_map(path, s->pkg.code_sha, (size_t)s->pkg.code_size, 0, &s->code)) {
         printf("[lua:%s] no compiled code (%s): compiling main.lua\n", s->pkg.id, rel);
         return false;
     }

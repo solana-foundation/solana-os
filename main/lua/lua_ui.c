@@ -259,6 +259,14 @@ lh_obj_t *lh_ui_check(lua_State *L, lh_kind_t kind, const char *what)
     return check_kind(L, kind, what);
 }
 
+lh_obj_t *lh_ui_test(lua_State *L, int idx, lh_kind_t kind)
+{
+    lh_handle_t *h = luaL_testudata(L, idx, s_meta[kind]);
+    lh_t *s = h ? ui_session(L) : NULL;
+    lh_obj_t *o = s ? &s->objs[h->slot] : NULL;
+    return o && o->obj && o->gen == h->gen && o->kind == kind ? o : NULL;
+}
+
 static lv_obj_t *base_obj(lv_obj_t *parent, int x, int y, int w, int h)
 {
     lv_obj_t *o = lv_obj_create(parent);

@@ -25,6 +25,9 @@ bool os_data_mkdirs(const char *rel);
 // or NULL if missing or longer than max. write replaces atomically (tmp + rename).
 char *os_data_read(const char *rel, size_t max, size_t *len_out);
 bool os_data_write(const char *rel, const char *data, size_t len);
+// Is rel there (or the .tmp an interrupted os_data_write left)? A read that
+// returns NULL for a file that exists is an error, not "empty".
+bool os_data_exists(const char *rel);
 bool os_data_append(const char *rel, const char *line);    // adds '\n'
 bool os_data_remove(const char *rel);                       // file or directory tree
 
