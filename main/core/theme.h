@@ -32,6 +32,7 @@
 #define COL_CAT_HISTORY     COL_YELLOW
 #define COL_CAT_PEOPLE      COL_LPURPLE
 #define COL_CAT_LORE        COL_LIME
+#define COL_CAT_GOSSIP      COL_PURPLE  // 2.4.0: the game's accent, the one brand colour left
 #define COL_RARITY_COMMON   COL_DIM
 #define COL_RARITY_RARE     COL_BLUE
 #define COL_RARITY_EPIC     COL_PURPLE

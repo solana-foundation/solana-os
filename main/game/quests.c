@@ -388,8 +388,11 @@ static void on_app_chunk(const cJSON *res)
         return;
     }
     char dest[128];
-    dl_path(dest, sizeof(dest), "code.bin");
-    unlink(dest);                       // the store's compiled code of an earlier copy: it runs from source now
+    static const char *const stale[] = {"code.bin", "app.aot", "app.wasm"};
+    for (int i = 0; i < 3; i++) {       // compiled code of an earlier copy (and a C app's module): it's a Lua app now
+        dl_path(dest, sizeof(dest), stale[i]);
+        unlink(dest);
+    }
     dl_path(dest, sizeof(dest), "main.lua");
     unlink(dest);
     ok = rename(path, dest) == 0;

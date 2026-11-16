@@ -6,6 +6,574 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## 2.4.0 (unreleased)
+
+Gossip, the event game on the badge mesh (the parent repo's docs/GOSSIP.md), run by the
+OS, with the `gossip` module for apps (permission `gossip`), roles, and the boss fight.
+Also: fixed TLS record buffers, a Gossip category in the Guide, and one battery reading for
+the whole OS.
+
+### Gossip: the node
+
+- **The node service** (`game/gossip.c`, built-in service `gossip`, Purple, stoppable,
+  starts at boot; Settings > Gossip is the same switch; console
+  `gossip [status|peers|progs|sync|on|off|bench]`). While claimed, on, and with a clock (a
+  sync since boot), the badge's HELLO carries `st` and `g` (GOSSIP.md §4, 123 bytes
+  measured, one fragment; `os_mesh_hello_extra`), the tag recomputed on the OS task when
+  the window, the program, the class or the boost changes; trait 3's programs stay quiet
+  30 min after adoption. It hears other badges' and roles' `g`, accumulates exposure once
+  a second in integers with the server's `Cfg` (built-in defaults: `thr 6000`,
+  `decay 10`), makes exposure records, flickers the LEDs in the program's colour (not
+  while an app is open) and notifies; it syncs `POST /api/device/gossip/sync` (60 s, 20 s
+  opted in to roles, 2 s in a session, 5 s while the server is taking a queue) and keeps
+  `node.json`, `out.jsonl` and `progs/` in `/sdcard/hh/gossip/` (RAM only without a card:
+  8 records). State: one 16 KB allocation in PSRAM at boot.
+- **Records are checked** off the OS task by a short-lived task: the PDA in one try with
+  its bump, then the server's Ed25519 signature (71 ms on a production badge), with the
+  key from `GET /api/device/gossip/key` kept in NVS per server. A signature that fails
+  fetches the key again (at most every 2 minutes) and checks again what failed: the server
+  signs each record as it serves it, so a key rotation costs a badge one refetch.
+- **Hearing holds a source to little**: its HELLOs count once a second, it holds one
+  hearing entry (a listed role id four) whose newest program takes its place, and a source
+  whose record came back `bad` or `unknown` is not heard for 10 minutes (one badge cycling
+  made-up addresses could otherwise keep all eight entries of every badge near it).
+- **A lost answer no longer stops it**: a sync, or a fetch of the key, with no answer in
+  30 s is given up and goes again (os_api drops an answer when the OS queue stays full).
+  Console `api lose <path>` drops the next answer to test it.
+- **Notices wait out a fight**: while the badge votes in a boss fight, or its own boss
+  fights, Gossip holds its notices (a toast would cover the fight's lower bars) and shows
+  the last three after the fight, the first with a count of any it dropped (`gossip
+  notice` makes a test one; `gossip status` shows what is held).
+- `game/gossip_genome.c`: the genome, base58, PDA, record and HELLO-tag code, free of
+  LVGL and Lua; `tests/gossip/genome_test.py` checks it against the contract's vectors.
+
+### Gossip: roles and the boss fight
+
+- **Roles** (`game/gossip_role.c`, `gossip_role_app.c`, `gossip_role_boss.c`): a badge
+  whose owner turned on Settings > May become a leader takes the server's offer (it accepts
+  by itself after 30 s unless declined) and puts the role on the air as a second identity:
+  a station with the role HELLO of GOSSIP.md §4, tagged with the session's role key, a
+  Leader's block turning every 10 s. It ends at `until`, by the owner, under 15 % off USB,
+  when a Collaborator takeover or a badge beacon needs the second identity (`busy`), or
+  90 s without a sync, and reports how with the next sync. A badge keeps one role id from
+  session to session; never more than its own id and one other per MAC.
+- **The `gossip` app id** (MESH.md "Gossip"): the OS's own APP messages, through one
+  subscriber that only copies on the mesh task (a 24-entry ring in PSRAM) and parses on
+  the OS task. `claim`/`ack` (the role answers by itself, once per claimant per 5 s, at the
+  close range where the role needs it), `bid` to a Leader (≤ 16 kept), `cure`/`cured`
+  (every badge answers a Validator when it holds a listed spam program, signed with its
+  mesh key). Sends keep §4's rates: a badge 1 a second (2 in a fight), a role 4.
+- **The boss fight**: the metronome and its `boss` broadcast twice a second (with `mb`,
+  the first beat it may root at), fork beats (one in eight), a voter table of ≤ 160 in
+  PSRAM. The block can't be rooted before `RoleState.boss.minBeats` (the server's
+  `bossMinBeats`, 60 by default; a missing one reads as 60), then at 2/3 of the recent
+  voters finalized with at least `min` (`bossMinVoters`). A summary counts only when
+  plausible: a lockout earned (`l ≤ 2^(v-1)`), `v` at most the beats so far + 1, none
+  before beat 0, and a voter only once heard in two vote periods (three made-up ids sending
+  `{v:1,l:32}` could otherwise end a fight at once). Players follow the broadcast, send a
+  vote summary every ~2 s and claim at the end by themselves.
+- **Late claims in a full hall**: a finished boss stays on the air 90 s after the server
+  ended its session, broadcasting once a second and acknowledging claims; a player's
+  automatic claim tries for 90 s, its first try 0-3 s after it hears the end and then
+  every 3-6 s, so a hall doesn't ask at once. A new offer ends that wait (the server makes
+  one only after the 90 s by its clock). A role sends 4 messages a second, two of them
+  the beat in a fight: in the emulator 100 claimants were all acknowledged, half by 27 s,
+  the last at 53 s.
+- **os_mesh: the senders heard.** A second, light table of every sender a HELLO came from
+  (192 entries in PSRAM, under a lock), the HELLOs the 20-entry peer table had no room for
+  too. It admits APP messages from senders the peer table left out, and an APP message to
+  an id the peer table lacks goes to the MAC that id's HELLO bound there (`os_mesh_send`,
+  `os_mesh_station_send`, `os_mesh_near`): in a full hall a boss takes the votes and
+  answers the claims of players past its 20 peers, and a player whose table has no room
+  for the boss still votes, bids and claims. Only a HELLO binds an id to a MAC; the peer
+  table still decides what is listed. Emulator, 100 voters: 144 of 1000 votes without it,
+  all with it. Without PSRAM: the peer table's rule alone. `mesh status` counts it, `mesh
+  senders on|off` (RAM) switches it to measure.
+- **os_mesh: a newer station id from a MAC replaces the older** after 3 HELLOs over 6 s
+  with none of the older between, as an id's MAC change (`os_mesh_station_hello` replaces
+  a station's HELLO): a badge's next role is heard about 6 s after its first HELLO, and a
+  MAC spoofer can't knock a live role off its listeners' tables.
+- **Console** `grole` (status, counters, the fight's beat jitter) and a RAM-only test mode
+  (`grole test on`) that stands in for the node service and the server. Tests:
+  `main/lua/tests/gossip-role/run.ts` (four emulated badges, a fake server, the fan-in
+  measurement), `main/lua/tests/gossip/run.ts`, `tests/t-gossip-role`.
+- Measured on two production badges side by side (−41 dBm): the beat a player predicts
+  from one `boss` broadcast to the next moves by 0 ms on average, 3 ms at most; votes from
+  one badge into a boss at up to 200 a second all arrived; a boss session costs ~0.3 KB of
+  SRAM and ~6 KB of PSRAM.
+
+### Gossip: the module
+
+- **`gossip`** (`lua/lua_gossip.c`, `lua/lua_gossip_role.c`; C: `gossip_*` in `badge.h`).
+  Reading (any app with the permission, services too): `me` (the Node plus `id`, `on`,
+  `synced`, `incubating`, `lead`, `name_nodes`, `close`, `site`, `ach`; items carry `pick`
+  for the Upgrade Authority+; empty slots are `false`), `programs`, `program`, `genome`,
+  `nearby` (roles too, `spam` on a badge carrying live spam), `hearing`, `role` (offer,
+  session with `on_air_p`, the program in its HELLO now, and for a boss `min` and
+  `minBeats`; or what an ended role paid), `boss` (the fight heard nearby, beat and ms
+  moved to the read, `minBeats`). Events through `on_gossip`: `exposed`, `result`, `node`,
+  `event`, `role`, `boss`, `bid`, `ack`, `cured`. Acting, for the Lab (`gossip-lab`)
+  alone: `set_class`, `activate`, `place`, `drop`, `deploy`, `use`, `name`, `public`,
+  `lead`, `role_answer`, `role_end`, `block`, `bids`, `fork`, `voters`, `bid`, `claim`,
+  `cure`, `vote`. Times reach apps as unix seconds. C: `gossip_me_t` gains `lead`,
+  `name_nodes`, `ach_n`, `ach_pts`, `site`; `gossip_role_t` `min_beats`, `on_air_p`;
+  `gossip_boss_t` and `gossip_voters_t` `min_beats`.
+- The SDK's mock host (`sdk/c/tests/mock-host.ts`) takes a value as already encoded only
+  when its `t` is a type number, so an `on_gossip` event (whose `t` is a string) reaches a
+  mocked app; `tests/gossip/` mocks the module for the Lab (`lab-mock.ts`, 23 scenarios).
+
+### Also in 2.4.0
+
+- **TLS: fixed record buffers.** mbedTLS's dynamic buffers are off
+  (`CONFIG_MBEDTLS_DYNAMIC_BUFFER=n`, with its `DYNAMIC_FREE_*` options), as a security
+  risk: they freed and reallocated the record buffers around every message. Each open
+  TLS connection (the kept-alive server connection, an app's WebSocket, an update's
+  download) now holds a 16 KB input buffer (TLS's largest record, which any host may
+  send) and a 2 KB output buffer until it closes, ~19.8 KB of PSRAM (0.7 KB before); its
+  SRAM cost is unchanged. Measured on a production badge: a full handshake peaks at
+  ~41–44 KB of PSRAM (26–33 KB before), a resumption at ~26–29 KB (24–26 KB), and with a
+  Lua app, a C app or Bluetooth on the SRAM figures match the dynamic build's to within
+  100 B. `os_http` and `os_ws` refuse a new handshake below 68 KB free (52 KB to resume)
+  or a 17 KB block, up from 56 KB (40 KB) and 8 KB: limits that bind only on a chip
+  without PSRAM.
+- **Guide: a ninth category, Gossip** (Purple), last in its list: the game and the
+  Solana ideas behind it. Older badges get its pages as Tech docs from the server; a
+  category the server adds later no longer lands on Events' counts.
+- **Console: room for 32 commands** (`os_cmd.c`, 16 before). 2.4.0 registers 19 (`gossip`,
+  `grole` and `batt` are new); the 17th onwards used to be dropped at boot.
+
+### Battery
+
+- **The battery percentage, fixed** (`core/os_battery.c`, `core/battery_calc.c`). Before,
+  every reader (the status bar every second, HW Debug, the updater, app services,
+  Collaborator, Gossip roles, `sys.battery()`) took its own single reading, the mean of 8
+  ADC samples, and drew a straight line from 3.30 V (0 %) to 4.15 V (100 %). Measured on
+  a production badge on USB: one sample varies by 13.7 mV (standard deviation) and up to
+  154 mV with Wi-Fi joined (4.1 / 76 mV with it off), so on battery the number jumped up
+  and down every second with each Wi-Fi burst. Now one filtered reading for the whole OS,
+  made once a second on the OS task: 16 samples with the 4 highest and 4 lowest dropped
+  (6.3 mV / 52 mV with Wi-Fi joined, 1.4 / 8 mV off), the median of the last 9 seconds,
+  a 60-second average, a LiPo curve (Meshtastic's default `OCV_ARRAY`, 4.19 V = 100 %,
+  3.10 V = 0 %, linear between 10 % steps) and a number that only falls while on battery
+  (it starts again from a fresh reading after each time on USB). It reads 0 % at 3.10 V
+  instead of 3.30 V, where the badge still runs.
+- **What the badge can't know** (from the board file): the sense reads VSYS behind the
+  power path (22k/22k), not the cell, so on USB it reads VBUS less a Schottky (~4.8 V) and
+  the cell (charging, full or missing) is out of sight; the MCP73831's STAT pin drives the
+  red (charging) and blue (charged) LEDs only. The status bar shows "USB" and nothing
+  more. The charger is set to 100 mA (PROG 10 kΩ), so a flat 1000 mAh cell needs about
+  10 hours to fill: a badge unplugged after an hour or two reads low, correctly.
+- Thresholds, before (old line) → now (filtered, the curve): 15 % (app services,
+  Collaborator, Gossip roles) 3428 → 3360 mV; 50 % (the server's pick of a Gossip role,
+  from `batt`) 3725 → 3720 mV; 70 % (software update) 3895 → 3890 mV.
+- **Console `batt`**: the reading; `batt noise [s]` (single samples and bursts, mean, sd,
+  spread); `batt log on [s]` appends a line every 60 s (and at every USB change) to
+  `/sdcard/battery.csv` (outside `/sdcard/hh`; uptime, unix time, raw and filtered mV,
+  percent, USB, Wi-Fi, brightness, LED load) until `batt log off` or a restart;
+  `batt log [tail [n]|clear]`. Off by default, nothing kept in RAM. `bsp_battery_percent`
+  is gone; `bsp_battery_read` gives single samples. Host test:
+  `sh main/core/tests/battery_test.sh`.
+
+## 2.3.0 (unreleased)
+
+C apps, background services with the first two built on them (Mailbox and
+Collaborator), and apps' reads of the player's inventory, on 2.2.0's ESP-IDF master. Two
+server features of the same release show on the badge unchanged: the update quest and
+`lamps.award` allowances (below).
+
+- **C apps.** Store apps written in C (`docs/C_API.md`; the SDK in `sdk/c/`): the store
+  compiles an app's C to WebAssembly, and the badge runs it in
+  [WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) 2.4.5's classic
+  interpreter, vendored in `main/lua/wamr/` (a subset, Apache-2.0 WITH LLVM-exception;
+  its changes are listed in its README and marked "Solana OS"). The Lua host stays the
+  host: a C app gets the usual Lua state with every API module, its "main chunk" is the
+  module (`main/lua/lua_wasm.c`), and the module's imports (`sdk/c/include/badge_abi.h`,
+  `SOS_ABI` 1) are a small checked Lua C API over that state, so a C app has exactly the
+  Lua API, permissions and limits, and the host's events, timers, sockets, Bluetooth,
+  error screen and `lua mem` work for it unchanged. wasi-libc's few WASI calls are
+  `main/lua/lua_wasi.c` (stdout and stderr to the console as `print`, the clock, random
+  bytes, `proc_exit` as `sys.exit()`). A module importing anything else doesn't load, and
+  the error names the import; one built for a newer ABI is refused with an update hint.
+- **Checked, and errors never cross WAMR.** Every index, pointer and length is checked, at
+  most 64 values a frame and 1024 kept values (`sos_ref`); an app's mistake stops it with
+  a readable message. Imports that can raise a Lua error run protected and turn it into a
+  WAMR exception; the Lua error is raised only once WAMR has unwound (the one jump across
+  WAMR is the watchdog's, out of stuck native code, below).
+  `sos_call` is `lua_pcall`, but out of memory, the budget and a trap in a nested callback
+  always stop the app. Traps read as words on the error screen ("The app read or wrote
+  outside its memory (out of bounds memory access)", "The app divided by zero", ...),
+  titled "App error", "App took too long" or "Out of memory".
+- **One heap cap, two budgets.** WAMR's allocations (module, instance, linear memory, its
+  32 KB stack) go to the app's counted heap through Solana OS's platform layer
+  (`main/lua/lua_wasm_port.c`), so the module and the Lua state share the 6 MB cap in
+  PSRAM with its reserve, and `sys.memory()` reports both; `memory.grow` past it answers
+  -1 (`malloc` returns NULL). WAMR starts and stops around each C app. CPU, interpreted:
+  WAMR's instruction metering, `LUA_HOST_WASM_STEPS_MAX` (2 000 000) wasm instructions a
+  callback, shared by the callbacks nested in it (a patch: stock WAMR gave each nested
+  call a fresh budget). Native: `LW_AOT_CALLBACK_MS` (200 ms) of native time a callback,
+  shared the same way; the badge's own work in an import or in growing memory doesn't
+  count. Host work (fs, crypto, canvas drawing) still counts against the 200 000 host
+  steps. Over either: "App took too long".
+- **Every way a callback spends time is bounded** (from a security review). A callback
+  holds the LVGL lock, so the badge's UI, HOME included, waits for it:
+  - *Bulk memory, interpreted.* `memory.fill`, `memory.copy` and `memory.init` cost one
+    instruction per 4 bytes (`SOLANA_OS_WASM_BULK_BYTES` in `main/sources.cmake`, a patch
+    in `wasm_interp_classic.c`), charged before the work. Before, one opcode cost one
+    instruction whatever its length: 3 000 fills of 3.75 MB in one callback were charged
+    19 563 instructions. Measured on a badge: `memset` 12 KB/ms and `memmove` 8 KB/ms in
+    PSRAM against 2 200 to 4 500 plain instructions a ms, so 4 bytes take about an
+    instruction's time and a callback moves at most 8 MB.
+  - *Bulk memory, native.* wamrc's run-in-place code calls `memset`, `memmove`/`memcpy`
+    and `aot_memory_init` through the native symbol table; WAMR's `aot_memset` and
+    `aot_memmove` now go to `lw_aot_memset`/`lw_aot_memmove` (`main/lua/lua_aot.c`), which
+    work in 4 KB pieces and leave through the innermost `setjmp` once the app must stop
+    (a patch in `aot_runtime.c`; `memory.init` uses them too). Their time is native time.
+    Before, the program counter sat in the runtime's `memset`, never in the module, so the
+    watchdog never fired and a loop of them never stopped. Measured: a loop of 3.75 MB
+    `memset`s or `memmove`s stopped after 200-201 ms of native time, of `memory.init`s
+    after 207 ms. The other helpers native code can reach (soft-float, 64-bit division,
+    the intrinsics, `aot_call_indirect`, `aot_check_app_addr_and_convert`) return within
+    microseconds; the watchdog, when the program counter isn't in the module, now tries
+    again after a random 0.25 to 1.25 ms instead of 10 ms (a soft-float loop stopped
+    after 207-222 ms, passes 3 to 21). Growing the linear memory is refused (`memory.grow`
+    answers -1) once the app must stop.
+  - *Imports, by length.* What an import does for the app costs host steps
+    (`lw_charge`, `main/lua/lua_wasm.h`): 1 a call, 4 more for `sos_call`, 1 per 4 bytes
+    copied (`sos_push_str`, `sos_to_str`, `sos_get`/`sos_set` keys), 32 per byte written
+    to the console (`sos_log`, `fd_write`, and Lua's `print` when a C app calls it), 6 per
+    random byte; `fd_write` takes at most 4 buffers and 1 KB a call (a short count, which
+    stdio carries on from) and `random_get` at most 4 KB (`EINVAL` past it). Measured on
+    a badge: the console writes 11 bytes a ms, `esp_fill_random` 520 bytes a ms; loops of
+    1 KB writes stopped after 6 KB of output, a 2.5 MB push before copying, and the SDK's
+    API probe (92 checks in one `on_start`) used 119 886 of the 200 000 steps. Before,
+    2 000 pushes of 2.5 MB in one callback cost no host steps. The host-steps message is
+    now "Over 200000 host steps in one callback (copies, output, fs, crypto, drawing)".
+  - *The ceiling.* One callback of a C app ends after 3 s of wall-clock time whatever it
+    does (`LW_CALLBACK_MAX_MS`): every import checks it, and on a badge the watchdog
+    (which now watches interpreted apps too) sets the stop flag, aims native code at the
+    trampoline and zeroes the interpreter's remaining count, which the interpreter reads
+    after every import and at every bulk memory operation. "App took too long" ("The app
+    ran over 3 s in one callback"). Measured with the other limits raised in a test build:
+    a native loop, a native `memset` loop, native and interpreted loops of imports and an
+    interpreted `memset` loop each stopped 3.0 to 3.3 s after the callback began.
+- **Nothing runs outside the budget at load.** WAMR runs a module's start function, and
+  exports named `__wasm_call_ctors` or `__post_instantiate`, while it instantiates the
+  module, on an exec env of its own with no instruction limit: a 114-byte module looped
+  there for as long as it liked. The SDK makes none of them (its constructors run from
+  `_initialize`, under the budget) and the server refuses a start section, but sideloads
+  and edited cards never pass the server: the badge now refuses all three before
+  instantiating, for `app.wasm` and `app.aot` alike ("The app has a start function, which
+  the badge doesn't run (rebuild it with the SDK)", "The app exports __wasm_call_ctors,
+  which the badge doesn't run (rebuild it with the SDK)"). Data and element segments are
+  bounded by the file; the initial memory by the heap cap.
+- **Each file is the format its name says.** WAMR's loader picks WebAssembly or native
+  code from the first bytes, and the badge's WAMR has the AOT runtime, so an AOT file
+  sideloaded as `app.wasm` went to the AOT loader unsigned and then jumped into the PSRAM
+  heap (a fault and a restart, since that memory isn't executable). The badge now checks
+  the magic before the loader sees the bytes: `app.wasm` must start with `\0asm`
+  ("app.wasm is native code, not WebAssembly: only the store's signed app.aot runs
+  natively", or "app.wasm isn't WebAssembly"), `app.aot` with `\0aot`. Measured: refused
+  on a badge, no restart.
+- **The store's key, after a rotation.** A launch that finds no key or a signature the
+  cached key doesn't verify still runs `app.wasm`, and now, when the badge is online,
+  asks the server for the key again in the background, once per boot (never in a loop;
+  an offline launch leaves it to a later one), so the next launch can verify; `lua aot
+  <id>` shows the refresh and its outcome.
+- **The package.** `app.json` `"lang": "c"`; the code is `app.wasm` (interpreted) and,
+  when the store made one for this badge's target (`AOT_TARGET` in
+  `sdk/c/toolchain/versions`), `app.aot`; no `main.lua`. The App Store installs `app.wasm`
+  and, when its target matches, it fits a flash slot (1 MB less 4 KB) and the store's
+  signature verifies, `app.aot`, each checked against the manifest's SHA-256; only the
+  installer writes `app.aot`. The console's `lua put`/`recv` take `app.wasm` (never
+  `app.aot`), any console write deletes `app.aot` as it deletes `code.bin`, `lua sums`
+  lists `app.wasm`, `lua list` marks C apps and `lua mem` shows the module, its linear
+  memory, and the most wasm instructions (interpreted) or native time (native) in a
+  callback. App Store and Apps show a small "C" on C apps.
+- **Native C apps.** `app.aot` (wamrc `--xip`, `sdk/c/toolchain/wamrcflags`) runs in place
+  from the flash slots Lua's `code.bin` uses (`main/lua/lua_xip.c`, `LUA_XIP_EXEC`: an
+  instruction mapping above the PSRAM heap's protected region, where the C5 executes;
+  no RAM is made executable, no sdkconfig change). The slot is copied in unless it holds
+  the code already, and its bytes are hashed through the mapping at every launch; the
+  mapping stays until WAMR unloads the module. The seam is `main/lua/lua_aot.c`; the
+  executable-memory hooks it had are gone (a file that isn't `--xip` asks for executable
+  RAM and doesn't load).
+- **Only the store's native code runs.** The store signs `sos-aot1|<target>|<sha256>`
+  with Ed25519 and puts the signature in the manifest's `code.aot.sig`; the badge fetches
+  the store's key (`GET /api/device/aotkey`), keeps it in NVS (`cloud`/`aotkey`, dropped
+  with the server identity), checks the signature at install (fetching the key again
+  once if it fails: rotation) and again at every launch before anything is mapped. No
+  key, no signature, a bad one, a file of the wrong size or a slot that doesn't hash to
+  the signed SHA-256: the app runs `app.wasm`, and without one the error screen says it
+  can't start. The deciding half is portable (`main/lua/lua_aot_trust.c`, both builds:
+  the key's fetch and cache, the signed message, the Ed25519 check, the target and slot
+  checks, the launch's decision); only running native code and the watchdog are the
+  badge's (`main/lua/lua_aot.c`). The installer checks the signature before it asks
+  whether the hardware runs native code, so the emulator fetches the key and verifies
+  every `code.aot.sig` too (then takes `app.wasm`); `app.json` keeps `code.aot` whichever
+  form was installed. A slot found by the signed SHA-256 is mapped without reading the
+  card and hashed, so what runs is the signed code even if `app.aot` on the card changed.
+- **`lua aot <id>`** says why a C app runs `app.aot` or `app.wasm`: this build's target,
+  the manifest's, whether the store's key is cached (its first 8 hex digits), whether
+  the signature in `app.json` verifies, `app.aot`'s size, whether it fits a slot and is
+  the signed SHA-256, and which form runs and why. `lua aotkey` fetches the key from the
+  server now and caches it (one word: `lua aot key` was `lua aot <id>` for an app whose
+  id is `key`). Neither ever writes `app.aot`.
+- **The C app warning** (`docs/C_API.md` "What players are told", `main/apps/c_warning.h`):
+  the App Store's details of a C app and the Apps library's info show "C apps can be more
+  dangerous", and installing or updating one asks first in the OS's confirm dialog, once
+  per install (never for a Lua app; `lua install` doesn't ask).
+- **Stopping stuck native code.** An `esp_timer` checks the running callback's native time
+  every 10 ms; past 200 ms it sets a flag every import checks on entry and return, and
+  when the app's task is preempted inside the module's code it points the task's saved
+  program counter at a trampoline that `longjmp`s to the innermost call into the module.
+  Only the module's frames and WAMR's call path lie between (each nested callback has
+  its own `setjmp`); the error then travels the normal way and the app ends with "App
+  took too long" ("Native code ran over 200 ms in one callback"). WASI imports keep
+  WAMR's libc-wasi signatures for native apps: wamrc compiles them as direct calls.
+- **Measured on a badge** (HYQ5VS, prototype, ESP32-C5 rev 1.2; USB; Wi-Fi off). Every
+  regression app in `main/lua/tests/c/` interpreted and native: each trap, bad pointer
+  and index, the memory cap, the unknown-import and wrong-ABI cases on the error screen,
+  never a restart. A stuck loop stopped natively after 204-210 ms (first watchdog pass);
+  a callback that spins, called through `pcall` from native code, after 203-207 ms; a
+  soft-float loop (the program counter mostly in the helpers) after 236-295 ms (pass 4
+  to 10); a loop calling an import after 208-210 ms of native time. Interpreted, the same
+  apps stop at 2 000 000 instructions, with no task-watchdog warning. Launch of a native
+  app: the signature check 57-76 ms every time; the slot copy at first launch 34-58 ms
+  for 1-4 KB, 290-380 ms for 46-76 KB; later launches map and hash a 46 KB slot in
+  3.6-3.8 ms (about 120 ms from `lua run` to the app booted, against about 460 ms the
+  first time and 90 ms for the same app interpreted). Through the bridge: the cheapest
+  import 4 us native, 7 us interpreted; a full 320 x 216 canvas `sos_blit` 16.4-16.7 ms
+  either way (17.3 ms in the benchmark below, which also has the label figures). The
+  interpreter ran a plain loop at about 4 500 wasm instructions a ms. A starfield frame (examples/starfield's drawing, 160 x
+  108 at 2x) takes 7 ms native, 33 ms interpreted: 19.4 and 12.6-13.2 frames a second
+  (the screen is the limit natively). Lua task stack left (of 12 KB): 7.2 KB native and
+  7.0 KB interpreted for hello, 2.4 KB native and 3.8 KB interpreted at the deepest
+  nesting the test reaches (it ends with "The app ran out of stack"). SRAM free for
+  malloc: launcher 125.4 KB, hello running 110.2 KB native / 112.0 KB interpreted, the
+  speed test 113.0 / 113.0 KB; PSRAM free 8.36 MB at the launcher, 8.24 / 8.22 MB with
+  hello. 20 launch and exit cycles of a native app: SRAM free 157 KB before and after,
+  largest block 96 KB before and after. A Lua app with `code.bin` ran in place from a
+  slot next to native code in the others; `t-crypto` and `t-coro` pass.
+- **The Lua task yields** a tick at least once a second even when frames leave no wait
+  between ticks: a C app drawing the whole screen otherwise starved the idle task and
+  the task watchdog warned (seen on a badge).
+- **The installer's acceptance step, on a badge** (a test build running the installer's
+  own `install_c_code` on a task of its stack size and priority, with apps signed by the
+  server's code, `server/src/aotsign.ts`): the store's signature verifies, `app.wasm`
+  and `app.aot` are hashed and kept; a tampered `app.aot` is refused. The task's stack
+  (5 120 bytes, unchanged) never had less than 748 bytes left over a measurement frame
+  about 300 bytes bigger than the worker's; reading the manifest (`lua_pkg_load`) and
+  the card and logging go deepest, not the signature check or SHA-256 (both stay above
+  it). The console's 5 KB REPL task keeps 1.4 KB after `lua aot`. On the final build:
+  hello and starfield native from their slots, a stuck loop stopped after 206 ms (pass
+  1), a changed signature and a changed `app.aot` (its slot doesn't hash to the signed
+  SHA-256) run `app.wasm`.
+- **C against Lua, measured** (`sdk/c/bench/`: the same thirteen workloads as a C app
+  and a Lua app with matching checksums, and `run.py`, which drives them over the
+  console; the tables are in `docs/C_API.md` "Speed and limits: C against Lua"). On
+  HYQ5VS (USB, Wi-Fi off, a test build that also took a native file over the console,
+  and with `kernels.c` in the firmware at GCC `-O2` behind a console command, kept out of
+  the tree): the native form ran at 0.97-1.25 times the firmware's time on eight of ten
+  workloads (integer Mandelbrot 62.5 / 50.4 ms a frame), 1.97 on SHA-256 and 2.41 on a
+  frame small enough to stay in the cache (byte-wise 32-bit accesses and bounds checks);
+  interpreted C ran at about Lua's speed on integers (Mandelbrot 5 283 / 5 307 ms) and
+  85 times slower than native; native C was 50-130 times faster than Lua on integer and
+  pixel work, 3.1 with floats, 2.1 copying, and slower than Lua through the API (a
+  label's text 357 us native, 625 interpreted, 181 in Lua). Measured limits: Lua got
+  5.50 MB of strings before "The app needs more than 6 MB", C 3.94 MB of `malloc` before
+  `NULL`; 17 KB of SRAM for an open app in all three; recursion 303 levels native, 378
+  interpreted, over 26 000 in Lua. A second full pass with Wi-Fi joined matched within
+  10 % (two Lua canvas rows 18-28 %). wamrc's `+unaligned-scalar-mem` made native files
+  25 % smaller and SHA-256 1.6 times faster, and misaligned 32-bit accesses worked on
+  this badge; not adopted (it needs a new `AOT_TARGET` and a production badge's check).
+- **What it costs.** About 120 KB of flash (2.1.0's image 2 340 704 bytes, now
+  2 463 216). Nothing while no C app runs.
+- **Not measured on a badge yet:** a real store install over the network (fetching the
+  key from a server that serves it, then downloading `app.aot`; checked end to end in
+  the emulator against a real test server instead, `server/test/cemu.test.ts`), the TLS
+  floor with a C app open (the benchmark ran a full pass with Wi-Fi joined and the badge
+  registered with its server), a production badge (C5 rev 1.0), battery.
+- **`tools/cc/badge-cc --aot`** refuses a native file a badge can't run in place (not
+  `--xip`, or a `.rela.text` code relocation group), so a local build fails where the
+  store would.
+- Tests: `main/lua/tests/c/` (regression apps for every import, the callbacks, each trap,
+  the limits, the console and a store install against a stand-in server, and the SDK's
+  `sdk/c/tests/host` probe of `badge.h`, 92 checks; `build.sh`, then
+  `bun main/lua/tests/c/run.ts`, headless in the emulator), and
+  `server/test/cemu.test.ts` (the emulated badge against a real test server: publish,
+  install with the key fetched and the signature verified, run, `lua aot`, tampering).
+- **Heavy C apps and emulators**, measured on a production badge (4YGWAV, ESP32-C5 rev 1.0)
+  on ESP-IDF 6.0.1, before the move to master; the tables are in `docs/C_API.md` "Heavy
+  apps and emulators".
+- **`ui_frame` / `sos_frame`**: a C app's RGB565 frame straight to the screen's SPI DMA,
+  past LVGL (`bsp_display_frame`), returning while the screen still takes it. An unscaled
+  big-endian frame in a 64-byte-aligned buffer goes with no copy (1.0 to 1.4 ms for
+  160 x 144, against 6.5 to 6.9 copied and 17.3 ms for a 320 x 216 `ui_canvas_blit`);
+  others are converted (scaled, nearest) into a PSRAM buffer kept until the app exits.
+  Nothing while a dialog, the keyboard or the OS panel is up; only the rows above a toast.
+  The linear memory is 64-byte aligned (`lua_wasm_port.c`) and `memory.grow` waits for a
+  frame in flight, as the app's exit does, so the DMA never reads memory that moved.
+  Screenshots show copied frames.
+  On ESP-IDF master the SPI bus takes a whole screen per transaction and the panel's DMA
+  reads PSRAM directly (`psram_dma_direct`): master's esp_lcd stopped splitting big buffers
+  and bounced PSRAM ones through SRAM. Measured there: 9.2 ms a 160 x 144 frame without a
+  copy (the wire at 40 MHz), 15.0 copied, 31.4 scaled 1.5x (`tests/c/t-c-fbench`).
+- **`files`** (permission `files`, Lua and C): the app's own folder `hh/files/<id>/` for
+  files the owner copies there (read-only) and its saves in `save/` (1 MB a file, 32
+  files); names, never paths. C reads go straight into the app's memory
+  (`sos_file_read`). The console takes them: `lua recv <id> files/<name> ...` (32 MB).
+  Wiped with `/sdcard/hh` by a reset or a new owner. A background service reads them
+  (`files.dir`, `list`, `size`, `read`) but doesn't write; only the app does.
+- **`profile.items` / `profile.pages`** (permission `inventory`, bit 13; Lua and C:
+  `profile_items`, `profile_pages`, `profile_item_info`, `profile_page_info`): the badge owner's
+  items (id, kind, name, the app or quest that made it; never another app's data) and the
+  Guide pages they hold (with copies), paged by the server's cursor, 10 an answer. A
+  background service may read them. The permission reads "See the items and Guide pages
+  you hold" in the store details and Apps info. Regression apps `tests/t-inv`,
+  `tests/c/t-c-inv`. Measured on 4YGWAV (production; both installed from a store): 30 items
+  in 3 calls and 20 pages in 2, no item's data; 143 KB of SRAM free at the launcher (86 KB
+  largest block), ~130 KB while the Lua or the native C app walks (70 KB), 143 KB again
+  after each closes.
+- **The update quest** (server side, the parent repo's server/API.md "The update quest"):
+  when an admin offers a build to every badge, running it pays 100 !LAMPs once per X
+  account, with a Mailbox notice from Solana. No firmware change: Quests > Quest log shows
+  it as a row ("Update to Solana OS 2.3.0", its step "Settings > Software update on your
+  badge"), the last list it got when offline. Seen on 4ZT2BX: 2.2.0 listed it, updated over
+  the air, its next hello paid once and the notice arrived.
+- **`lamps.award` allowances** (server side, docs only here: `docs/LUA_API.md`,
+  `docs/C_API.md`): an author asks for one when publishing; an organiser grants it, or
+  another amount, and the author's badge gets a notice from Solana. Seen on 4YGWAV: asked 50,
+  granted 30, three awards of 20 paid 20, 10 and 0.
+- **`sys.tick(ms)` / `sys_tick()`**: on_tick's period, 16 to 1000 ms; an app that sets it
+  is woken by a one-shot timer, so 16 ms is 16, not the scheduler's 20. A service keeps its
+  1 s tick: `sys.tick` is nil there.
+- **`sdk/c/examples/gameboy`**: a Game Boy / Game Boy Color emulator (Walnut-CGB 1.2.4,
+  MIT): native, real homebrew runs at 56 to 60 emulated fps and 45 to 56 shown; games
+  that never idle at 23 to 35 (double speed 14 to 18); interpreted it is unplayable (one
+  frame over 3 s). GBA: no (SkyEmu's core, 0.7 fps as an app, 2.6 in the firmware).
+- **`wamrc +unaligned-scalar-mem` stays off**: on the production badge it made an
+  emulator 1.7 times slower (faster on the prototype). Bounds checks cost an emulator
+  about 30 %; they stay on.
+- **Background services** (`main/core/os_service.h`, the parent repo's docs/HHGTS.md
+  "Background services"). One registry of everything that runs while its app is closed:
+  built-in services register at boot (id, name, status line, state, start/stop, whether
+  the owner may stop it, start at boot remembered in NVS `svc/<id>`, an unread count), and
+  app services (`background` permission, `docs/LUA_API.md` "service", `docs/C_API.md`
+  "service") show up through one provider hook from the Lua host. The mesh, X Dex
+  swaps, Trade invites, the quest relay and the server link are listed (always on).
+  `os_service_notify()` is the one way a service tells the owner something (a toast
+  `<Service>: <text>`, an optional LED flash, one every 10 s); the status bar shows a bell
+  and the count while any service has something unread.
+- **Services** (`services`, Purple, after Apps): the list, each service's status, memory and
+  start-at-boot, stop (after a confirm) and start. Console: `svc [list|start|stop|boot|test]`;
+  `svc test on` and a restart register a test-only service. Measured on a prototype: opening
+  and closing Services five times left the largest block as it was (98 304 B); the free heap
+  moved by what the console's history costs per command (~40 B).
+- **App services** (`main/lua/lua_svc.c`, the `background` permission, `docs/LUA_API.md`
+  "service", `docs/C_API.md` "service"): an app's `service.lua` (a C app: a second
+  instance at `on_service_start`) keeps running after the app closes, in a state of its own
+  on one "svc" task: 1 MB of PSRAM heap, 100 000 instructions and a second per callback,
+  2 000 000 a minute, a tick a second, 4 timers >= 1 s, 8 events waiting, 3 services at once.
+  Its globals leave out the screen, LEDs, Wi-Fi, Bluetooth, sockets, the radio's channel and
+  everything that spends. The owner's yes is an `os_confirm`; `/sdcard/hh/services.json`
+  keeps it; services that were running start again ~10 s after boot; stops: the owner
+  (Services, `svc stop`), the app, removal, updates (paused around the swap), quest-app
+  expiry, three failures, low battery, low memory, a software update. The app and its
+  service share `storage`. `lua_host_call()` lets built-in code call a named callback in an
+  app's service and app; Mailbox's `on_mail` reaches a service through `lua_svc_call()`, and a
+  service reads its mail (`mail.list`, `mail.get`) but can't send any. C services share the one WebAssembly runtime:
+  they pause while a C app is open. Measured on a prototype: the svc task's 12 KB stack is
+  the SRAM cost (117 060 B malloc-able at the launcher with none, 103 412 with one, 103 944
+  with three); 20 stop/start cycles left the largest block as it was.
+- **Mailbox** (`game/mailbox.c`, `apps/mailbox/`, `lua/lua_mail.c`; the parent repo's
+  docs/HHGTS.md "Mailbox" and server/API.md "Mailbox"). A built-in background service
+  (`mailbox`: stoppable, starts at boot) collects the owner's notifications from Solana
+  (admins and admin keys), apps' servers and other badges' apps whenever hello says some wait
+  (`mail`, 0-99), which includes the first hello on Wi-Fi: pages of `GET /api/device/mail`
+  and an ack. Up to 50 on the card (`/sdcard/hh/mail/`, the oldest read one goes first),
+  in PSRAM while it runs (~23 KB), the text read on first use; everything from the server is
+  cut to its field and printable ASCII. A toast `Mailbox: <sender>: <title>` with a Yellow
+  flash, and the status bar's bell. **Mailbox** (Yellow, after My Badge): the list, the
+  reader (open the app it came from, delete, mute the app, report and block another
+  badge's sender), muted apps; offline it shows the card's copy. Console: `mail [status|
+  list|show|sync|hello|read|rm|clear]`.
+- **`mail`** for apps (permission `mail`, `docs/LUA_API.md` "mail", `docs/C_API.md` "mail"):
+  `mail.send` (through the outbox, offline too; a second apart), `mail.list`, `mail.get`,
+  `on_mail` (while the app is open, and when Mailbox opens the app on its mail); C:
+  `mail_send`, `mail_count`, `mail_item`, `mail_get`, `mail_arg`, the `on_mail` export.
+  `tests/t-mail`.
+- **Collaborator** (`collab`, Green, after Services; `main/game/collab.c`, `main/apps/collab/`;
+  the parent repo's docs/HHGTS.md "Collaborator", server/API.md "Collaborator", docs/MESH.md
+  "Collaborator stations"). The owner lends the badge to the event: off by default, turned on
+  in its app after the OS's own consent dialog, then a built-in background service that starts
+  at boot until turned off. While on it syncs with the server every 30 s (live, a trickle of
+  !LAMPs the server decides); an admin may take it over: APP messages sent from a **station**
+  id the server gives (its own HELLO, `k:"s"`, next to the badge's, never the owner's id or
+  key), what nearby badges send to the station forwarded back, and, when the owner lends the
+  screen, a card, QR code, image (downloaded to the card), colour or countdown and an LED
+  pattern on the hidden takeover screen, shown only when the badge is idle and never over an
+  install, update, trade, swap or confirm. HOME or CANCEL there ends the takeover (forfeited);
+  the status bar's green eye shows whenever it's taken over. Ends under 15 % battery off USB.
+  Console: `collab [status|on yes|off|end|sync|lend on|off]`. `os_mesh_station()`,
+  `OS_PEER_STATION` (Lua `mesh.nearby()` kind `"station"`), two holders of keep-Wi-Fi, the
+  radio kept awake while anyone needs it; `os_service_def_t.mark` (a status-bar symbol) and
+  `os_service_mark()`; `os_held()`, `os_last_key_ms()`.
+- **Measured on a production badge** (4ZT2BX, C5 rev 1.0, Wi-Fi joined, at the launcher):
+  141-143 KB of SRAM free, 110 KB of it for malloc, an 86 KB largest block, idle and with
+  Collaborator live; one to three app services cost ~13 KB and split the largest block to
+  57 KB while the svc task lives (back to 86 KB once the last one stops); 15 minutes of
+  everything at once (Mailbox collecting, Collaborator live, a service, an app opened and
+  closed every minute) held steady, no restart. Over the air: 2.2.0 -> 2.3.0 under the
+  2.1.0 bootloader and 2.1.0 -> 2.3.0, each confirmed at the launcher; a 2.3.1 that aborts
+  before the launcher rolled back; app services stop for an update and start again after
+  it. The Game Boy example from the store, native and run in place: Libbet 53.5-60 emulated
+  and 48-59 shown fps, cgb-acid2 ~59.8 and ~48.5.
+- **From the hardware pass**: a service's crash guard counts only restarts the badge didn't
+  make itself (an orderly `reboot` or update within a service's first minute skipped it),
+  and why starting at boot went off survives a restart (`services.json` `why`); a long
+  Collaborator card title wraps instead of running off the screen; `mesh peers` names
+  stations; the console keeps one line of history, not 32 (each line a long-lived strdup in
+  SRAM).
+- **From the pull request's third review**: an app and its service closing at the same time
+  no longer lose the last change of one of them. A state's last save that found the other
+  state writing used to leave the change to that writer and close, and the writer, holding
+  an older copy and closing too, freed it. Now a last save waits for the write in flight
+  (at most 2 s) and then writes the newest copy, so every version committed before it began
+  reaches the card; later ones belong to the other state, whose own last save does the same.
+  Measured on 4ZT2BX with tests/t-svc-final (the service's last save on the card while the
+  app sets a key and exits, 300 rounds): 2.3.0's first build lost the app's key in 20,
+  this one in none; a close that waited ended within 280 ms of the other's write.
+- **From the pull request's second review**: a state that ended before it loaded `storage`
+  (a service whose `service.lua` doesn't compile) no longer releases the app's shared copy,
+  which made the app's later `storage.set()` calls succeed without being kept: each state
+  releases the reference it took, once; unsaved changes belong to the shared copy, so the
+  last state to close writes them whoever made them, and the two never write `data.json` at
+  once. A replaced card file whose rename failed is put back in place before the next write.
+  The app's own `service.start` runs the service even when the card can't record the start
+  (it used to be stopped with a bare "stopped"); a start nobody asked for that can't be
+  recorded is refused with a reason (`card error`), and a start of a service already
+  running never stops it.
+- **From the pull request's review**: an app and its service writing different `storage`
+  keys at once no longer lose one (the shared copy is replaced only if nobody replaced it
+  since; else rebuilt and tried again; of one key the last writer wins: measured on a
+  badge, 15 of 200 keys lost before, none after); a copy that can't be made is an error,
+  never "empty", and a failed save stays pending; `data.json` that exists but can't be read
+  stops the app instead of starting it empty; a replaced card file that couldn't be renamed
+  into place survives as `.tmp` and is read from there. An update restarts the app's
+  service only after the installer has finished, and a refused restart is retried (ten
+  updates in a row on a badge, the service running after each). Mailbox acknowledges only
+  what the card saved (a full or failing card leaves mail on the server); without a card it
+  acknowledges what it keeps in RAM. The takeover screen starts its LED pattern when it opens
+  and stops it when it closes (`collab` shows the LED state). A service start that can't be
+  recorded in `services.json` doesn't happen unless the app on screen asked.
+- **From the review**: a C app's `files_read` with a bad name pointer stops the app (it
+  could restart the badge, and from a service's start on every boot); a service whose start
+  never finished (the badge restarted under it) is skipped at the next boot and turned off
+  after three; a C service reads no buttons (`sys_keys` 0) and draws no frame (-1), the
+  rest of what it can't use returns `BADGE_ERR` (C_API.md "service"); the services' mesh
+  handler copies what it needs under its lock; a Collaborator image arriving during a
+  decode waits for it; `sys.tick`'s timer and Collaborator's two are made at boot.
+
 ## 2.2.0 (unreleased)
 
 Only the move to ESP-IDF master; nothing else changes from 2.1.0.

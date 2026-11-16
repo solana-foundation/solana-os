@@ -50,12 +50,20 @@ typedef struct {
     // Hello "beacon": this badge is also a quest beacon (server/API.md "Badge
     // beacons", game/beacon.c), pending or adopted. Kept in NVS. "" = not one.
     char beacon[8];
+    // Hello "mail" (2.3.0, server/API.md "Mailbox"): the owner's mail this badge
+    // hasn't collected yet, 0-99, from the last good hello. Not kept across boots.
+    int mail;
 } os_cloud_info_t;
 
 void os_cloud_init(void);                   // after os_wifi_init()
 void os_cloud_get_info(os_cloud_info_t *out);
 void os_cloud_refresh(void);                // say hello now instead of at the next poll
 void os_cloud_set_server(const char *url);  // saved to NVS; "" clears
+// Counts the changes of server since boot. What a request to the old server
+// brings back after a change belongs to the old server: note the number when
+// asking, and drop an answer that comes back under another (lua/lua_aot.h's
+// key). Any task.
+uint32_t os_cloud_server_gen(void);
 void os_cloud_set_beacon(const char *id);   // what pairing or the beacon's hello learned first ("" = none)
 
 // For os_api / os_mesh (any task).

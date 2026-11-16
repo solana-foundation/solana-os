@@ -85,6 +85,70 @@ static void flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px)
     lv_display_flush_ready(disp);
 }
 
+// bsp.h's frames past LVGL: straight into the page's framebuffer. The
+// badge keeps the last frame big-endian for screenshots; so does this.
+static uint16_t s_stage[BOARD_LCD_H_RES * BOARD_LCD_V_RES];
+static int s_fx, s_fy, s_fw, s_fh;
+static int64_t s_frame_us;              // when the last frame was drawn
+
+esp_err_t bsp_display_frame(const uint16_t *px, int stride, int w, int h, int x, int y, int dw, int dh, bool be)
+{
+    if (!s_disp || !px || w <= 0 || h <= 0 || dw <= 0 || dh <= 0 || stride < w) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+    int x1 = x + dw > BOARD_LCD_H_RES ? BOARD_LCD_H_RES : x + dw;
+    int y1 = y + dh > BOARD_LCD_V_RES ? BOARD_LCD_V_RES : y + dh;
+    if (x0 >= x1 || y0 >= y1) {
+        return ESP_OK;
+    }
+    int cw = x1 - x0, ch = y1 - y0;
+    for (int j = 0; j < ch; j++) {
+        int sy = (int)((int64_t)(y0 - y + j) * h / dh);
+        const uint16_t *row = px + (size_t)sy * stride;
+        uint32_t *dst = &s_fb[(y0 + j) * BOARD_LCD_H_RES + x0];
+        for (int i = 0; i < cw; i++) {
+            uint16_t c = row[(int64_t)(x0 - x + i) * w / dw];
+            if (be) {
+                c = (uint16_t)(c << 8 | c >> 8);
+            }
+            s_stage[j * cw + i] = (uint16_t)(c << 8 | c >> 8);
+            uint32_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+            r = (r << 3) | (r >> 2);
+            g = (g << 2) | (g >> 4);
+            b = (b << 3) | (b >> 2);
+            dst[i] = 0xFF000000u | (b << 16) | (g << 8) | r;
+        }
+    }
+    s_fx = x0, s_fy = y0, s_fw = cw, s_fh = ch;
+    s_frame_us = emu_now_us();
+    s_frame++;
+    return ESP_OK;
+}
+
+int bsp_display_frame_direct(void)
+{
+    return 0;
+}
+
+void bsp_display_frame_wait(void)
+{
+}
+
+void bsp_display_frame_end(void)
+{
+    s_fw = s_fh = 0;
+}
+
+const uint16_t *bsp_display_frame_last(int *x, int *y, int *w, int *h)
+{
+    if (!s_fw || emu_now_us() - s_frame_us > 500000) {
+        return NULL;
+    }
+    *x = s_fx, *y = s_fy, *w = s_fw, *h = s_fh;
+    return s_stage;
+}
+
 static uint32_t tick_ms(void)
 {
     return (uint32_t)(emu_now_us() / 1000);

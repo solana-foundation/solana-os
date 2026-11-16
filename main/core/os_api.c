@@ -208,9 +208,20 @@ static void deliver(void *arg)
     free(r);
 }
 
+// Console `api lose <path prefix>` (RAM only): the next answer to a matching
+// request is dropped as when the OS queue stays full, so a caller's recovery
+// from a lost answer can be tested (gossip's sync, 2.4.0).
+static char s_lose[48];
+
 static void post_result(req_t *r)
 {
-    for (int i = 0; i < POST_TRIES; i++) {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool lose = s_lose[0] && !strncmp(r->path, s_lose, strlen(s_lose));
+    if (lose) {
+        s_lose[0] = 0;
+    }
+    xSemaphoreGive(s_lock);
+    for (int i = 0; i < POST_TRIES && !lose; i++) {
         if (os_post(deliver, r)) {
             return;
         }
@@ -609,9 +620,17 @@ static int cmd_api(int argc, char **argv)
         }
         return err == ESP_OK ? 0 : 1;
     }
+    if (argc == 3 && !strcmp(argv[1], "lose")) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        strlcpy(s_lose, argv[2], sizeof(s_lose));
+        xSemaphoreGive(s_lock);
+        printf("api: the next answer to %s... is dropped\n", s_lose);
+        return 0;
+    }
     if (argc < 3) {
         printf("usage: api <GET|POST|PATCH|DELETE> <path> [json]   (write ' for \" in json)\n"
-               "       api download <path> <file under " OS_DATA_DIR ">\n");
+               "       api download <path> <file under " OS_DATA_DIR ">\n"
+               "       api lose <path prefix>   (drop the next answer, as a full OS queue does)\n");
         return 1;
     }
     char *body = NULL;

@@ -1,0 +1,18 @@
+# The C app toolchain, pinned. KEY=VALUE lines; the server reads this file too.
+# tools/cc/fetch.sh downloads exactly these (with the SHA-256s written in it).
+#
+# ABI: the badge_abi.h SOS_ABI these flags build for.
+# WASI_SDK: wasi-sdk 24.0 (clang 18.1.2). The newest release whose wasi-libc and
+#   compiler-rt stay inside MVP + mutable globals + sign extension (+ bulk
+#   memory in memcpy/memset/memmove): 25 and later build them with reference
+#   types / call-indirect-overlong, multi-value and extended-const, which a
+#   badge's WAMR (built without reference types) refuses (docs/C_API.md
+#   "How it is compiled").
+# WAMR: the runtime on the badge and wamrc, its ahead-of-time compiler.
+# AOT_TARGET: names the native code wamrcflags produce; the badge runs an
+#   app.aot only if it names its own (else it interprets app.wasm). Bump the
+#   last number with any change to wamrcflags.
+ABI=1
+WASI_SDK=24.0
+WAMR=2.4.5
+AOT_TARGET=rv32imac-xip-wamr2.4.5-2

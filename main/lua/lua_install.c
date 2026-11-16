@@ -7,7 +7,14 @@
 //      copied from the installed app when its SHA-256 matches, downloaded
 //      otherwise, and its hash checked either way
 //   3. with compiled code for this badge (the manifest's "code"), code.bin
-//      (server/API.md "Compiled code"), kept or downloaded like a file
+//      (server/API.md "Compiled code"), kept or downloaded like a file. A C
+//      app (2.3.0, "lang": "c") has no main.lua (its source answer is empty):
+//      its code is app.wasm (code?f=wasm) and, when the manifest's target is
+//      this build's, it fits a flash slot, the store's signature verifies
+//      (the key fetched when it isn't cached, lua_aot.h) and the badge can
+//      run native code, app.aot as well (code?f=aot), each checked against
+//      the manifest's SHA-256. The emulator checks the signature too, then
+//      takes app.wasm only
 //   4. app.json, and the installed app's data.json copied over
 //   5. the swap: apps/<id> -> apps/<id>.old, apps/<id>.new -> apps/<id>, and
 //      .old is removed
@@ -30,11 +37,15 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "cJSON.h"
 #include "core/os.h"
 #include "core/os_api.h"
+#include "core/os_cloud.h"
 #include "core/os_data.h"
+#include "lua_aot.h"
 #include "lua_host.h"
 #include "lua_install.h"
+#include "lua_xip.h"
 
 static const char *TAG = "lua_install";
 
@@ -49,6 +60,9 @@ static const char *TAG = "lua_install";
 
 static SemaphoreHandle_t s_mx;              // s_info, s_name, s_busy and the answer below
 static SemaphoreHandle_t s_swap;            // the renames vs lua_install_recover()
+// The app's background service, stopped for the swap (worker task): restarted
+// only once the worker cleared s_busy, or start() would answer "installing".
+static bool s_svc_was_running;
 static SemaphoreHandle_t s_answered;        // a download's callback ran
 static lua_install_info_t s_info;
 static char s_name[21];
@@ -56,6 +70,8 @@ static bool s_busy;
 static void *s_ctx;                         // os_api ctx of the download in flight
 static int s_status;
 static char *s_manifest;                    // its X-App-Manifest, decoded
+static bool s_key_saved;                    // GET /api/device/aotkey's answer carried a key
+static uint32_t s_key_gen;                  // os_cloud_server_gen() when it was asked (under the lock)
 
 static void lock(void)
 {
@@ -234,9 +250,8 @@ static int count_lines(const char *path)
     return n + (prev != '\n');
 }
 
-// One bundled file into the staging folder: the installed copy if it's the
-// same file, else a download. Either way its hash must match.
-// dest from the installed copy (have) when it has the same contents, else
+// One file into the staging folder: dest from the installed copy (have) when
+// it has the same contents, else
 // downloaded from url; either way its size and SHA-256 must match.
 static bool fetch_checked(const char *have, const char *dest, const char *url, long size, const uint8_t want[32],
                           bool *kept, char *why, size_t n)
@@ -291,6 +306,121 @@ static bool install_code(const char *id, const char *ver, const lua_pkg_t *pkg, 
     }
     ESP_LOGI(TAG, "%s: compiled code, %ld bytes%s", id, (long)pkg->code_size, kept ? " (kept)" : "");
     return true;
+}
+
+// GET /api/device/aotkey (lua_aot.h): the store's public key, cached for the
+// launches to come. OS task: cache it (a small NVS write), wake the worker.
+static void key_answered(int status, const char *body, void *ctx)
+{
+    lock();
+    if (ctx == s_ctx) {
+        s_ctx = NULL;
+        s_status = status;
+        s_key_saved = lw_aot_key_answer(status, body, s_key_gen);
+        xSemaphoreGive(s_answered);
+    }
+    unlock();
+}
+
+static bool fetch_key(uint8_t key[32])
+{
+    void *ctx = os_api_token();
+    lock();
+    s_ctx = ctx;
+    s_status = 0;
+    s_key_saved = false;
+    s_key_gen = os_cloud_server_gen();
+    unlock();
+    xSemaphoreTake(s_answered, 0);
+    esp_err_t err;
+    for (int i = 0; (err = os_api_call("GET", "/api/device/aotkey", NULL, 256, key_answered, ctx)) == ESP_ERR_NO_MEM
+                    && i < QUEUE_TRIES; i++) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    bool got = err == ESP_OK && xSemaphoreTake(s_answered, pdMS_TO_TICKS(ANSWER_WAIT_MS)) == pdTRUE;
+    lock();
+    bool saved = got && s_key_saved;
+    int status = got ? s_status : 0;
+    s_ctx = NULL;
+    unlock();
+    if (err == ESP_OK && !got) {
+        os_api_cancel(ctx);
+    }
+    if (!saved || !lw_aot_key(key)) {
+        ESP_LOGW(TAG, "no key for native code from the store (HTTP %d)", status);
+        return false;
+    }
+    return true;
+}
+
+// The store's native form for this badge: its target (lua_pkg_parse), room
+// in a flash slot, and the signature, checked against the cached key, or
+// the key fetched when there's none or (rotated) when it doesn't verify; then
+// whether this hardware runs native code at all. The trust checks come
+// first, so the emulator (which never does) checks every signature too.
+// false: app.wasm only, the log says why and *bad_sig says whether it was
+// the signature.
+static bool aot_wanted(const char *id, const lua_pkg_t *pkg, bool *bad_sig)
+{
+    const char *why = NULL;
+    *bad_sig = false;
+    uint8_t key[32];
+    if (!pkg->aot) {
+        return false;                       // none for this target (or no signature)
+    } else if (pkg->aot_size > LUA_XIP_MAX) {
+        why = "it doesn't fit a flash slot";
+    } else {
+        bool cached = lw_aot_key(key);
+        bool ok = cached && lw_aot_sig_ok(key, pkg->aot_sha, pkg->aot_sig);
+        if (!ok && fetch_key(key)) {
+            ok = lw_aot_sig_ok(key, pkg->aot_sha, pkg->aot_sig);
+        }
+        if (!ok) {
+            why = "the store's signature doesn't verify";
+            *bad_sig = true;
+        } else {
+            ESP_LOGI(TAG, "%s: the store's signature on app.aot verifies", id);
+            why = lw_aot_usable() ? NULL : "this badge can't run native code";
+        }
+    }
+    if (why) {
+        ESP_LOGW(TAG, "%s: app.aot not installed (%s): app.wasm", id, why);
+    }
+    return !why;
+}
+
+static bool install_c_file(const char *id, const char *ver, const char *file, const char *form, long size,
+                           const uint8_t sha[32], char *why, size_t n)
+{
+    char rel[64], have[160], dest[160], url[160];
+    bool kept;
+    snprintf(rel, sizeof(rel), "apps/%s.new/%s", id, file);
+    os_data_path(dest, sizeof(dest), rel);
+    lua_pkg_rel(rel, sizeof(rel), id, file);
+    os_data_path(have, sizeof(have), rel);
+    snprintf(url, sizeof(url), "/api/device/apps/%s/code?v=%s&f=%s", id, ver, form);
+    if (!fetch_checked(have, dest, url, size, sha, &kept, why, n)) {
+        return false;
+    }
+    ESP_LOGI(TAG, "%s: %s, %ld bytes%s", id, file, size, kept ? " (kept)" : "");
+    return true;
+}
+
+// A C app's code: app.wasm, and app.aot when the store's native form is for
+// this badge (aot_wanted). Only this writes app.aot, and only after the
+// store's signature and its SHA-256 both matched. The host checks the
+// signature again at every launch, and falls back to app.wasm.
+static bool install_c_code(const char *id, const char *ver, const lua_pkg_t *pkg, char *why, size_t n)
+{
+    bool bad_sig;
+    bool aot = aot_wanted(id, pkg, &bad_sig);
+    if (!aot && !pkg->wasm) {
+        strlcpy(why, bad_sig ? "This app's native code didn't verify. Try again"
+                : pkg->aot ? "This app has no code this badge can run" : "The store sent a bad manifest", n);
+        return false;
+    }
+    return (!pkg->wasm || install_c_file(id, ver, "app.wasm", "wasm", pkg->wasm_size, pkg->wasm_sha, why, n))
+           && (!aot || install_c_file(id, ver, "app.aot", "aot", pkg->aot_size, pkg->aot_sha, why, n));
 }
 
 static bool install_files(const char *id, const char *ver, char *why, size_t n)
@@ -376,11 +506,19 @@ static bool commit(const char *id, const char *manifest, char *why, size_t n)
         strlcpy(why, "Close the app to update it", n);
         return false;
     }
+    // Its background service (2.3.0) stops while the files change and starts
+    // again after, if the new version still asks for it (lua_svc_resume).
+    bool svc = lua_svc_pause(id);
+    if (lua_svc_active(id)) {
+        strlcpy(why, "Its background service is still stopping: try again", n);
+        return false;
+    }
     app_dir(cur, sizeof(cur), id, "");
     app_dir(old, sizeof(old), id, ".old");
     app_dir(nw, sizeof(nw), id, ".new");
     snprintf(from, sizeof(from), "%s/data.json", cur);
     snprintf(to, sizeof(to), "%s/data.json", nw);
+    s_svc_was_running = svc;                // the worker restarts it at its end, whatever happens next
     if (stat(from, &st) == 0 && !copy_file(from, to)) {
         return card_fail(why, n);           // the app's storage moves along
     }
@@ -423,10 +561,15 @@ static bool install(const char *id, lua_pkg_t *pkg, char *why, size_t n)
         }
     }
     urlenc(ver, sizeof(ver), pkg->version);
+    if (ok && pkg->lang == LUA_PKG_LANG_C) {
+        unlink(path);                       // a C app's source answer is empty: it has no main.lua
+    }
     if (ok && pkg->files > 0) {
         ok = install_files(id, ver, why, n);
     }
-    if (ok && pkg->code) {
+    if (ok && pkg->lang == LUA_PKG_LANG_C) {
+        ok = install_c_code(id, ver, pkg, why, n);
+    } else if (ok && pkg->code) {
         ok = install_code(id, ver, pkg, why, n);
     }
     ok = ok && commit(id, manifest, why, n);
@@ -447,6 +590,7 @@ static void worker(void *arg)
     unlock();
     lua_pkg_t pkg;
     bool update = lua_pkg_load(id, &pkg);
+    s_svc_was_running = false;
     bool ok = install(id, &pkg, why, sizeof(why));
     if (ok) {
         os_toast("%s %s", update ? "Updated" : "Installed", name);
@@ -461,7 +605,12 @@ static void worker(void *arg)
     strlcpy(s_info.error, why, sizeof(s_info.error));
     s_info.seq++;
     s_busy = false;
+    bool resume = s_svc_was_running;
+    s_svc_was_running = false;
     unlock();
+    // After s_busy: the version now in place (or the old one, kept) starts
+    // again; lua_svc keeps the request if start() refuses for a moment.
+    lua_svc_resume(id, resume);
     vTaskDelete(NULL);
 }
 

@@ -1,0 +1,12 @@
+{
+  "id": "tally-c",
+  "name": "Tally",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "A counter that remembers: storage from C.",
+  "icon": "list",
+  "accent": "64A8F2",
+  "category": "tools",
+  "lang": "c",
+  "permissions": []
+}

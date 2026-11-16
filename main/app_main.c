@@ -13,6 +13,8 @@
 #include "core/os_bridge.h"
 #include "core/os_mesh.h"
 #include "core/os_ota.h"
+#include "core/os_battery.h"
+#include "core/os_service.h"
 #include "core/console.h"
 #include "lua/lua_host.h"
 #include "game/game.h"
@@ -61,6 +63,7 @@ void app_main(void)
     if (bsp_battery_init() != ESP_OK) {
         ESP_LOGW(TAG, "battery ADC unavailable");
     }
+    os_battery_init();  // the first reading, before anything asks for the battery
     if (os_wifi_init() != ESP_OK) {
         ESP_LOGE(TAG, "wifi unavailable");
     }
@@ -74,6 +77,7 @@ void app_main(void)
     os_ble_init();      // the "ble" console command; Bluetooth stays off
 
     os_start();
+    os_service_boot();  // background services: `svc`, then the built-ins that start at boot (2.3.0)
     os_ota_init();
     console_start();    // last: the device console only sees commands registered before it
 }

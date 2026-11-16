@@ -4,6 +4,8 @@ How a badge app talks to other badges, to gadgets, to phones and to servers, whi
 pick for what, and working examples to start from. For Solana OS 1.0.0. The calls
 themselves are in the [Lua API](LUA_API.md); this guide is about choosing between them.
 The web shows it at `/apps/docs/connectivity` (raw Markdown: `/docs/connectivity.md`).
+C apps (Solana OS 2.3.0) make the same calls through `badge.h` (`mesh_send()`, `ble_scan()`,
+`http_get()`, ...), so everything here applies to them: see the [C API](C_API.md).
 
 ## The short version
 
@@ -331,6 +333,7 @@ Each folder is a complete app you can drop on `/apps/submit`, with a README:
 |---|---|
 | [`ble-button-box/`](examples/ble-button-box/) | a Bluetooth gadget for any ESP32 (an ESP-IDF project: one service, one characteristic that notifies when a button changes) and the badge app that finds it, subscribes and reconnects when it goes away |
 | [`ble-nearby/`](examples/ble-nearby/) | no connections: every badge advertises a team and a score and lists who is around, with their signal |
+| [`pinger/`](examples/pinger/) | a background service (permission `background`, 2.3.0): it answers mesh pings and counts who pinged while the app is closed, and tells the open app |
 | [`ble-link/`](examples/ble-link/) | two badges on one connection (the Nordic UART layout): a line typed or a key pressed on one shows on the other |
 | [`mesh-and-wifi/`](examples/mesh-and-wifi/) | a mesh game that reads `mesh.info()`, tells the player when it is online and on the mesh at once, and syncs a score with `mesh.pause()` / `mesh.resume()`, in batches that are safe to send again when an answer gets lost |
 | [`wifi-room/`](examples/wifi-room/) | the same game through the server only: a `ws` room on the app's own host, with the few lines of server it needs |

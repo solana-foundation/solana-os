@@ -75,6 +75,7 @@ set(PLATFORM_SRCS
     ${EMU}/platform/freertos_emu.c
     ${EMU}/platform/esp_emu.c
     ${EMU}/platform/esp_wifi_emu.c
+    ${EMU}/platform/wamr_emu.c
     ${CJSON_DIR}/cJSON.c
 )
 # Same depth cap as the badge (main/CMakeLists.txt): untrusted mesh JSON.
@@ -106,6 +107,13 @@ target_compile_options(lvgl PRIVATE -Os -w)
 add_executable(solana-os ${FW_SRCS} ${COUNTERPART_SRCS} ${PLATFORM_SRCS})
 target_link_libraries(solana-os PRIVATE lvgl)
 target_compile_definitions(solana-os PRIVATE ${FW_DEFS})
+# WAMR (C apps): the badge's settings from sources.cmake, without the AOT
+# runtime (lua/lua_aot.h), and with switch dispatch: computed gotos in the
+# interpreter loop become one huge br_table in wasm.
+set(WAMR_INCS ${SOLANA_OS_WAMR_INCLUDE_DIRS})
+list(TRANSFORM WAMR_INCS PREPEND ${MAIN}/)
+target_include_directories(solana-os PRIVATE ${WAMR_INCS})
+target_compile_definitions(solana-os PRIVATE ${SOLANA_OS_WAMR_DEFS} WASM_ENABLE_AOT=0 WASM_ENABLE_LABELS_AS_VALUES=0)
 # -Wall like the badge; clang also flags write-only statics that GCC accepts.
 target_compile_options(solana-os PRIVATE -Os -Wall -Wno-unused-but-set-global)
 set_target_properties(solana-os PROPERTIES

@@ -6,7 +6,7 @@
 
 static const char *TAG = "os_cmd";
 
-#define CMD_MAX 16
+#define CMD_MAX 32  // 19 registered on 2.4.0 (gossip, grole, batt pushed it past 16: svc was dropped)
 
 static os_cmd_t s_cmds[CMD_MAX];
 static int s_n;

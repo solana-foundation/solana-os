@@ -1,9 +1,7 @@
 // os_http on the badge: blocking esp_http_client requests over ONE kept-alive
 // connection to the server origin. RAM is the constraint here, not speed: a
-// TLS handshake needs ~35 KB, much of it in one piece (the 16 KB incoming
-// record buffer), and leaves the heap fragmented. Once the connection is up,
-// a request only needs record buffers the size of its records (dynamic
-// mbedTLS buffers; device answers are <= 4 KB). So the badge shakes hands
+// TLS handshake needs ~44 KB, part of it in one piece (the 16.7 KB incoming
+// record buffer), and leaves the heap fragmented. So the badge shakes hands
 // once, reuses the connection for hello, the device API and downloads, and
 // only refuses a NEW handshake when the heap could not hold it and still
 // leave ~24 KB for Wi-Fi and apps. The connection stays up while the badge is
@@ -15,6 +13,12 @@
 // 2.0.0: mbedTLS allocates from PSRAM (tls_calloc below), so a handshake no
 // longer takes SRAM and the guards below look at the PSRAM heap; on a chip
 // without PSRAM everything is as in 1.x.
+//
+// 2.4.0: mbedTLS's record buffers are fixed (sdkconfig.defaults, no
+// MBEDTLS_DYNAMIC_BUFFER): an open connection holds its 16.7 KB input and
+// 2.3 KB output buffers until it closes, ~19.8 KB of PSRAM in all (measured
+// on a production badge; 0.7 KB with the dynamic buffers before). Its SRAM
+// cost didn't change (~3 KB: the socket, lwIP, esp_http_client's buffers).
 
 #include <stdio.h>
 #include <string.h>
@@ -47,13 +51,16 @@ __attribute__((constructor)) static void tls_alloc_init(void)
 }
 
 #define TIMEOUT_MS      10000
-// Heap a new connection may start from. A full handshake peaks at ~33 KB, a
-// resumption with the saved session ticket at ~13 KB; either should leave
-// ~24 KB for Wi-Fi and apps. Dynamic mbedTLS buffers are sized per record,
-// and handshake records are a few KB, so no 16 KB block is needed up front.
-#define TLS_MIN_FREE    (56 * 1024)
-#define TLS_RESUME_FREE (40 * 1024)
-#define TLS_MIN_BLOCK   (8 * 1024)
+// Heap a new connection may start from (2.4.0, measured on a production badge
+// with fixed record buffers): a full handshake peaks at ~44 KB (~33 KB with
+// 2.3.x's dynamic buffers), a resumption with the saved session ticket at
+// ~28 KB (~26 KB); either should leave ~24 KB for Wi-Fi and apps. The input
+// buffer (16384 + 333 B) is one allocation made when the connection starts
+// and kept, so the largest block must take it. With PSRAM these never bind
+// (8 MB); they are what keeps a badge without PSRAM working.
+#define TLS_MIN_FREE    (68 * 1024)
+#define TLS_RESUME_FREE (52 * 1024)
+#define TLS_MIN_BLOCK   (17 * 1024)
 // Each reconnect is a handshake that fragments the heap (a resumption left a
 // 15 KB largest block on the badge). The front end keeps idle connections
 // for minutes, so stay connected across the 300 s hello of a claimed badge.

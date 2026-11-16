@@ -1,0 +1,11 @@
+{
+  "id": "bench-lua",
+  "name": "Bench Lua",
+  "version": "1.0.0",
+  "author": "Solana OS",
+  "summary": "C vs Lua benchmark, the Lua side: speed and limits on the console.",
+  "icon": "charge",
+  "accent": "14F195",
+  "category": "tools",
+  "permissions": []
+}

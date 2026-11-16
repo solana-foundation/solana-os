@@ -1,0 +1,11 @@
+{
+  "id": "pinger",
+  "name": "Pinger",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Ping badges nearby; your badge answers pings even while the app is closed.",
+  "icon": "bell",
+  "accent": "9945FF",
+  "category": "social",
+  "permissions": ["background", "mesh"]
+}

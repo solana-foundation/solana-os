@@ -126,6 +126,25 @@ ignores the channel).
   `main/lua/tests/t-ble-busy` the same way: advertising around links, a
   subscribe lost behind a full queue, a reconnect storm that timers outrun.
 
+### C apps: WAMR's interpreter
+
+C apps (Solana OS 2.3.0, `main/lua/lua_wasm.c`) run in the same WAMR
+interpreter as on the badge, compiled from the same sources with the same
+`WASM_ENABLE_*` settings (`main/sources.cmake`), two differences aside: no AOT
+runtime (`platform/lua_aot_emu.c` says no, so the emulator always interprets
+`app.wasm`; the trust checks before that, `main/lua/lua_aot_trust.c`, run as on a
+badge: the installer fetches and caches the store's key and verifies `code.aot.sig`,
+and `lua aot <id>` reports it), and switch dispatch (`WASM_ENABLE_LABELS_AS_VALUES=0`: computed
+gotos become one huge `br_table` in wasm). Every import is registered raw, so
+WAMR's `invokeNative` (a cast to a generic function type, which traps in wasm)
+is never called; `platform/wamr_emu.c` only satisfies the linker. Speeds and
+stack depths measured here say nothing about the badge's.
+- Test: `main/lua/tests/c/` (`build.sh`, then `bun main/lua/tests/c/run.ts`,
+  headless: the browser bits are stubbed, a stand-in server answers the store
+  installer). `EXAMPLES=1` also runs the SDK's built examples. `server/test/cemu.test.ts`
+  runs the emulated badge against a real test server: a C app published with the real
+  compiler, installed (the key fetched, the signature verified) and run, `lua aot`.
+
 ### Tasks and timing
 
 There are no threads (the site is static; no SharedArrayBuffer, no COOP/COEP).

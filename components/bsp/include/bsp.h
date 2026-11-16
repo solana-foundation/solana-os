@@ -54,6 +54,28 @@ uint8_t bsp_backlight_get_level(void);
 void bsp_display_invert(bool on);
 bool bsp_display_inverted(void);
 
+// An app's frame straight to the panel, past LVGL (Solana OS 2.3.0: C apps'
+// ui_frame). w x h RGB565 pixels, `stride` pixels a row, little-endian or
+// (be) big-endian as the panel takes them, scaled (nearest) to dw x dh at
+// screen position (x, y) and clipped to the screen; the caller has checked
+// the pixels are its to read. Hold the LVGL lock. Returns once the transfer is
+// queued: it finishes in the background, holding the LCD meanwhile
+// (bsp_bus.h), so the caller computes its next frame while the panel takes
+// this one. The pixels are converted into a staging buffer in PSRAM first,
+// except a big-endian frame of whole rows, unscaled and unclipped, in a
+// 64-byte-aligned buffer of whole 64-byte lines: the DMA reads that one where
+// it is, so the caller must not free or move it before the transfer is done
+// (bsp_display_frame_wait). LVGL's next redraw of the area paints over the
+// frame. bsp_display_frame_end() waits and frees the staging buffer.
+esp_err_t bsp_display_frame(const uint16_t *px, int stride, int w, int h, int x, int y, int dw, int dh, bool be);
+int bsp_display_frame_direct(void);     // 1: the last frame went from the caller's buffer (no copy)
+void bsp_display_frame_wait(void);      // the last frame's transfer is done
+void bsp_display_frame_end(void);
+// The last frame as it is on the panel (big-endian RGB565, w x h at x, y), for
+// screenshots; NULL when there is none or none came in the last 0.5 s (the
+// app stopped drawing them). Hold the LVGL lock.
+const uint16_t *bsp_display_frame_last(int *x, int *y, int *w, int *h);
+
 // ---- Buttons ----
 #define BSP_BTN_PB(n)   (1u << ((n) - 1))   // n = 1..6
 #define BSP_BTN_BOOT    (1u << 6)
@@ -70,5 +92,9 @@ uint32_t bsp_rgb_get(int index);    // 0xRRGGBB
 
 // ---- Battery ----
 esp_err_t bsp_battery_init(void);
-int bsp_battery_mv(void);           // -1 on error
-int bsp_battery_percent(int mv);
+// VSYS in mV (the cell on battery, VBUS less a diode on USB): 16 readings,
+// the 4 lowest and 4 highest dropped, the rest averaged. -1 on error. The
+// percentage is the OS's (core/os_battery.h), never worked out from this.
+int bsp_battery_mv(void);
+// n single calibrated readings of VSYS in mV into out (diagnostics): n, or -1.
+int bsp_battery_read(int *out, int n);

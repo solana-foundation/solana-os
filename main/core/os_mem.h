@@ -71,6 +71,12 @@ static inline size_t os_mem_sram_malloc_free(void)
     return os_mem_sram_less_pool(heap_caps_get_free_size(OS_MEM_SRAM_MALLOC));
 }
 
+// The low-water mark of that figure can't be read exactly: the heap keeps one
+// minimum for the SRAM and the pool together, and when the SRAM ran nearly
+// full, DMA and internal requests may have dipped into the pool too. So this
+// is a lower bound (the raw minimum less the whole pool); the truth lies
+// between it and the raw minimum (heap_caps_get_minimum_free_size of
+// OS_MEM_SRAM_MALLOC), which the console's `heap` prints as a range.
 static inline size_t os_mem_sram_malloc_min(void)
 {
     return os_mem_sram_less_pool(heap_caps_get_minimum_free_size(OS_MEM_SRAM_MALLOC));

@@ -5,10 +5,12 @@
 // have buffered with the upgrade answer (a host's greeting would stall).
 //
 // RAM is the constraint, as for os_http: the handshake to a host we never
-// spoke to is a full one (~33 KB at its peak), so it needs the same room as
-// os_http's first connection. Once open, the connection keeps record buffers
-// the size of its records (dynamic mbedTLS buffers), and a message costs its
-// own size.
+// spoke to is a full one (~44 KB at its peak, 2.4.0), so it needs the same
+// room as os_http's first connection. Once open, the connection holds
+// mbedTLS's fixed record buffers (16.7 KB in, 2.3 KB out, PSRAM first: 2.4.0
+// dropped the dynamic buffers) until it closes, and a message costs its own
+// size on top. The socket takes the server connection's place
+// (os_http_hangup() first), so the two never hold buffers at once.
 //
 // The badge server checked the host's addresses when it signed the URL; we
 // check them again from here, where a rebinding answer or the network's own
@@ -37,9 +39,10 @@ static const char *TAG = "os_ws";
 
 #define TIMEOUT_MS      10000
 #define HOST_MAX        64              // validate.ts: host names are at most 64 characters
-// os_http.c's room for a full handshake: ~33 KB at the peak, ~24 KB left over.
-#define TLS_MIN_FREE    (56 * 1024)
-#define TLS_MIN_BLOCK   (8 * 1024)
+// os_http.c's room for a full handshake (2.4.0, fixed record buffers): ~44 KB
+// at the peak, ~24 KB left over, and one block for the 16.7 KB input buffer.
+#define TLS_MIN_FREE    (68 * 1024)
+#define TLS_MIN_BLOCK   (17 * 1024)
 #define ANSWER_MAX      2048            // the upgrade answer's headers
 #define CONTROL_MAX     125             // RFC 6455: control frames carry at most this
 #define USER_AGENT      "SolanaOS-Badge/1"

@@ -6,7 +6,9 @@
 // picks the category. Pages of 10 load as the selection reaches the end.
 // Installing hands the app to lua_install (main.lua, app.json and the
 // bundled files, swapped in together once they're all on the card), which
-// keeps going if the store is closed; on_tick follows its progress.
+// keeps going if the store is closed; on_tick follows its progress. A C
+// app's details show the C app warning (apps/c_warning.h), and installing
+// or updating one asks first, with it, in os_confirm.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +26,7 @@
 #include "lua/lua_host.h"
 #include "lua/lua_install.h"
 #include "lua/lua_pkg.h"
+#include "apps/c_warning.h"
 
 #define ENTRIES_MAX     50
 #define PAGE_APPS       10
@@ -39,6 +42,7 @@ typedef struct {
     const char *symbol;
     int price;
     bool owned;
+    bool c;                 // a C app (2.3.0, "lang": "c"): a small tag in rows and details
 } entry_t;
 
 typedef struct {
@@ -77,6 +81,7 @@ static char s_job_rm[4][LUA_PKG_ID_MAX + 1];
 enum { REQ_LIST, REQ_LIB, REQ_DETAIL, REQ_BUY, REQ_KINDS };
 static void *s_req[REQ_KINDS];          // live request per kind, NULL = none
 static bool s_reask;                    // the price changed: ask again once details reload
+static bool s_c_ok;                     // this C app's warning was confirmed for the next install
 static uint32_t s_inst_seq;             // the last install end the store has taken in
 static int s_inst_done = -1;            // files the action line shows as done
 
@@ -158,6 +163,13 @@ static const char *installed_version(const char *id)
 {
     const ver_t *v = installed(id);
     return v ? v->version : NULL;
+}
+
+// A store row or details of a C app ("lang": "c"; absent is Lua).
+static bool is_c(const cJSON *o)
+{
+    const cJSON *lang = cJSON_GetObjectItemCaseSensitive(o, "lang");
+    return cJSON_IsString(lang) && !strcmp(lang->valuestring, "c");
 }
 
 static const char *size_text(char *out, size_t n, int bytes)
@@ -270,7 +282,8 @@ static void row(int i, ui_row_t *r, void *ctx)
     }
     const entry_t *e = &s_entries[i - c];
     snprintf(r->title, sizeof(r->title), "%s  %s", e->symbol, e->name);
-    strlcpy(r->sub, e->summary, sizeof(r->sub));
+    strlcpy(r->sub, e->c ? "C  " LV_SYMBOL_BULLET "  " : "", sizeof(r->sub));
+    strlcat(r->sub, e->summary, sizeof(r->sub));    // the row cuts it with "..."
     const char *have = installed_version(e->id);
     if (have) {
         bool update = strcmp(have, e->version) != 0;
@@ -364,6 +377,7 @@ static void list_cb(int status, const char *body, void *ctx)
             e->symbol = lua_pkg_symbol(cJSON_IsString(icon) ? icon->valuestring : NULL);
             e->price = jint(it, "price", 0);
             e->owned = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(it, "owned"));
+            e->c = is_c(it);
             s_n++;
         }
         jstr(j, "next", s_next, sizeof(s_next));
@@ -474,6 +488,7 @@ static void close_detail(void)
     req_cancel(REQ_DETAIL);
     req_cancel(REQ_BUY);
     s_reask = false;
+    s_c_ok = false;
     render_list();
 }
 
@@ -488,8 +503,8 @@ static void show_detail(void)
     lv_obj_set_pos(t, 10, 4);
     lv_obj_set_width(t, OS_ROOT_W - 20);
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
-    snprintf(line, sizeof(line), "v%s  by %s  " LV_SYMBOL_BULLET "  %s", d->e.version, d->author[0] ? d->author : "?",
-             size_text(size, sizeof(size), d->size));
+    snprintf(line, sizeof(line), "v%s  by %s  " LV_SYMBOL_BULLET "  %s%s", d->e.version, d->author[0] ? d->author : "?",
+             size_text(size, sizeof(size), d->size), d->e.c ? "  " LV_SYMBOL_BULLET "  C" : "");
     lv_obj_t *m = ui_label(box, &sol_mono_12, COL_DIM, line);
     lv_obj_set_pos(m, 10, 32);
     char num[16];
@@ -512,6 +527,9 @@ static void show_detail(void)
     lv_obj_set_style_pad_hor(body, 10, 0);
     lv_obj_set_style_pad_row(body, 6, 0);
     lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
+    if (d->e.c) {
+        c_warning_add(body);            // first, before anything that scrolls it away
+    }
     lv_obj_t *s = ui_label(body, &sol_font_14, COL_TEXT, d->e.summary);
     lv_obj_set_width(s, lv_pct(100));
     if (d->description[0]) {
@@ -569,6 +587,7 @@ static void detail_cb(int status, const char *body, void *ctx)
     d->e.symbol = lua_pkg_symbol(cJSON_IsString(icon) ? icon->valuestring : NULL);
     d->e.price = jint(j, "price", 0);
     d->e.owned = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, "owned"));
+    d->e.c = is_c(j);
     d->installs = jint(j, "installs", 0);
     d->ratings = jint(j, "ratings", 0);
     d->size = jint(j, "size", 0) + jint(j, "filesSize", 0);
@@ -659,6 +678,7 @@ static void note_installed(const char *id, const char *version)
 
 static void install(const entry_t *e)
 {
+    s_c_ok = false;                     // a confirmed warning counts for one install
     if (!os_data_ready()) {
         os_toast("Insert a microSD card");
         return;
@@ -728,6 +748,9 @@ static void buy_cb(int status, const char *body, void *ctx)
 
 static void buy_confirmed(bool yes, void *ctx)
 {
+    if (!yes) {
+        s_c_ok = false;                 // a C app's warning is asked again with the next try
+    }
     if (!yes || !s_open || !s_detail || ctx != s_req[REQ_DETAIL]) {
         return;
     }
@@ -742,6 +765,29 @@ static void buy_confirmed(bool yes, void *ctx)
     render_action();
 }
 
+// Installing or updating a C app asks first, with the warning, in the OS's
+// confirm: SELECT counts only once the dialog has been up a moment (the press
+// that opened it doesn't answer it), and leaving the app answers no. Once per
+// install: a purchase asks after it, and the install that follows doesn't.
+static void c_confirmed(bool yes, void *ctx)
+{
+    if (!yes || !s_open || !s_detail || ctx != s_req[REQ_DETAIL]) {
+        return;
+    }
+    s_c_ok = true;
+    detail_select();
+}
+
+static void ask_c(const entry_t *e, const char *have)
+{
+    char q[320], name[21];
+    lua_pkg_plain(name, sizeof(name), e->name);
+    int n = have ? snprintf(q, sizeof(q), "Update %s to v%s?\n\n", name, e->version)
+                 : snprintf(q, sizeof(q), "Install %s?\n\n", name);
+    snprintf(q + n, sizeof(q) - n, "%s\n\n%s", C_WARN_TITLE, C_WARN_BODY);
+    os_confirm(q, c_confirmed, s_req[REQ_DETAIL]);
+}
+
 static void detail_select(void)
 {
     const entry_t *e = &s_detail->e;
@@ -751,6 +797,8 @@ static void detail_select(void)
     const char *have = installed_version(e->id);
     if (have && !strcmp(have, e->version)) {
         lua_host_launch(e->id);
+    } else if (e->c && !s_c_ok) {
+        ask_c(e, have);
     } else if (!have && e->price > 0 && !e->owned) {
         char q[96], price[24], name[21];
         lua_pkg_plain(name, sizeof(name), e->name);
@@ -817,6 +865,7 @@ static void leave(void)
     req_cancel(REQ_DETAIL);
     req_cancel(REQ_BUY);
     s_reask = false;
+    s_c_ok = false;
     s_kb = NULL;            // deleted with the root
     free(s_detail);
     s_detail = NULL;

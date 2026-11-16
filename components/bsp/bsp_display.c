@@ -10,6 +10,9 @@
 #include "esp_lvgl_port.h"
 #include "display/lv_display_private.h"     // the dirty-area list, for merge_dirty()
 #include "misc/lv_area_private.h"
+#include "esp_cache.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "bsp.h"
@@ -80,9 +83,18 @@ static void merge_dirty(lv_event_t *e)
 
 // Replaces esp_lvgl_port's own callback, which only calls lv_display_flush_ready()
 // (esp_lcd logs a warning that it was overwritten).
+static volatile bool s_frame_busy;      // the transfer in flight is bsp_display_frame's, not LVGL's
+
 static bool flush_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
     BaseType_t woken = pdFALSE;
+    if (s_frame_busy) {
+        // Not LVGL's: telling it a flush is done would let it render into a
+        // buffer its own transfer still reads (bsp_display_frame below).
+        s_frame_busy = false;
+        xSemaphoreGiveFromISR(s_lcd_idle, &woken);
+        return woken == pdTRUE;
+    }
     lv_display_flush_ready(ctx);
     xSemaphoreGiveFromISR(s_lcd_idle, &woken);
     return woken == pdTRUE;
@@ -162,6 +174,17 @@ lv_display_t *bsp_display_start(void)
         .trans_queue_depth = 10,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
+        // ui_frame's colour buffers are in PSRAM: the DMA reads them there, as
+        // 6.0.1 did on its own. Without it master's spi_master copies each one
+        // into an SRAM bounce buffer (bsp_display_frame's no-copy path, 2.3.0).
+        // A frame's DMA may still be reading PSRAM when another task writes the
+        // flash (PSRAM is unreachable with the cache off). While an app can draw,
+        // the only flash writes are NVS commits (settings, Wi-Fi, the server link,
+        // Collaborator): an update holds the screen and a store-code slot is copied
+        // before its app runs. Measured on a prototype (2.3.0): 1 200 frames back to
+        // back under 16 NVS commits, no DMA error, hang or restart; at worst one
+        // frame could show wrong pixels until the next (tests/c/t-c-fstress).
+        .flags.psram_dma_direct = 1,
     };
     esp_lcd_panel_io_handle_t io;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BOARD_SPI_HOST, &io_cfg, &io));
@@ -237,4 +260,147 @@ void bsp_display_invert(bool on)
 bool bsp_display_inverted(void)
 {
     return s_inverted;
+}
+
+// ---------------------------------------------------------------------------
+// Frames past LVGL (bsp.h)
+//
+// LVGL's own path for a full app frame is a canvas: the app's pixels copied
+// into the canvas, then rendered strip by strip into the 2 x 7.5 KB draw
+// buffers (through the canvas's image decoder) and flushed, all on the LVGL
+// task after the app's callback has returned, so the app waits for every bit
+// of it. Here the pixels are byte-swapped (the panel takes RGB565 big-endian)
+// and scaled into one staging buffer, and the SPI DMA reads it from PSRAM
+// (SOC_PSRAM_DMA_CAPABLE; the cache is written back first) while the app goes
+// on. The staging buffer is kept from the first frame until
+// bsp_display_frame_end(): a frame is at most the screen, 150 KB of PSRAM.
+
+#define FRAME_ALIGN 64                  // the cache line: DMA from PSRAM needs whole lines
+
+static uint16_t *s_stage;               // big-endian pixels of the last frame
+static size_t s_stage_cap;
+static int s_fx, s_fy, s_fw, s_fh;      // where the last frame is
+static int64_t s_frame_us;              // when it was drawn
+static int s_direct;                    // it went from the caller's buffer
+static uint16_t s_xmap[BOARD_LCD_H_RES];
+
+static inline uint16_t swap16(uint16_t v)
+{
+    return (uint16_t)(v << 8 | v >> 8);
+}
+
+int bsp_display_frame_direct(void)
+{
+    return s_direct;
+}
+
+esp_err_t bsp_display_frame(const uint16_t *px, int stride, int w, int h, int x, int y, int dw, int dh, bool be)
+{
+    if (!s_panel || !px || w <= 0 || h <= 0 || dw <= 0 || dh <= 0 || stride < w) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    // Clip the destination to the screen; sx/sy step through the source.
+    int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+    int x1 = x + dw > BOARD_LCD_H_RES ? BOARD_LCD_H_RES : x + dw;
+    int y1 = y + dh > BOARD_LCD_V_RES ? BOARD_LCD_V_RES : y + dh;
+    if (x0 >= x1 || y0 >= y1) {
+        return ESP_OK;
+    }
+    int cw = x1 - x0, ch = y1 - y0;
+    size_t bytes = (size_t)cw * ch * 2;
+    size_t need = (bytes + FRAME_ALIGN - 1) & ~(size_t)(FRAME_ALIGN - 1);
+    bool same = dw == w && dh == h;
+    bsp_lcd_hold();                     // the last frame (or LVGL's flush) is done with the buffer
+    if (be && same && stride == w && cw == w && ch == h && !((uintptr_t)px % FRAME_ALIGN) && !(bytes % FRAME_ALIGN)) {
+        // Sent from where it is: the cache written back, the DMA reads it.
+        esp_cache_msync((void *)px, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        s_direct = 1;
+        s_fw = 0;                       // nothing kept for screenshots
+        s_frame_busy = true;
+        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y1, px);
+        if (err != ESP_OK) {
+            s_frame_busy = false;
+            bsp_lcd_release();
+        }
+        return err;
+    }
+    s_direct = 0;
+    if (need > s_stage_cap) {
+        heap_caps_free(s_stage);
+        s_stage = heap_caps_aligned_alloc(FRAME_ALIGN, need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_stage_cap = s_stage ? need : 0;
+        if (!s_stage) {
+            bsp_lcd_release();
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (!same) {
+        for (int i = 0; i < cw; i++) {
+            s_xmap[i] = (uint16_t)((int64_t)(x0 - x + i) * w / dw);
+        }
+    }
+    uint16_t *o = s_stage;
+    for (int j = 0; j < ch; j++) {
+        int sy = same ? y0 - y + j : (int)((int64_t)(y0 - y + j) * h / dh);
+        const uint16_t *row = px + (size_t)sy * stride;
+        if (same) {
+            row += x0 - x;
+            int i = 0;
+            if (be) {
+                memcpy(o, row, (size_t)cw * 2);
+                i = cw;
+            } else if (!((uintptr_t)row & 3) && !((uintptr_t)o & 3)) {
+                const uint32_t *r32 = (const uint32_t *)row;
+                uint32_t *o32 = (uint32_t *)o;
+                for (; i + 1 < cw; i += 2) {
+                    uint32_t v = *r32++;
+                    *o32++ = (v & 0x00ff00ffu) << 8 | (v >> 8 & 0x00ff00ffu);
+                }
+            }
+            for (; i < cw; i++) {
+                o[i] = swap16(row[i]);
+            }
+        } else {
+            for (int i = 0; i < cw; i++) {
+                uint16_t v = row[s_xmap[i]];
+                o[i] = be ? v : swap16(v);
+            }
+        }
+        o += cw;
+    }
+    esp_cache_msync(s_stage, need, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    s_fx = x0, s_fy = y0, s_fw = cw, s_fh = ch;
+    s_frame_us = esp_timer_get_time();
+    s_frame_busy = true;                // flush_done gives the LCD back once it is on the panel
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y1, s_stage);
+    if (err != ESP_OK) {
+        s_frame_busy = false;
+        bsp_lcd_release();
+    }
+    return err;
+}
+
+void bsp_display_frame_wait(void)
+{
+    bsp_lcd_hold();
+    bsp_lcd_release();
+}
+
+void bsp_display_frame_end(void)
+{
+    bsp_lcd_hold();
+    heap_caps_free(s_stage);
+    s_stage = NULL;
+    s_stage_cap = 0;
+    s_fw = s_fh = 0;
+    bsp_lcd_release();
+}
+
+const uint16_t *bsp_display_frame_last(int *x, int *y, int *w, int *h)
+{
+    if (!s_stage || !s_fw || esp_timer_get_time() - s_frame_us > 500000) {
+        return NULL;                    // none, or the app stopped drawing: LVGL has the area again
+    }
+    *x = s_fx, *y = s_fy, *w = s_fw, *h = s_fh;
+    return s_stage;
 }

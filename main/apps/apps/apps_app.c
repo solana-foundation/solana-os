@@ -21,6 +21,7 @@
 #include "lua/lua_host.h"
 #include "lua/lua_install.h"
 #include "lua/lua_pkg.h"
+#include "apps/c_warning.h"
 
 #define APPS_MAX        40
 #define REMOVE_WAIT_MS  3000
@@ -114,7 +115,8 @@ static void row(int i, ui_row_t *r, void *ctx)
         strlcpy(r->right, "Quest", sizeof(r->right));
         r->right_color = lua_pkg_expired(p) ? COL_DIM : COL_ORANGE;
     } else {
-        snprintf(r->sub, sizeof(r->sub), "v%s%s%s", p->version, p->author[0] ? "  by " : "", p->author);
+        snprintf(r->sub, sizeof(r->sub), "v%s%s%s%s", p->version, p->author[0] ? "  by " : "", p->author,
+                 p->lang == LUA_PKG_LANG_C ? "  " LV_SYMBOL_BULLET "  C" : "");
     }
     if (i == s_rm_index) {
         r->title_color = COL_ERR;
@@ -189,14 +191,20 @@ static void show_info(const lua_pkg_t *p)
     char cat[8];
     strlcpy(cat, p->category, sizeof(cat));
     cat[0] = cat[0] >= 'a' && cat[0] <= 'z' ? cat[0] - 'a' + 'A' : cat[0];     // "games" -> "Games"
-    snprintf(line, sizeof(line), "v%s%s%s%s%s", p->version, p->author[0] ? "  by " : "", p->author,
-             cat[0] ? "  " LV_SYMBOL_BULLET "  " : "", cat);
+    snprintf(line, sizeof(line), "v%s%s%s%s%s%s", p->version, p->author[0] ? "  by " : "", p->author,
+             cat[0] ? "  " LV_SYMBOL_BULLET "  " : "", cat, p->lang == LUA_PKG_LANG_C ? "  " LV_SYMBOL_BULLET "  C" : "");
     ui_label(s_info, &sol_mono_12, COL_DIM, line);
     if (p->temp) {
         char left[32];
         time_left(p, left, sizeof(left));
         snprintf(line, sizeof(line), "From a quest. %s", left);
         ui_label(s_info, &sol_mono_12, COL_ORANGE, line);
+    }
+    if (p->lang == LUA_PKG_LANG_C && p->aot) {
+        c_warning_add(s_info);          // the store gave it native code for this badge
+    } else if (p->lang == LUA_PKG_LANG_C) {
+        lv_obj_t *w = ui_label(s_info, &sol_mono_12, COL_DIM, C_WARN_WASM);
+        lv_obj_set_width(w, lv_pct(100));
     }
     if (p->summary[0]) {
         lv_obj_t *s = ui_label(s_info, &sol_font_14, COL_TEXT, p->summary);

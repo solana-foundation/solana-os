@@ -44,7 +44,7 @@
 #define BOARD_RGB_GPIO          27
 #define BOARD_RGB_COUNT         8
 
-// Battery sense: ADC1 on GPIO1 through a 1:1 divider
+// Battery sense: ADC1 on GPIO1, a 22k/22k divider from VSYS (x2)
 #define BOARD_BAT_ADC_GPIO      1
 #define BOARD_BAT_DIVIDER       2
 

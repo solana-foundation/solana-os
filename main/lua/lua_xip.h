@@ -3,11 +3,14 @@
 // Store apps' compiled code, run in place (docs/HHGTS.md "Badge storage").
 // The host maps an app's code.bin for as long as it runs; Lua reads the
 // instructions, line info and long strings straight from the mapping
-// (vendor/lundump.c fixed buffers), so they cost no RAM.
+// (vendor/lundump.c fixed buffers), so they cost no RAM. A C app's native
+// code (app.aot, 2.3.0, lua_aot.h) shares the same slots: the CPU executes
+// it straight from the mapping (LUA_XIP_EXEC).
 //
 // Badge: lua_xip.c copies the file into the internal flash's code slots
 // (unless it's there already) and maps it through the flash cache.
-// Emulator: platform/lua_xip_emu.c reads it into memory.
+// Emulator: platform/lua_xip_emu.c reads it into memory (never executed:
+// the emulator runs no native code).
 //
 // Both block (SD reads, flash erases): call them from the app's own task.
 
@@ -23,7 +26,14 @@ typedef struct {
     bool copied;            // the file was copied in this time (not already there)
 } lua_xip_t;
 
+// The biggest file a slot holds: 1 MB less its header sector.
+#define LUA_XIP_MAX     (1024 * 1024 - 4096)
+
+// Flags for lua_xip_map.
+#define LUA_XIP_EXEC    (1u << 0)   // native code: an instruction mapping, and the
+                                    // slot's bytes hashed again at every launch
+
 // Maps the file at path (a full path), which must be size bytes with this
 // SHA-256. false (and nothing mapped) if it isn't, or there's no room.
-bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, lua_xip_t *out);
+bool lua_xip_map(const char *path, const uint8_t sha[32], size_t size, unsigned flags, lua_xip_t *out);
 void lua_xip_unmap(lua_xip_t *x);

@@ -989,6 +989,36 @@ int lh_cv_get(lua_State *L)
     return 1;
 }
 
+// A C app's sos_blit (lua_wasm.c): w x h pixels from the app's memory onto
+// the canvas, clipped, opaque. Charged like canvas:image.
+int lh_cv_blit(lua_State *L)
+{
+    lh_obj_t *o = lh_ui_test(L, 1, LH_CANVAS);
+    const lh_blit_t *b = lua_touserdata(L, 2);
+    if (!o) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    lh_pix_t *p = view_of(o)->pix;
+    int x = b->x, y = b->y;
+    int i0 = x < 0 ? -x : 0, j0 = y < 0 ? -y : 0;
+    int i1 = b->w < p->w - x ? b->w : p->w - x, j1 = b->h < p->h - y ? b->h : p->h - y;
+    if (i0 < i1 && j0 < j1) {
+        lh_charge_steps(L, (unsigned)((i1 - i0) * (j1 - j0) / PX_PER_STEP));
+        for (int j = j0; j < j1; j++) {
+            const uint8_t *from = b->px + ((size_t)j * b->w + i0) * 2;
+            uint16_t *to = p->px + (size_t)(y + j) * p->w + x + i0;
+            for (int i = i0; i < i1; i++, from += 2) {
+                uint16_t v = (uint16_t)(from[0] | from[1] << 8);
+                *to++ = v == LH_PX_CLEAR ? 0 : v;
+            }
+        }
+        lv_obj_invalidate(o->obj);
+    }
+    lua_pushinteger(L, 0);
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 
 void lh_open_img(lua_State *L)

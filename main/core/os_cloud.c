@@ -79,6 +79,7 @@ static char s_secret[96];
 static uint8_t s_key[16];
 static char s_owner_tag[9];             // last owner's tag, kept while unclaimed
 static int64_t s_next_ms = -1;          // next hello, -1 = not scheduled
+static volatile uint32_t s_server_gen;  // os_cloud_server_gen()
 static int64_t s_time_off;              // server unix ms - esp_timer ms, 0 = never synced
 static int s_poll_s;                    // last `poll` from the server, 0 = none yet
 
@@ -99,6 +100,7 @@ static void unlock(void)
 
 // ---------------------------------------------------------------------------
 // NVS "cloud": server, id, secret, key, mesh channel and the owner's figures
+// (and "aotkey", the store's key for native C apps, lua/lua_aot.h)
 
 static void nvs_load(const char *key, char *out, size_t n)
 {
@@ -183,6 +185,7 @@ typedef struct {
     char beacon[8];                     // "beacon": the beacon id when this badge plays one, "" = none
     int update_size;
     int poll, mesh, lamps, level, packs;
+    int mail;                           // "mail": the owner's mail waiting (2.3.0), 0-99
     int64_t time;
     const char *error;
 } hello_t;
@@ -271,6 +274,8 @@ static void parse(const char *body, hello_t *r)
     r->lamps = num_or(j, "lamps", 0);
     r->level = num_or(j, "level", 0);
     r->packs = num_or(j, "packs", 0);
+    r->mail = num_or(j, "mail", 0);
+    r->mail = r->mail < 0 ? 0 : r->mail > 99 ? 99 : r->mail;
     r->time = cJSON_IsNumber(time) ? (int64_t)time->valuedouble : 0;
     const cJSON *up = cJSON_GetObjectItem(j, "update");
     const char *uv = cJSON_GetStringValue(cJSON_GetObjectItem(up, "version"));
@@ -489,6 +494,7 @@ static int apply(const char *server, const hello_t *r, int *errors, int *backoff
             s_info.lamps = s_info.level = s_info.packs = 0;
         }
         s_info.claimed = r->claimed;
+        s_info.mail = r->claimed ? r->mail : 0;
         s_info.welcome_needs_x = r->claimed && r->needs_x;
         strlcpy(s_info.update, r->update, sizeof(s_info.update));
         strlcpy(s_info.update_sha, r->update_sha, sizeof(s_info.update_sha));
@@ -812,6 +818,7 @@ void os_cloud_set_server(const char *url)
     lock();
     bool changed = strcmp(clean, s_info.server) != 0;
     if (changed) {
+        s_server_gen++;                 // first: answers still on their way are the old server's
         // The ID, secret, mesh key and owner belong to the old server. The
         // owner tag stays: a different account there still means new owner.
         strlcpy(s_info.server, clean, sizeof(s_info.server));
@@ -833,10 +840,16 @@ void os_cloud_set_server(const char *url)
         nvs_save("key", "");
         nvs_save("owner", "");
         nvs_save("beacon", "");
+        nvs_save("aotkey", "");         // the old store's key for native C apps (lua/lua_aot.h)
         nvs_save_int("claimed", 0);
         ESP_LOGI(TAG, "server set to '%s'", clean);
     }
     os_cloud_refresh();
+}
+
+uint32_t os_cloud_server_gen(void)
+{
+    return s_server_gen;
 }
 
 bool os_cloud_bearer(char *out, size_t n)
