@@ -17,6 +17,7 @@
 #include "core/os_data.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 #include "game/trade.h"
 
 #define LIST_Y          UI_TABS_H
@@ -61,6 +62,10 @@ typedef struct {
     int ninvites;
     trade_rec_t *recs;
     int nrecs;
+    // The Streaming theme's filter over the Trades tab (RIGHT steps it):
+    // 0 all, 1 settled, 2 pending, 3 rejected. `pills` is NULL elsewhere.
+    lv_obj_t *pills;
+    int filter;
     // Trade screen
     lv_obj_t *screen, *title, *phase, *theirs_head, *theirs;
     ui_list_t *mine;
@@ -180,6 +185,26 @@ static void trades_refresh(void)
 {
     free(s->recs);
     s->nrecs = trade_records_load(&s->recs, RECS_MAX);
+    if (s->pills) {
+        // Keep the trades the filter asks for ("pending" covers unconfirmed).
+        int n = 0;
+        for (int i = 0; i < s->nrecs && s->filter; i++) {
+            trade_rec_status_t st = s->recs[i].status;
+            int kind = st == TRADE_REC_SETTLED ? 1 : st == TRADE_REC_REJECTED ? 3 : 2;
+            if (kind == s->filter) {
+                s->recs[n++] = s->recs[i];
+            }
+        }
+        if (s->filter) {
+            s->nrecs = n;
+        }
+        static const char *const names[] = {"All", "Settled", "Pending", "Rejected"};
+        static const uint32_t dots[] = {0, COL_GREEN, COL_YELLOW, COL_ORANGE};
+        lv_obj_clean(s->pills);
+        for (int i = 0; i < 4; i++) {
+            ui_stream_pill(s->pills, names[i], i == s->filter, i == s->filter ? 0 : dots[i]);
+        }
+    }
     ui_list_set_count(s->list, s->nrecs);
 }
 
@@ -187,6 +212,9 @@ static void show_tab(int tab)
 {
     s->tab = tab;
     ui_tabs_select(s->tabs, tab);
+    if (s->pills) {
+        lv_obj_set_hidden(s->pills, tab != TAB_TRADES);
+    }
     ui_list_set_count(s->list, 0);      // the rows belong to the other tab until it reloads
     if (tab == TAB_NEARBY) {
         ui_list_set_empty(s->list, !game_claimed() ? "Not linked yet: claim this badge first"
@@ -874,7 +902,20 @@ static void enter(lv_obj_t *root)
     lv_obj_set_size(s->home, OS_ROOT_W, OS_ROOT_H - UI_HINT_H);
     lv_obj_set_scrollable(s->home, false);
     s->tabs = ui_tabs(s->home, tab_names, 2);
-    s->list = ui_list_create(s->home, LIST_Y, LIST_H, home_row, NULL);
+    if (ui_stream()) {
+        // A band for the Trades tab's filter pills, the list under it.
+        s->pills = lv_obj_create(s->home);
+        lv_obj_remove_style_all(s->pills);
+        lv_obj_set_pos(s->pills, 14, LIST_Y + 2);
+        lv_obj_set_size(s->pills, OS_ROOT_W - 28, 20);
+        lv_obj_set_flex_flow(s->pills, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(s->pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(s->pills, 6, 0);
+        lv_obj_set_scrollable(s->pills, false);
+        s->list = ui_list_create(s->home, LIST_Y + 24, LIST_H - 24, home_row, NULL);
+    } else {
+        s->list = ui_list_create(s->home, LIST_Y, LIST_H, home_row, NULL);
+    }
     s->hint = ui_hint(root, "");
     show_tab(TAB_NEARBY);
     if (!os_data_ready()) {
@@ -931,6 +972,9 @@ static bool on_key(os_key_t k, bool repeat)
     case OS_KEY_RIGHT:
         if (s->tab == TAB_NEARBY) {
             show_tab(TAB_TRADES);
+        } else if (s->pills && !repeat) {
+            s->filter = (s->filter + 1) % 4;
+            trades_refresh();
         }
         return true;
     case OS_KEY_SELECT:

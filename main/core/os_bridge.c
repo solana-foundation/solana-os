@@ -943,12 +943,13 @@ static void panel_build(void)
     lv_obj_remove_style_all(s_ui.root);
     lv_obj_set_size(s_ui.root, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
     lv_obj_set_style_bg_opa(s_ui.root, LV_OPA_70, 0);
-    lv_obj_set_style_bg_color(s_ui.root, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(s_ui.root, lv_color_hex(ui_theme()->scrim), 0);
     lv_obj_set_scrollable(s_ui.root, false);
 
     lv_obj_t *box = ui_panel(s_ui.root, 0, 0, BOX_W, BOX_H);
     lv_obj_set_style_bg_color(box, ui_col(COL_PANEL_HI), 0);
-    lv_obj_set_style_border_color(box, ui_col(COL_PURPLE), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, ui_accent(), 0);
     lv_obj_set_style_pad_all(box, 0, 0);
     lv_obj_set_scrollable(box, false);
     lv_obj_center(box);
@@ -962,7 +963,7 @@ static void panel_build(void)
     lv_obj_set_pos(s_ui.plate, 8, 8);
     lv_obj_set_style_bg_opa(s_ui.plate, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(s_ui.plate, bg, 0);
-    lv_obj_set_style_radius(s_ui.plate, 6, 0);
+    lv_obj_set_style_radius(s_ui.plate, ui_radius() ? 6 : 0, 0);
     lv_obj_set_scrollable(s_ui.plate, false);
     s_ui.qr = lv_qrcode_create(s_ui.plate);
     lv_qrcode_set_size(s_ui.qr, QR_SIZE);

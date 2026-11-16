@@ -9,14 +9,30 @@
 #include "lvgl.h"
 #include "os_keys.h"
 #include "theme.h"
+#include "ui_theme.h"
 #include "assets/assets.h"
 
-// Theme colour: pass a COL_* value (the dark palette) and get the colour for
-// the active theme (Settings: Dark or Light). Use it for every UI colour;
-// only brand gradients and true colours (LED previews, colour checks) should
-// use lv_color_hex directly.
+// Theme colour: pass a COL_* value (the Classic Dark palette) and get the
+// colour for the active theme (core/ui_theme.h; the Themes app). Use it for
+// every UI colour; only true colours (LED previews, colour checks) should use
+// lv_color_hex directly.
 lv_color_t ui_col(uint32_t c);
-bool ui_light(void);
+bool ui_light(void);                    // dark ink on a light ground (QR codes, logos)
+
+// The rest of the theme, for anything an app draws itself. Shared widgets
+// below already follow it.
+const lv_font_t *ui_font(const lv_font_t *f);   // the theme's face for f (ui_label does this)
+int ui_radius(void);                    // panel corner radius
+int ui_border_w(void);                  // panel border width
+lv_color_t ui_focus_bg(void);           // the selected tile or key, and the text on it
+lv_color_t ui_focus_fg(void);
+lv_color_t ui_accent(void);             // dialog and input borders, scrollbars
+lv_color_t ui_grad_a(void);             // the gradient bar's ends, for a gradient of your own
+lv_color_t ui_grad_b(void);
+void ui_surface(lv_obj_t *obj);         // an app's full-area background
+void ui_card(lv_obj_t *obj);            // ui_panel's fill, border, radius and shadow on any object
+void ui_focus(lv_obj_t *obj, bool on);  // a ui_card as the selected one, or not
+lv_obj_t *ui_scrim(void);               // full-screen dim on lv_layer_top() for a dialog
 
 lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text);
 lv_obj_t *ui_panel(lv_obj_t *parent, int x, int y, int w, int h);
@@ -41,6 +57,12 @@ typedef struct {
     char right[20];
     uint32_t title_color;   // 0 = default
     uint32_t right_color;   // 0 = dim
+    // The Streaming theme only (other themes ignore these): a small colour
+    // tile with a symbol before the row, and a button on the selected row in
+    // place of `right`.
+    uint32_t thumb;             // 0xRRGGBB, 0 = no tile
+    const char *thumb_symbol;   // LV_SYMBOL_* on the tile, or NULL
+    const char *action;         // "Open": static string, or NULL
 } ui_row_t;
 
 typedef void (*ui_row_cb_t)(int index, ui_row_t *row, void *ctx);

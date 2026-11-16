@@ -194,7 +194,7 @@ static void dialog_open(void)
         lv_obj_t *o = col_label(&sol_font_14, COL_TEXT);
         lv_obj_set_style_pad_hor(o, 8, 0);
         lv_obj_set_style_pad_ver(o, 4, 0);
-        lv_obj_set_style_radius(o, 4, 0);
+        lv_obj_set_style_radius(o, ui_radius() ? 4 : 0, 0);
         lv_obj_set_style_bg_color(o, ui_col(COL_PANEL_HI), 0);
         lv_obj_set_style_border_side(o, LV_BORDER_SIDE_LEFT, 0);
         lv_obj_set_style_border_color(o, ui_col(COL_ORANGE), 0);
@@ -204,8 +204,8 @@ static void dialog_open(void)
     s->bar = lv_bar_create(s->col);
     lv_obj_set_size(s->bar, OS_ROOT_W - 24, 6);
     lv_obj_set_style_bg_color(s->bar, ui_col(COL_PANEL_HI), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s->bar, ui_col(COL_PURPLE), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_grad_color(s->bar, lv_color_hex(COL_GREEN), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s->bar, ui_grad_a(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_grad_color(s->bar, ui_grad_b(), LV_PART_INDICATOR);
     lv_obj_set_style_bg_grad_dir(s->bar, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
     lv_obj_set_hidden(s->bar, true);
     s->shown_text[0] = 0;

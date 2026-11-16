@@ -5,13 +5,12 @@
 // these from the OS task (app callbacks).
 
 typedef enum {
-    OS_SET_THEME,           // OS_THEME_DARK (default) or OS_THEME_LIGHT; see ui_col()
+    OS_SET_THEME,           // a theme's id (core/ui_theme.h); 0 = Classic Dark (default), 1 = Classic Light
     OS_SET_BRIGHTNESS,      // screen backlight level 1..OS_BRIGHTNESS_MAX (default: brightest); see os_brightness_apply()
     OS_SET_LCD_INVERT,      // 1 (default: production panels) or 0 (prototypes): colour inversion; see os_invert_apply()
     OS_SET_COUNT,
 } os_setting_t;
 
-enum { OS_THEME_DARK = 0, OS_THEME_LIGHT = 1 };
 enum { OS_BRIGHTNESS_MIN = 1, OS_BRIGHTNESS_MAX = 5 };
 
 int os_setting(os_setting_t s);

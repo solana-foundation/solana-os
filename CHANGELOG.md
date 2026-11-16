@@ -6,6 +6,59 @@ update only to a newer one. Dates are commit dates. The contracts these builds
 implement (`docs/LUA_API.md`, `docs/MESH.md`, `server/API.md`) and the server and
 site changes that came with them live in the parent repository.
 
+## Themes (unreleased, version to be set at release)
+
+- **Themes.** A theme is one entry in a table (`core/ui_theme.c`, `ui_theme_t`): a
+  colour for every `COL_*`, the focus colours, corner radius, border width, a hard
+  shadow, how the selected row is shown (bar, fill, ring or cursor), the status bar's
+  style, an optional full-screen wallpaper and the home screen's layout. `ui_col()` and
+  `ui_light()` keep their meaning and now read the active theme, so every app follows
+  it; `ui_panel`, `ui_hint`, `ui_tabs`, the list, the keyboard, the offline panel, the
+  toast and the confirm dialog take its shape too, and apps that drew their own
+  corners, borders, gradients and selected states use the new `ui_radius()`,
+  `ui_border_w()`, `ui_focus_bg()`/`ui_focus_fg()`, `ui_accent()`, `ui_grad_a()`/`ui_grad_b()`,
+  `ui_card()`, `ui_surface()` and `ui_scrim()` (`core/ui.h`). Fourteen themes: Classic
+  Dark and Classic Light (ids 0 and 1, the Dark and Light every badge has saved, drawn
+  as before), Pearl, Black pearl, Lumen, Icon grid, Grouped list, Dial, Control tiles,
+  Terminal, E-paper, Bold blocks, Monster RPG and Streaming. The choice is still the
+  `theme` setting, now a theme's id; an id no theme has falls back to Classic Dark.
+- **Home layouts.** `core/launcher.c` keeps the list of apps, the selection and what a
+  tile can say about its app (`home_info()`: the owner, badge ID and !LAMPs, the Wi-Fi
+  network and state, the mesh channel, the OS version; refreshed once a second from
+  state the OS already holds). The theme's layout in `core/home/` draws it and takes
+  the arrows: the classic 3x2 grid (`home_grid.c`), the pearl cards (`home_pearl.c`,
+  `home_lumen.c`), icons and a dock (`home_icons.c`), a grouped list (`home_list.c`), a
+  dial (`home_dial.c`), control tiles (`home_controls.c`), a terminal (`home_term.c`),
+  a printed page (`home_epaper.c`), bold blocks (`home_blocks.c`), an RPG menu
+  (`home_rpg.c`) and the Streaming home (`home_stream.c`, with `core/ui_stream.c` for
+  that theme's own screens in the built-in apps). Some layouts draw over the whole
+  screen in place of the status bar (`home_fullscreen()`); `home_bento.c` is kept but
+  no theme uses it now.
+- **Picking a theme.** Settings > Theme opens the picker (`apps/themes`, a hidden
+  system app): the list of themes beside a preview of the highlighted one drawn from
+  its own tokens. Lua apps get `theme.list()`, `theme.get()` and `theme.set(id)`
+  (`lua/lua_sys.c`, always allowed; `docs/LUA_API.md`). `theme.set` closes the app and
+  shows the home screen in the new theme. Console: `theme` lists them, `theme <id>`
+  switches (`os_theme_set()`). `docs/examples/themes/` is the Themes app in the store
+  today: it uses none of this (it runs on badges without themes) and only shows each
+  look on its own screen.
+- **Assets.** 320x240 RGB565 wallpapers rendered and dithered by
+  `tools/gen_wallpaper.py` (154 KB of flash each), the pearl cards' artwork, line
+  icons for the built-in apps, and open-licensed faces for the themes that need their
+  design's own type (Geist, Bebas Neue, JetBrains Mono, IBM Plex Mono, Space Mono,
+  Archivo, Newsreader, Silkscreen: all SIL OFL 1.1, license texts in `main/assets/`).
+  `tools/img2lvgl565.py` writes opaque RGB565 images. No app's own artwork is bundled:
+  Streaming draws every app's poster from its symbol and accent colour.
+- The image is 3,550,736 bytes (2.2.0: about 2.3 MB) of the 4 MB slot, 15% free: the
+  wallpapers, artwork and fonts are most of the growth, and themes could be dropped or
+  moved to the card if the slot is wanted for other things.
+- Tested in the emulator: every theme's home screen, and My Badge, the App Store and
+  Settings opened in each, with no errors. An earlier build of the same work ran on one
+  production badge (boots, themes switch from Settings and the console). Built with the
+  pinned ESP-IDF; that build has not been flashed. Not verified: most apps in most
+  themes beyond the screens above; redraw speed over a wallpaper on a badge; in
+  Streaming, the screens that need a claimed badge online.
+
 ## 2.2.0 (unreleased)
 
 Only the move to ESP-IDF master; nothing else changes from 2.1.0.

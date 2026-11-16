@@ -35,6 +35,7 @@ extern const int os_app_count;
 extern const os_app_t os_launcher;
 extern const os_app_t os_calibrate;     // hidden system app
 extern const os_app_t app_update;       // hidden: Settings > Software update (apps/update)
+extern const os_app_t app_themes;       // hidden: Settings > Theme (apps/themes); the store's Themes app is Lua
 
 void os_start(void);
 void os_splash(void);
@@ -87,8 +88,22 @@ const os_overlay_t *os_overlay(void);           // the open one, or NULL
 // NULL releases it. OS task.
 void os_hold(const char *why);
 
-// Rebuild the UI in the current theme (OS task, LVGL locked; the Settings app).
+// Rebuild the UI in the theme OS_SET_THEME names (OS task, LVGL locked; the
+// Themes app, the "theme" console command).
 void os_theme_apply(void);
+// The status bar, for a home layout that draws in it (the Streaming theme's
+// tabs): delete what you add when your layout goes.
+lv_obj_t *os_status_bar(void);
+// Hide the bar's own contents while a home layout draws its own header in it
+// (a design with no system bar). Call it in the layout's enter(); the OS shows
+// them again when any app is entered.
+void os_status_bare(bool on);
+// UI_BAR_SLIM: the title's text and colour (a COL_*, 0 = text) until the next
+// app is entered, e.g. the focused item's name.
+void os_status_title(const char *text, uint32_t color);
+// Switch to the theme with this id and save the choice (any task; it happens
+// after the current callback). False if no theme has that id.
+bool os_theme_set(int id);
 
 // Set the backlight from the Brightness setting (any task; at boot and when
 // Settings changes it).

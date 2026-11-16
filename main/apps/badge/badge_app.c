@@ -19,6 +19,7 @@
 #include "core/os_data.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 
 #define CONTENT_H   (OS_ROOT_H - UI_HINT_H)
 #define QR_BOX      164         // square behind the code: its quiet zone
@@ -102,7 +103,7 @@ static void message(const char *symbol, uint32_t color, const char *title, const
         ring = lv_obj_create(s_view);
         lv_obj_remove_style_all(ring);
         lv_obj_set_size(ring, 48, 48);
-        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(ring, ui_radius() ? LV_RADIUS_CIRCLE : 0, 0);
         lv_obj_set_style_bg_opa(ring, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(ring, ui_col(COL_PANEL_HI), 0);
         lv_obj_set_style_border_width(ring, 2, 0);
@@ -265,7 +266,7 @@ static void build_unclaimed(const os_cloud_info_t *in)
     lv_obj_set_pos(box, 10, (CONTENT_H - QR_BOX) / 2);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(box, bg, 0);
-    lv_obj_set_style_radius(box, 8, 0);
+    lv_obj_set_style_radius(box, ui_radius() ? 8 : 0, 0);
     if (!light) {
         lv_obj_set_style_border_width(box, 1, 0);
         lv_obj_set_style_border_color(box, ui_col(COL_BORDER), 0);
@@ -347,8 +348,99 @@ static void sync_line(char *out, size_t n, const os_cloud_info_t *in)
     }
 }
 
+// The Streaming theme's claimed view: a profile picture, the owner and the
+// balance beside it, then three facts.
+static void build_claimed_stream(const os_cloud_info_t *in)
+{
+    char buf[64], val[24];
+    lv_obj_t *pic = lv_obj_create(s_view);
+    lv_obj_remove_style_all(pic);
+    lv_obj_set_pos(pic, 14, 10);
+    lv_obj_set_size(pic, 86, 86);
+    lv_obj_set_style_radius(pic, 7, 0);
+    lv_obj_set_style_bg_opa(pic, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(pic, lv_color_hex(0x14F195), 0);
+    lv_obj_set_style_bg_grad_color(pic, lv_color_hex(0x9945FF), 0);
+    lv_obj_set_style_bg_grad_dir(pic, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_scrollable(pic, false);
+    ui_stream_ring(pic, true);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *eye = lv_obj_create(pic);
+        lv_obj_remove_style_all(eye);
+        lv_obj_set_size(eye, 9, 9);
+        lv_obj_set_pos(eye, i ? 53 : 24, 30);
+        lv_obj_set_style_radius(eye, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(eye, lv_color_white(), 0);
+    }
+    lv_obj_t *smile = lv_arc_create(pic);
+    lv_obj_remove_style_all(smile);
+    lv_obj_set_size(smile, 36, 36);
+    lv_obj_set_pos(smile, 25, 26);
+    lv_arc_set_bg_angles(smile, 0, 180);
+    lv_obj_set_style_arc_width(smile, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(smile, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(smile, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(smile, true, LV_PART_MAIN);
+
+    lv_obj_t *l = ui_stream_caps_label(s_view, "BADGE OWNER");
+    lv_obj_set_pos(l, 114, 10);
+    l = ui_stream_display(s_view, 24, in->owner[0] ? in->owner : "Linked");
+    lv_obj_set_pos(l, 114, 22);
+    lv_obj_set_style_max_width(l, 192, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_height(l, 24);
+    lv_obj_t *chip = ui_label(s_view, &pearl_mono_9, COL_TEXT, "");
+    lv_label_set_text_fmt(chip, "BADGE %s", in->id);
+    lv_obj_set_style_border_width(chip, 1, 0);
+    lv_obj_set_style_border_color(chip, lv_color_white(), 0);
+    lv_obj_set_style_border_opa(chip, 140, 0);
+    lv_obj_set_style_radius(chip, 2, 0);
+    lv_obj_set_style_pad_hor(chip, 5, 0);
+    lv_obj_set_style_pad_ver(chip, 1, 0);
+    lv_obj_set_pos(chip, 114, 50);
+    l = ui_label(s_view, &stream_bold_11, COL_GREEN, LV_SYMBOL_OK " Linked");
+    lv_obj_align_to(l, chip, LV_ALIGN_OUT_RIGHT_MID, 6, 0);
+    lv_obj_t *lamps = ui_stream_display(s_view, 30, ui_fmt_num(val, sizeof(val), in->lamps));
+    lv_obj_set_style_text_color(lamps, ui_col(COL_LAMPS), 0);
+    lv_obj_set_pos(lamps, 114, 68);
+    l = ui_label(s_view, &stream_bold_11, COL_LAMPS, "!LAMPs");
+    lv_obj_align_to(l, lamps, LV_ALIGN_OUT_RIGHT_BOTTOM, 5, -5);
+
+    if (s_me.total) {
+        snprintf(buf, sizeof(buf), "Level %d, %d of %d pages", in->level, s_me.owned, s_me.total);
+    } else {
+        snprintf(buf, sizeof(buf), "Level %d", in->level);
+    }
+    ui_stream_row(s_view, 108, "X Dex", buf, 0);
+    char line[112];
+    sync_line(line, sizeof(line), in);
+    s_live = ui_stream_row(s_view, 135, "Status", line, os_api_online() ? COL_TEXT : COL_ORANGE);
+    uint32_t color = 0;
+    if (in->welcome_needs_x && !in->packs) {
+        strlcpy(buf, "Link X on the web for your Starter Pack", sizeof(buf));
+        color = COL_YELLOW;
+    } else if (in->packs > 0) {
+        snprintf(buf, sizeof(buf), "SELECT: open your %.20s", s_me.pack[0] ? s_me.pack : in->packs > 1 ? "packs" : "pack");
+        color = COL_GREEN;
+    } else if (s_me.needs_x) {
+        strlcpy(buf, "Link X on the web to earn bounties", sizeof(buf));
+        color = COL_YELLOW;
+    } else if (s_me.next_bounty) {
+        char amount[32];
+        snprintf(buf, sizeof(buf), "Next: %s", ui_fmt_lamps(amount, sizeof(amount), s_me.next_bounty));
+    } else {
+        strlcpy(buf, "Swap cards in X Dex to earn", sizeof(buf));
+    }
+    ui_stream_row(s_view, 162, in->packs > 0 ? "Packs" : "Bounties", buf, color);
+}
+
 static void build_claimed(const os_cloud_info_t *in)
 {
+    if (ui_stream()) {
+        build_claimed_stream(in);
+        return;
+    }
     char buf[48], val[24];
     lv_obj_t *who = ui_label(s_view, &sol_font_32, COL_TEXT, in->owner[0] ? in->owner : "Linked");
     lv_obj_update_layout(who);

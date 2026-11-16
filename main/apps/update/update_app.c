@@ -189,8 +189,8 @@ static void enter(lv_obj_t *root)
     lv_obj_set_size(s->bar, OS_ROOT_W - 24, 8);
     lv_bar_set_range(s->bar, 0, 100);
     lv_obj_set_style_bg_color(s->bar, ui_col(COL_PANEL_HI), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s->bar, ui_col(COL_PURPLE), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_grad_color(s->bar, lv_color_hex(COL_GREEN), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s->bar, ui_grad_a(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_grad_color(s->bar, ui_grad_b(), LV_PART_INDICATOR);
     lv_obj_set_style_bg_grad_dir(s->bar, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
     lv_obj_set_hidden(s->bar, true);
 

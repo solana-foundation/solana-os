@@ -18,6 +18,7 @@
 #include "os.h"
 #include "os_wifi.h"
 #include "os_settings.h"
+#include "os_cmd.h"
 #include "ui.h"
 
 static const char *TAG = "os";
@@ -122,30 +123,146 @@ os_key_t os_key_parse(const char *name)
 // ---------------------------------------------------------------------------
 // Status bar
 
-static lv_obj_t *s_bar;
+static lv_obj_t *s_bar, *s_logo, *s_back;
+
+lv_obj_t *os_status_bar(void)
+{
+    return s_bar;
+}
+
+// The bar's left end for an app: its name after the logo; in the Streaming
+// theme a back chevron and the name in bold, and on the home screen only the
+// logo (the home layout puts its tabs beside it).
+static lv_obj_t *s_cell, *s_cell_fill, *s_cell_nub;     // UI_BAR_SLIM's battery outline
+static bool s_bare;
+
+// Hide the bar's own contents (the logo, the title, the Wi-Fi glyph, the
+// battery) so a home layout whose design has no system bar can draw its own
+// header there, as children of os_status_bar(). The OS puts them back when
+// any app is entered: a layout calls this in its enter() and need not undo it
+// (it deletes what it added to the bar when its own objects go).
+void os_status_bare(bool on)
+{
+    s_bare = on;
+    bool slim = ui_theme()->bar == UI_BAR_SLIM, stream = ui_theme()->bar == UI_BAR_STREAM;
+    bool home = s_app == &os_launcher;
+    lv_obj_set_hidden(s_title, on);
+    lv_obj_set_hidden(s_wifi, on);
+    lv_obj_set_hidden(s_batt, on || slim);
+    lv_obj_set_hidden(s_logo, on || slim || (stream && !home));
+    lv_obj_set_hidden(s_back, on || !stream || home);
+    if (s_cell) {
+        lv_obj_set_hidden(s_cell, on);
+        lv_obj_set_hidden(s_cell_nub, on);
+    }
+}
+
+// The title's text and colour (a COL_*, 0 = text) until the next app is
+// entered: UI_BAR_SLIM's home layouts name the focused item there.
+void os_status_title(const char *text, uint32_t color)
+{
+    lv_label_set_text(s_title, text ? text : "");
+    lv_obj_set_style_text_color(s_title, ui_col(color ? color : COL_TEXT), 0);
+}
+
+static void status_title(const os_app_t *app)
+{
+    bool home = app == &os_launcher;
+    if (s_bare) {
+        s_bare = false;
+        lv_obj_set_hidden(s_title, false);
+        lv_obj_set_hidden(s_wifi, false);
+        lv_obj_set_hidden(s_batt, ui_theme()->bar == UI_BAR_SLIM);
+        lv_obj_set_hidden(s_logo, ui_theme()->bar == UI_BAR_SLIM);
+        if (s_cell) {
+            lv_obj_set_hidden(s_cell, false);
+            lv_obj_set_hidden(s_cell_nub, false);
+        }
+    }
+    lv_obj_set_style_text_color(s_title, ui_col(COL_TEXT), 0);
+    if (ui_theme()->bar == UI_BAR_STREAM) {
+        lv_label_set_text(s_title, home ? "" : app->name);
+        lv_obj_set_hidden(s_logo, !home);
+        lv_obj_set_hidden(s_back, home);
+        return;
+    }
+    lv_label_set_text(s_title, home ? "Solana OS" : app->name);
+}
 
 static void status_create(lv_obj_t *scr)
 {
     lv_obj_t *bar = s_bar = lv_obj_create(scr);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, BOARD_LCD_H_RES, OS_STATUS_H);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(bar, ui_col(COL_BG), 0);
+    ui_surface(bar);
     lv_obj_set_scrollable(bar, false);
 
-    lv_obj_t *logo = lv_image_create(bar);
+    lv_obj_t *logo = s_logo = lv_image_create(bar);
     lv_image_set_src(logo, &img_logomark_16);
     lv_obj_align(logo, LV_ALIGN_LEFT_MID, 6, 0);
     s_title = ui_label(bar, &sol_font_14, COL_TEXT, "Solana OS");
     lv_obj_align(s_title, LV_ALIGN_LEFT_MID, 30, 0);
+    s_back = ui_label(bar, &lv_font_montserrat_12, COL_TEXT, LV_SYMBOL_LEFT);
+    lv_obj_align(s_back, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_set_hidden(s_back, true);
+    if (ui_theme()->bar == UI_BAR_STREAM) {
+        // The logo in the theme's red, and the title in its bold face.
+        lv_obj_align(logo, LV_ALIGN_LEFT_MID, 12, 0);
+        lv_obj_set_style_image_recolor(logo, ui_accent(), 0);
+        lv_obj_set_style_image_recolor_opa(logo, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_font(s_title, &pearl_font_13, 0);
+        lv_obj_align(s_title, LV_ALIGN_LEFT_MID, 28, 0);
+    }
     s_batt = ui_label(bar, &sol_mono_12, COL_TEXT, "");
     lv_obj_align(s_batt, LV_ALIGN_RIGHT_MID, -6, 0);
     s_wifi = ui_label(bar, &lv_font_montserrat_14, COL_DIM, LV_SYMBOL_WIFI);
     lv_obj_align(s_wifi, LV_ALIGN_RIGHT_MID, -76, 0);
 
-    // Brand gradient hairline under the bar.
-    lv_obj_t *line = ui_gradient_bar(bar, 0, OS_STATUS_H - 2, BOARD_LCD_H_RES, 2);
-    lv_obj_set_style_radius(line, 0, 0);
+    s_cell = s_cell_fill = s_cell_nub = NULL;
+    s_bare = false;
+    if (ui_theme()->bar == UI_BAR_SLIM) {
+        // No logo and no figures: a small bold title, a small Wi-Fi glyph and
+        // the battery as an outline that fills.
+        lv_obj_set_hidden(logo, true);
+        lv_obj_set_hidden(s_batt, true);
+        lv_obj_set_style_text_font(s_title, &stream_bold_11, 0);
+        lv_obj_align(s_title, LV_ALIGN_LEFT_MID, 14, 0);
+        lv_obj_set_style_text_font(s_wifi, &lv_font_montserrat_12, 0);
+        s_cell = lv_obj_create(bar);
+        lv_obj_remove_style_all(s_cell);
+        lv_obj_set_size(s_cell, 19, 10);
+        lv_obj_set_pos(s_cell, 284, (OS_STATUS_H - 10) / 2);
+        lv_obj_set_style_radius(s_cell, 3, 0);
+        lv_obj_set_style_border_width(s_cell, 1, 0);
+        lv_obj_set_style_border_color(s_cell, ui_col(COL_TEXT), 0);
+        lv_obj_set_style_border_opa(s_cell, 140, 0);
+        lv_obj_set_style_pad_all(s_cell, 1, 0);
+        lv_obj_set_scrollable(s_cell, false);
+        s_cell_fill = lv_obj_create(s_cell);
+        lv_obj_remove_style_all(s_cell_fill);
+        lv_obj_set_size(s_cell_fill, 15, 6);
+        lv_obj_set_style_radius(s_cell_fill, 2, 0);
+        lv_obj_set_style_bg_opa(s_cell_fill, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(s_cell_fill, ui_col(COL_TEXT), 0);
+        s_cell_nub = lv_obj_create(bar);
+        lv_obj_remove_style_all(s_cell_nub);
+        lv_obj_set_size(s_cell_nub, 2, 4);
+        lv_obj_set_pos(s_cell_nub, 304, (OS_STATUS_H - 4) / 2);
+        lv_obj_set_style_bg_opa(s_cell_nub, 140, 0);
+        lv_obj_set_style_bg_color(s_cell_nub, ui_col(COL_TEXT), 0);
+    }
+
+    // The bar's bottom edge, in the theme's way: the brand gradient hairline,
+    // a plain rule, or nothing.
+    const ui_theme_t *t = ui_theme();
+    if (t->bar == UI_BAR_HAIRLINE) {
+        lv_obj_t *line = ui_gradient_bar(bar, 0, OS_STATUS_H - 2, BOARD_LCD_H_RES, 2);
+        lv_obj_set_style_radius(line, 0, 0);
+    } else if (t->bar == UI_BAR_RULE) {
+        lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_width(bar, t->border_w, 0);
+        lv_obj_set_style_border_color(bar, ui_col(COL_BORDER), 0);
+    }
 }
 
 static void usb_fire(void)
@@ -184,6 +301,13 @@ static void status_update(void)
     }
     lv_obj_set_style_text_color(s_wifi, ui_col(c), 0);
     lv_obj_align_to(s_wifi, s_batt, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    if (s_cell) {
+        // The outline fills with the charge (full on USB), low in the warning colour.
+        int pct = mv < 0 ? 0 : mv > 4300 ? 100 : bsp_battery_percent(mv);
+        lv_obj_set_width(s_cell_fill, 1 + 14 * pct / 100);
+        lv_obj_set_style_bg_color(s_cell_fill, ui_col(pct <= 10 ? COL_ERR : COL_TEXT), 0);
+        lv_obj_align(s_wifi, LV_ALIGN_LEFT_MID, 266, 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,9 +352,10 @@ void os_toast(const char *fmt, ...)
 static void toast_create(void)
 {
     s_toast = ui_label(lv_layer_top(), &sol_font_14, COL_BG, "");
+    lv_obj_set_style_text_color(s_toast, ui_focus_fg(), 0);
     lv_obj_set_style_bg_opa(s_toast, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_toast, ui_col(COL_GREEN), 0);
-    lv_obj_set_style_radius(s_toast, 12, 0);
+    lv_obj_set_style_bg_color(s_toast, ui_focus_bg(), 0);
+    lv_obj_set_style_radius(s_toast, ui_radius() ? 12 : 0, 0);
     lv_obj_set_style_pad_hor(s_toast, 12, 0);
     lv_obj_set_style_pad_ver(s_toast, 4, 0);
     lv_obj_set_style_max_width(s_toast, BOARD_LCD_H_RES - 20, 0);
@@ -284,16 +409,12 @@ static void confirm_show(const char *text, os_confirm_cb_t done, void *ctx)
     s_modal_cb = done;
     s_modal_ctx = ctx;
     s_modal_armed = now_ms() + CONFIRM_ARM_MS;
-    s_modal = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(s_modal);
-    lv_obj_set_size(s_modal, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
-    lv_obj_set_style_bg_opa(s_modal, LV_OPA_70, 0);
-    lv_obj_set_style_bg_color(s_modal, lv_color_black(), 0);
-    lv_obj_set_scrollable(s_modal, false);
+    s_modal = ui_scrim();
 
     lv_obj_t *box = ui_panel(s_modal, 0, 0, CONFIRM_W, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(box, ui_col(COL_PANEL_HI), 0);
-    lv_obj_set_style_border_color(box, ui_col(COL_PURPLE), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, ui_accent(), 0);
     lv_obj_set_style_pad_all(box, 12, 0);
     lv_obj_set_style_pad_top(box, 16, 0);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
@@ -423,7 +544,7 @@ static void switch_to(const os_app_t *app)
     lv_obj_scroll_to(s_root, 0, 0, LV_ANIM_OFF);
     repin_display_events();         // the app's memory is free now
     s_app = app;
-    lv_label_set_text(s_title, app == &os_launcher ? "Solana OS" : app->name);
+    status_title(app);
     ESP_LOGI(TAG, "app: %s", app->id);
     if (app->on_enter) {
         app->on_enter(s_root);
@@ -737,6 +858,46 @@ void os_brightness_apply(void)
     bsp_backlight_level(s_bright_pct[level - 1]);
 }
 
+// The theme's wallpaper behind everything, or its plain background.
+static void screen_style(lv_obj_t *scr)
+{
+    lv_obj_set_style_bg_color(scr, ui_col(COL_BG), 0);
+    lv_obj_set_style_bg_image_src(scr, ui_theme()->wallpaper, 0);
+}
+
+static void theme_posted(void *arg)
+{
+    os_setting_set(OS_SET_THEME, (int)(intptr_t)arg);
+    os_theme_apply();
+}
+
+bool os_theme_set(int id)
+{
+    for (int i = 0; i < ui_theme_count(); i++) {
+        if (ui_theme_at(i)->id == id) {
+            return os_post(theme_posted, (void *)(intptr_t)id);
+        }
+    }
+    return false;
+}
+
+// "theme": list the themes, or switch to one by id (as the Themes app does).
+static int cmd_theme(int argc, char **argv)
+{
+    if (argc < 2) {
+        for (int i = 0; i < ui_theme_count(); i++) {
+            const ui_theme_t *t = ui_theme_at(i);
+            printf("%c %2d  %s\n", t == ui_theme() ? '*' : ' ', t->id, t->name);
+        }
+        return 0;
+    }
+    if (!os_theme_set(atoi(argv[1]))) {
+        printf("no theme %s\n", argv[1]);
+        return 1;
+    }
+    return 0;
+}
+
 void os_invert_apply(void)
 {
     bsp_display_invert(os_setting(OS_SET_LCD_INVERT) != 0);
@@ -771,7 +932,7 @@ void os_start(void)
     lv_display_add_event_cb(lv_display_get_default(), capture_done, LV_EVENT_REFR_READY, NULL);
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
-    lv_obj_set_style_bg_color(scr, ui_col(COL_BG), 0);
+    screen_style(scr);
     lv_obj_set_scrollable(scr, false);
     status_create(scr);
     s_root = lv_obj_create(scr);
@@ -785,6 +946,7 @@ void os_start(void)
     if (bsp_buttons_start(on_buttons) != ESP_OK) {
         ESP_LOGE(TAG, "buttons unavailable; use the console 'key' command");
     }
+    os_cmd_register("theme", "theme [id] - list the themes, or switch to one", cmd_theme);
     xTaskCreate(os_task, "os", 6144, NULL, 4, &s_task);
 }
 
@@ -793,15 +955,17 @@ void os_hold(const char *why)
     s_hold = why;
 }
 
-// Settings changed the theme: rebuild everything that holds colours, then
-// re-enter the current app so it draws itself in the new palette.
+// The theme changed (the Themes app, the "theme" command): rebuild everything
+// that holds colours, then re-enter the current app so it draws itself in it.
 void os_theme_apply(void)
 {
+    ui_theme_reload();
     os_overlay_close();
     lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, ui_col(COL_BG), 0);
+    screen_style(scr);
     lv_obj_delete(s_bar);
     status_create(scr);
+    lv_obj_move_to_index(s_bar, 0);     // under the app root, as at boot
     status_update();
     lv_obj_delete(s_toast);
     toast_create();
@@ -809,7 +973,7 @@ void os_theme_apply(void)
         s_app->on_exit();
     }
     lv_obj_clean(s_root);
-    lv_label_set_text(s_title, s_app == &os_launcher ? "Solana OS" : s_app->name);
+    status_title(s_app);
     if (s_app->on_enter) {
         s_app->on_enter(s_root);
     }

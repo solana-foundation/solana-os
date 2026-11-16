@@ -289,7 +289,7 @@ static int m_size(lua_State *L)
     if (o) {
         lv_obj_set_size(o->obj, w, h);
         if (o->kind == LH_GRADIENT || o->kind == LH_BAR) {
-            lv_obj_set_style_radius(o->obj, o->kind == LH_BAR ? h / 2 : 0, 0);
+            lv_obj_set_style_radius(o->obj, o->kind == LH_BAR && ui_radius() ? h / 2 : 0, 0);
         }
     }
     return 0;
@@ -600,12 +600,12 @@ static int l_bar(lua_State *L)
     lv_obj_set_size(b, w, h);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(b, ui_col(COL_PANEL_HI), 0);
-    lv_obj_set_style_radius(b, h / 2, 0);
+    lv_obj_set_style_radius(b, ui_radius() ? h / 2 : 0, 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(b, ui_col(COL_PURPLE), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_grad_color(b, lv_color_hex(COL_GREEN), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(b, ui_grad_a(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_grad_color(b, ui_grad_b(), LV_PART_INDICATOR);
     lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(b, h / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(b, ui_radius() ? h / 2 : 0, LV_PART_INDICATOR);
     lv_bar_set_range(b, 0, 100);
     lv_bar_set_value(b, v < 0 ? 0 : v > 100 ? 100 : v, LV_ANIM_OFF);
     new_obj(L, s, LH_BAR, b);
@@ -765,10 +765,11 @@ static int l_confirm(lua_State *L)
     dialog_ref(L, s, 2);
     lv_obj_t *dim = base_obj(s->area, 0, 0, OS_ROOT_W, OS_ROOT_H);
     lv_obj_set_style_bg_opa(dim, LV_OPA_70, 0);
-    lv_obj_set_style_bg_color(dim, ui_col(COL_BG), 0);
+    lv_obj_set_style_bg_color(dim, lv_color_hex(ui_theme()->scrim), 0);
     lv_obj_t *p = ui_panel(dim, 20, 0, OS_ROOT_W - 40, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(p, 12, 0);
-    lv_obj_set_style_border_color(p, ui_col(COL_PURPLE), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(p, ui_accent(), 0);
     lv_obj_t *t = ui_label(p, &sol_font_14, COL_TEXT, text);
     lv_obj_set_width(t, OS_ROOT_W - 66);
     lv_obj_t *k = ui_label(p, &sol_mono_12, COL_DIM, "SELECT yes   CANCEL no");

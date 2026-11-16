@@ -18,6 +18,7 @@
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 #include "game/game.h"
 
 #define HEAD_H      18
@@ -74,6 +75,9 @@ typedef struct {
 
 typedef struct {
     lv_obj_t *root, *home, *tabs, *head, *hint, *view, *offline;
+    // The Streaming theme's Collection: a tile per category instead of rows.
+    lv_obj_t *grid, *gsub, *gtiles[CAT_COUNT], *gcount[CAT_COUNT];
+    int gsel;
     ui_list_t *list;
     int tab, tick;
     view_t mode;
@@ -189,6 +193,109 @@ static void guide_apply(const cJSON *j)
     s->total = game_jint(j, "total", 0);
 }
 
+// ---- The Streaming theme's Collection tab: "Don't panic." over a 4x2 grid
+// of category tiles (the list is hidden while it shows).
+
+#define GRID_COLS   4
+#define GTILE_W     67
+#define GTILE_H     50
+#define GTILE_GAP   8
+
+static void grid_show(bool on)
+{
+    if (!s->grid) {
+        return;
+    }
+    lv_obj_set_hidden(s->grid, !on);
+    lv_obj_set_hidden(s->head, on);
+    ui_list_show(s->list, !on);
+}
+
+static bool grid_on(void)
+{
+    return s->grid && !lv_obj_is_hidden(s->grid);
+}
+
+static void grid_render(void)
+{
+    if (!s->grid) {
+        return;
+    }
+    char text[48];
+    snprintf(text, sizeof(text), "%d of %d pages collected", s->owned, s->total);
+    lv_label_set_text(s->gsub, text);
+    for (int i = 0; i < CAT_COUNT; i++) {
+        snprintf(text, sizeof(text), "%d/%d", s->catn[i].owned, s->catn[i].total);
+        lv_label_set_text(s->gcount[i], text);
+        ui_stream_ring(s->gtiles[i], i == s->gsel);
+    }
+}
+
+static void grid_create(void)
+{
+    s->grid = lv_obj_create(s->home);
+    lv_obj_remove_style_all(s->grid);
+    lv_obj_set_pos(s->grid, 0, UI_TABS_H);
+    lv_obj_set_size(s->grid, OS_ROOT_W, VIEW_H - UI_TABS_H);
+    lv_obj_set_scrollable(s->grid, false);
+    lv_obj_t *l = ui_stream_display(s->grid, 24, "Don't panic.");
+    lv_obj_set_pos(l, 14, 4);
+    s->gsub = ui_label(s->grid, &pearl_font_11, COL_DIM, "");
+    lv_obj_set_pos(s->gsub, 14, 30);
+    for (int i = 0; i < CAT_COUNT; i++) {
+        lv_obj_t *t = lv_obj_create(s->grid);
+        lv_obj_remove_style_all(t);
+        lv_obj_set_pos(t, 14 + (i % GRID_COLS) * (GTILE_W + GTILE_GAP), 50 + (i / GRID_COLS) * (GTILE_H + GTILE_GAP));
+        lv_obj_set_size(t, GTILE_W, GTILE_H);
+        lv_obj_set_style_radius(t, 4, 0);
+        lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
+        lv_color_t c = ui_col(ui_cat_color(cats[i]));
+        lv_obj_set_style_bg_color(t, c, 0);
+        lv_obj_set_style_bg_grad_color(t, lv_color_mix(c, lv_color_black(), 70), 0);
+        lv_obj_set_style_bg_grad_dir(t, LV_GRAD_DIR_VER, 0);
+        lv_obj_set_scrollable(t, false);
+        s->gtiles[i] = t;
+        s->gcount[i] = lv_label_create(t);
+        lv_obj_set_style_text_font(s->gcount[i], &stream_caps_8, 0);
+        lv_obj_set_style_text_color(s->gcount[i], lv_color_hex(0x0B0B0D), 0);
+        lv_label_set_text(s->gcount[i], "");
+        lv_obj_align(s->gcount[i], LV_ALIGN_TOP_RIGHT, -5, 5);
+        lv_obj_t *n = ui_stream_display(t, 14, ui_cat_name(cats[i]));
+        lv_obj_set_style_text_color(n, lv_color_white(), 0);
+        lv_obj_align(n, LV_ALIGN_BOTTOM_LEFT, 6, -3);
+    }
+    lv_obj_set_hidden(s->grid, true);
+}
+
+// Arrows in the grid; off its left or right edge is the next tab. True if
+// the key was the grid's.
+static bool grid_key(os_key_t k)
+{
+    int col = s->gsel % GRID_COLS, n = s->gsel;
+    switch (k) {
+    case OS_KEY_LEFT:
+        if (col == 0) {
+            return false;
+        }
+        n--;
+        break;
+    case OS_KEY_RIGHT:
+        if (col == GRID_COLS - 1 || n + 1 >= CAT_COUNT) {
+            return false;
+        }
+        n++;
+        break;
+    case OS_KEY_UP:   n -= GRID_COLS; break;
+    case OS_KEY_DOWN: n += GRID_COLS; break;
+    default:          return false;
+    }
+    if (n >= 0 && n < CAT_COUNT) {
+        s->gsel = n;
+        grid_render();
+    }
+    return true;
+}
+
 static void collection_render(void)
 {
     if (s->tab != TAB_COLLECTION || s->mode != V_TABS) {
@@ -204,6 +311,8 @@ static void collection_render(void)
     offline_show(!s->total);
     ui_list_set_empty(s->list, loading_text());
     ui_list_set_count(s->list, s->total ? CAT_COUNT : 0);
+    grid_show(s->total > 0);
+    grid_render();
 }
 
 static void got_guide(int status, const char *body, void *ctx)
@@ -297,6 +406,7 @@ static void pages_open(int cat)
         return;
     }
     ui_list_set_count(s->list, 0);      // the rows are categories until the pages render
+    grid_show(false);
     s->mode = V_PAGES;
     s->cat = cat;
     s->npages = 0;
@@ -319,6 +429,7 @@ static void pages_close(void)
     os_api_cancel(s->cursor);           // a page load in flight (ctx: a field of s, never NULL)
     s->loading = false;
     lv_obj_set_style_text_color(s->head, ui_col(COL_DIM), 0);
+    s->gsel = s->cat;
     show_tab(TAB_COLLECTION);
     ui_list_select(s->list, s->cat);
 }
@@ -335,8 +446,8 @@ static void rarity_edge(lv_obj_t *parent, int h, int rarity)
     lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(e, ui_col(ui_rarity_color(rarities[rarity])), 0);
     if (rarity == R_LEGENDARY) {
-        lv_obj_set_style_bg_color(e, ui_col(COL_PURPLE), 0);
-        lv_obj_set_style_bg_grad_color(e, lv_color_hex(COL_GREEN), 0);
+        lv_obj_set_style_bg_color(e, ui_grad_a(), 0);
+        lv_obj_set_style_bg_grad_color(e, ui_grad_b(), 0);
         lv_obj_set_style_bg_grad_dir(e, LV_GRAD_DIR_VER, 0);
     }
 }
@@ -346,7 +457,7 @@ static lv_obj_t *chip(lv_obj_t *parent, const char *text, uint32_t col)
     lv_obj_t *c = ui_label(parent, &sol_mono_12, COL_BG, text);
     lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(c, ui_col(col), 0);
-    lv_obj_set_style_radius(c, 8, 0);
+    lv_obj_set_style_radius(c, ui_radius() ? 8 : 0, 0);
     lv_obj_set_style_pad_hor(c, 6, 0);
     lv_obj_set_style_pad_ver(c, 1, 0);
     return c;
@@ -916,6 +1027,7 @@ static void tab_render(void)
 static void show_tab(int tab)
 {
     s->tab = tab;
+    grid_show(false);
     ui_tabs_select(s->tabs, tab);
     ui_list_set_count(s->list, 0);      // the rows belong to the other tab until it renders
     tab_render();
@@ -979,6 +1091,9 @@ static void enter(lv_obj_t *root)
     lv_obj_set_width(s->head, OS_ROOT_W - 16);
     lv_label_set_long_mode(s->head, LV_LABEL_LONG_MODE_DOTS);
     s->list = ui_list_create(s->home, LIST_Y, LIST_H, row, NULL);
+    if (ui_stream()) {
+        grid_create();
+    }
     s->offline = ui_offline_create(s->home, LIST_Y, LIST_H, true);
     s->hint = ui_hint(root, "");
 
@@ -1008,10 +1123,14 @@ static void leave(void)
 
 static bool tabs_key(os_key_t k, bool repeat)
 {
-    if (ui_offline_key(s->offline, k) || ui_list_key(s->list, k, repeat)) {
+    if (ui_offline_key(s->offline, k)) {
         return true;
     }
-    int sel = ui_list_selected(s->list);
+    bool grid = grid_on();
+    if (grid ? grid_key(k) : ui_list_key(s->list, k, repeat)) {
+        return true;
+    }
+    int sel = grid ? s->gsel : ui_list_selected(s->list);
     switch (k) {
     case OS_KEY_LEFT:
     case OS_KEY_RIGHT:

@@ -18,6 +18,7 @@
 #include "core/os_api.h"
 #include "core/os_cloud.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 #include "lua/lua_host.h"
 #include "lua/lua_install.h"
 #include "lua/lua_pkg.h"
@@ -109,6 +110,13 @@ static void row(int i, ui_row_t *r, void *ctx)
 {
     const lua_pkg_t *p = &s_pkgs[i];
     snprintf(r->title, sizeof(r->title), "%s  %s", p->symbol, p->name);
+    if (ui_stream()) {
+        // Streaming: the icon goes on a thumbnail in the app's colour.
+        strlcpy(r->title, p->name, sizeof(r->title));
+        r->thumb = p->accent ? p->accent : 0x45454C;
+        r->thumb_symbol = p->symbol;
+        r->action = "Open";
+    }
     if (p->temp) {
         time_left(p, r->sub, sizeof(r->sub));
         strlcpy(r->right, "Quest", sizeof(r->right));

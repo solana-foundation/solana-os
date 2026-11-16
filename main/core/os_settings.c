@@ -13,7 +13,7 @@ static const struct {
     const char *key;        // NVS key, max 15 chars
     int32_t def;
 } s_defs[OS_SET_COUNT] = {
-    [OS_SET_THEME] = {"theme", OS_THEME_DARK},
+    [OS_SET_THEME] = {"theme", 0},       // UI_THEME_DARK
     [OS_SET_BRIGHTNESS] = {"bright", OS_BRIGHTNESS_MAX},
     // The key 0.4.1-0.4.2 used, with the same meaning: what a badge saved then holds.
     [OS_SET_LCD_INVERT] = {"lcd_invert", 1},

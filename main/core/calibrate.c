@@ -23,9 +23,9 @@ static void style_key(int i)
 {
     lv_obj_t *k = s_keys[i];
     bool cur = i == s_cur, done = i < s_cur;
-    lv_obj_set_style_bg_color(k, ui_col(cur ? COL_GREEN : done ? COL_PANEL_HI : COL_PANEL), 0);
+    lv_obj_set_style_bg_color(k, cur ? ui_focus_bg() : ui_col(done ? COL_PANEL_HI : COL_PANEL), 0);
     lv_obj_set_style_border_color(k, ui_col(done ? COL_GREEN : COL_BORDER), 0);
-    lv_obj_set_style_text_color(lv_obj_get_child(k, 0), ui_col(cur ? COL_BG : done ? COL_GREEN : COL_DIM), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(k, 0), cur ? ui_focus_fg() : ui_col(done ? COL_GREEN : COL_DIM), 0);
 }
 
 static void render(void)
@@ -54,7 +54,7 @@ static void enter(lv_obj_t *root)
     for (int i = 0; i < OS_KEY_FRONT_COUNT; i++) {
         lv_obj_t *k = ui_panel(root, pos[i][0], pos[i][1] - 20, i >= OS_KEY_SELECT ? 64 : 44, 26);
         lv_obj_set_style_pad_all(k, 0, 0);
-        lv_obj_set_style_radius(k, 13, 0);
+        lv_obj_set_style_radius(k, ui_radius() ? 13 : 0, 0);
         lv_obj_t *l = ui_label(k, &sol_mono_12, COL_DIM, prompts[i]);
         lv_obj_center(l);
         s_keys[i] = k;

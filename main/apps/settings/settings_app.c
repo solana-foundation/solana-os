@@ -1,5 +1,6 @@
 // Settings: user preferences (core/os_settings) plus shortcuts to system
 // tools. One row per item; SELECT (or LEFT/RIGHT on a choice) changes it.
+// Theme opens the Themes app (apps/themes).
 // Brightness steps with LEFT/RIGHT (SELECT goes round from brightest to dimmest).
 // Invert colours flips with SELECT or LEFT/RIGHT, at once, so wrong colours
 // (RED on cyan: a prototype's panel) are put right where they're seen.
@@ -14,6 +15,7 @@
 #include "esp_app_desc.h"
 #include "core/os_settings.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 
 enum { ROW_THEME, ROW_BRIGHTNESS, ROW_INVERT, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
 
@@ -23,11 +25,9 @@ static void row(int i, ui_row_t *r, void *ctx)
 {
     switch (i) {
     case ROW_THEME: {
-        bool light = ui_light();
         strlcpy(r->title, "Theme", sizeof(r->title));
-        strlcpy(r->sub, light ? "Black on white, QR code included" : "White on black, QR code included",
-                sizeof(r->sub));
-        strlcpy(r->right, light ? "Light" : "Dark", sizeof(r->right));
+        strlcpy(r->sub, ui_theme()->blurb, sizeof(r->sub));
+        strlcpy(r->right, ui_theme()->name, sizeof(r->right));
         r->right_color = COL_TEXT;
         break;
     }
@@ -86,6 +86,112 @@ static void row(int i, ui_row_t *r, void *ctx)
     }
 }
 
+// ---- The Streaming theme's screen: the same rows, drawn as its design does.
+// The selected row is a raised card with its explanation; Brightness is a
+// slider and Invert colours a switch.
+
+static lv_obj_t *s_sbox;
+static int s_ssel;
+
+static lv_obj_t *plain(lv_obj_t *parent, int w, int h, uint32_t hex, int radius)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_radius(o, radius, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(o, lv_color_hex(hex), 0);
+    lv_obj_set_scrollable(o, false);
+    return o;
+}
+
+static void stream_control(lv_obj_t *r, int i, const ui_row_t *row, bool sel)
+{
+    if (i == ROW_BRIGHTNESS) {
+        int w = sel ? 150 : 90, level = os_setting(OS_SET_BRIGHTNESS);
+        int fill = (w - 12) * (level - OS_BRIGHTNESS_MIN) / (OS_BRIGHTNESS_MAX - OS_BRIGHTNESS_MIN);
+        lv_obj_t *track = plain(r, w, 4, 0x5A5A62, 2);
+        lv_obj_align(track, LV_ALIGN_RIGHT_MID, -10, 0);
+        lv_obj_t *on = plain(track, fill + 6, 4, ui_theme()->accent, 2);
+        lv_obj_set_pos(on, 0, 0);
+        lv_obj_t *knob = plain(r, 12, 12, 0xFFFFFF, LV_RADIUS_CIRCLE);
+        lv_obj_align(knob, LV_ALIGN_RIGHT_MID, -10 - (w - 12 - fill), 0);
+        return;
+    }
+    bool chevron = row->right[0] && !strcmp(row->right, LV_SYMBOL_RIGHT);
+    bool trash = !strcmp(row->right, LV_SYMBOL_TRASH);
+    int x = -10;
+    if (i == ROW_INVERT) {
+        bool on = os_setting(OS_SET_LCD_INVERT) != 0;
+        lv_obj_t *sw = plain(r, 22, 12, on ? ui_theme()->accent : 0x5A5A62, 6);
+        lv_obj_align(sw, LV_ALIGN_RIGHT_MID, x, 0);
+        lv_obj_t *knob = plain(sw, 8, 8, 0xFFFFFF, LV_RADIUS_CIRCLE);
+        lv_obj_align(knob, on ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID, on ? -2 : 2, 0);
+        x -= 29;
+    } else if (chevron || trash || i == ROW_THEME) {
+        lv_obj_t *c = ui_label(r, &lv_font_montserrat_12, COL_DIM, LV_SYMBOL_RIGHT);
+        lv_obj_align(c, LV_ALIGN_RIGHT_MID, x, 0);
+        x -= 14;
+    }
+    // What the row is set to; a row with nothing to say shows its explanation
+    // there while it isn't the selected one (which has it under the title).
+    const char *value = chevron || trash ? (sel ? "" : row->sub) : row->right;
+    if (value[0]) {
+        lv_obj_t *v = ui_label(r, &pearl_font_11, row->right_color == COL_GREEN ? COL_GREEN : COL_DIM, value);
+        lv_obj_set_style_max_width(v, 170, 0);
+        lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_height(v, lv_font_get_line_height(&pearl_font_11));
+        lv_obj_align(v, LV_ALIGN_RIGHT_MID, x, 0);
+    }
+}
+
+static void stream_build(void)
+{
+    lv_obj_clean(s_sbox);
+    int y = 4;
+    for (int i = 0; i < ROW_COUNT; i++) {
+        ui_row_t rw = {0};
+        row(i, &rw, NULL);
+        bool sel = i == s_ssel;
+        int h = sel ? 38 : 28;
+        lv_obj_t *r = plain(s_sbox, OS_ROOT_W - 20, h, 0x26262B, 5);
+        lv_obj_set_pos(r, 10, y);
+        lv_obj_set_style_bg_opa(r, sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        if (sel) {
+            lv_obj_set_style_border_width(r, 2, 0);
+            lv_obj_set_style_border_color(r, lv_color_white(), 0);
+        } else {
+            lv_obj_set_style_border_side(r, LV_BORDER_SIDE_BOTTOM, 0);
+            lv_obj_set_style_border_width(r, 1, 0);
+            lv_obj_set_style_border_color(r, lv_color_hex(0x222226), 0);
+            lv_obj_set_style_radius(r, 0, 0);
+        }
+        lv_obj_t *t = ui_label(r, sel ? &pearl_font_13 : &stream_bold_11, rw.title_color ? rw.title_color : COL_TEXT, rw.title);
+        if (sel) {
+            lv_obj_set_pos(t, 8, 4);
+            // Brightness says which keys move it only where there is room.
+            lv_obj_t *s = ui_label(r, &pearl_font_11, COL_DIM, i == ROW_BRIGHTNESS ? "Dimmer saves battery" : rw.sub);
+            lv_obj_set_style_max_width(s, i == ROW_BRIGHTNESS ? 120 : 250, 0);
+            lv_label_set_long_mode(s, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_height(s, lv_font_get_line_height(&pearl_font_11));
+            lv_obj_set_pos(s, 8, 20);
+        } else {
+            lv_obj_align(t, LV_ALIGN_LEFT_MID, 10, 0);
+        }
+        stream_control(r, i, &rw, sel);
+        y += h + 2;
+    }
+}
+
+static void refresh(void)
+{
+    if (s_list) {
+        ui_list_refresh(s_list);
+    } else {
+        stream_build();
+    }
+}
+
 static void reset_answer(bool yes, void *ctx)
 {
     if (yes) {
@@ -123,11 +229,20 @@ static void set_brightness(os_key_t k)
     }
     os_setting_set(OS_SET_BRIGHTNESS, next);
     os_brightness_apply();
-    ui_list_refresh(s_list);
+    refresh();
 }
 
 static void enter(lv_obj_t *root)
 {
+    if (ui_stream()) {
+        s_list = NULL;
+        s_sbox = lv_obj_create(root);
+        lv_obj_remove_style_all(s_sbox);
+        lv_obj_set_size(s_sbox, OS_ROOT_W, OS_ROOT_H);
+        lv_obj_set_scrollable(s_sbox, false);
+        stream_build();
+        return;
+    }
     s_list = ui_list_create(root, 4, OS_ROOT_H - 4 - UI_HINT_H, row, NULL);
     ui_list_set_count(s_list, ROW_COUNT);
     ui_hint(root, LV_SYMBOL_UP LV_SYMBOL_DOWN " pick  SELECT change  CANCEL exit");
@@ -135,27 +250,32 @@ static void enter(lv_obj_t *root)
 
 static bool on_key(os_key_t k, bool repeat)
 {
-    if (ui_list_key(s_list, k, repeat)) {
+    if (!s_list && (k == OS_KEY_UP || k == OS_KEY_DOWN)) {
+        int n = s_ssel + (k == OS_KEY_DOWN ? 1 : -1);
+        s_ssel = n < 0 ? (repeat ? 0 : ROW_COUNT - 1) : n >= ROW_COUNT ? (repeat ? ROW_COUNT - 1 : 0) : n;
+        stream_build();
         return true;
     }
-    int i = ui_list_selected(s_list);
+    if (s_list && ui_list_key(s_list, k, repeat)) {
+        return true;
+    }
+    int i = s_list ? ui_list_selected(s_list) : s_ssel;
     if (i == ROW_BRIGHTNESS && (k == OS_KEY_LEFT || k == OS_KEY_RIGHT || (k == OS_KEY_SELECT && !repeat))) {
         set_brightness(k);
         return true;
     }
-    bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && (i == ROW_THEME || i == ROW_INVERT));
+    bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && i == ROW_INVERT);
     if (!change || repeat) {
         return k != OS_KEY_BACK;
     }
     switch (i) {
     case ROW_THEME:
-        os_setting_set(OS_SET_THEME, ui_light() ? OS_THEME_DARK : OS_THEME_LIGHT);
-        os_theme_apply();       // rebuilds this app too; s_list is new afterwards
+        os_launch(&app_themes);
         break;
     case ROW_INVERT:
         os_setting_set(OS_SET_LCD_INVERT, !os_setting(OS_SET_LCD_INVERT));
         os_invert_apply();
-        ui_list_refresh(s_list);
+        refresh();
         break;
     case ROW_UPDATE:
         os_launch(&app_update);

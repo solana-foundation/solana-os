@@ -21,6 +21,7 @@
 #include "core/os_mem.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 
 enum { PAGE_INPUT, PAGE_SD, PAGE_DISPLAY, PAGE_SYSTEM, PAGE_COUNT };
 static const char *const page_names[PAGE_COUNT] = {"Input", "microSD", "Display", "System"};
@@ -453,7 +454,7 @@ static void build_display(lv_obj_t *p)
         lv_obj_set_size(bar, 98, 56);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(bar, lv_color_hex(cols[i]), 0);
-        lv_obj_set_style_radius(bar, 4, 0);
+        lv_obj_set_style_radius(bar, ui_radius() ? 4 : 0, 0);
         lv_obj_t *t = ui_label(bar, &sol_mono_12, COL_TEXT, names[i]);
         lv_obj_set_style_text_color(t, lv_color_hex(i == 1 ? 0x000000 : 0xFFFFFF), 0);
         lv_obj_center(t);
@@ -584,9 +585,51 @@ static void build_page(int page)
     }
 }
 
+// ---- The Streaming theme opens on a menu of the checks; SELECT opens one
+// (the same pages, with their tabs), CANCEL comes back to the menu.
+
+static ui_list_t *s_menu;       // NULL in every other theme
+static bool s_in_menu;
+static const uint8_t menu_page[PAGE_COUNT] = {PAGE_DISPLAY, PAGE_INPUT, PAGE_SD, PAGE_SYSTEM};
+
+static void menu_row(int i, ui_row_t *r, void *ctx)
+{
+    static const struct {
+        const char *title, *sub, *symbol;
+        uint32_t tint;
+    } rows[PAGE_COUNT] = {
+        {"1  Display", "ILI9341 320x240, colour bars, LED patterns", LV_SYMBOL_IMAGE, 0xB8324E},
+        {"2  Buttons", "TCA9534 @0x20 + GPIO28, 8x WS2812B", LV_SYMBOL_KEYBOARD, 0x45454C},
+        {"3  microSD", "Mount, speed test, format", LV_SYMBOL_SD_CARD, 0x1D2A4A},
+        {"4  System", "Chip, heap, reset reason, uptime", LV_SYMBOL_SETTINGS, 0x6E6A0E},
+    };
+    strlcpy(r->title, rows[i].title, sizeof(r->title));
+    strlcpy(r->sub, rows[i].sub, sizeof(r->sub));
+    r->thumb = rows[i].tint;
+    r->thumb_symbol = rows[i].symbol;
+    r->action = "Open";
+}
+
+static void menu_show(bool on)
+{
+    s_in_menu = on;
+    ui_list_show(s_menu, on);
+    lv_obj_set_hidden(s_tabs, on);
+    lv_obj_set_hidden(s_page, on);
+    if (on) {
+        lv_obj_clean(s_page);
+        s_cur = -1;
+        s_led_mode = LED_OFF;
+        leds_off();
+        lv_label_set_text(s_hint, LV_SYMBOL_UP LV_SYMBOL_DOWN " pick   SELECT open   CANCEL exit");
+    }
+}
+
 static void enter(lv_obj_t *root)
 {
     s_root = root;
+    s_menu = NULL;
+    s_in_menu = false;
     s_tabs = ui_tabs(root, page_names, PAGE_COUNT);
     s_page = lv_obj_create(root);
     lv_obj_remove_style_all(s_page);
@@ -595,6 +638,12 @@ static void enter(lv_obj_t *root)
     lv_obj_set_scrollable(s_page, false);
     s_hint = ui_hint(root, "");
     s_led_mode = LED_OFF;
+    if (ui_stream()) {
+        s_menu = ui_list_create(root, 4, OS_ROOT_H - 4 - UI_HINT_H, menu_row, NULL);
+        ui_list_set_count(s_menu, PAGE_COUNT);
+        menu_show(true);
+        return;
+    }
     build_page(PAGE_INPUT);
 }
 
@@ -604,7 +653,30 @@ static void on_leave(void)
     leds_off();
 }
 
+static bool page_key(os_key_t k, bool repeat);
+
 static bool on_key(os_key_t k, bool repeat)
+{
+    if (!s_menu) {
+        return page_key(k, repeat);
+    }
+    if (s_in_menu) {
+        if (ui_list_key(s_menu, k, repeat)) {
+            return true;
+        }
+        if (k == OS_KEY_SELECT && !repeat) {
+            menu_show(false);
+            build_page(menu_page[ui_list_selected(s_menu)]);
+        }
+        return k != OS_KEY_BACK;
+    }
+    if (!page_key(k, repeat)) {
+        menu_show(true);        // CANCEL in a check: back to the menu
+    }
+    return true;
+}
+
+static bool page_key(os_key_t k, bool repeat)
 {
     if (k == OS_KEY_LEFT || k == OS_KEY_RIGHT) {
         if (!repeat) {

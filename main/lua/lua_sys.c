@@ -10,6 +10,7 @@
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "core/os_wifi.h"
+#include "core/ui_theme.h"
 #include "lua_priv.h"
 
 // ---------------------------------------------------------------------------
@@ -437,6 +438,72 @@ static int l_wifi_off(lua_State *L)
 }
 
 // ---------------------------------------------------------------------------
+// theme: the OS's looks (core/ui_theme.h), so a store app can be the picker.
+
+static void theme_push(lua_State *L, const ui_theme_t *t)
+{
+    lua_createtable(L, 0, 12);
+    lua_pushinteger(L, t->id);
+    lua_setfield(L, -2, "id");
+    lua_pushstring(L, t->name);
+    lua_setfield(L, -2, "name");
+    lua_pushstring(L, t->blurb);
+    lua_setfield(L, -2, "about");
+    lua_pushboolean(L, t == ui_theme());
+    lua_setfield(L, -2, "on");
+    lua_pushboolean(L, t->light);
+    lua_setfield(L, -2, "light");
+    // Its own colours as 0xRRGGBB, for a swatch or a preview of a theme that isn't on.
+    static const struct { const char *name; uint8_t slot; } cols[] = {
+        {"bg", UI_P_BG}, {"panel", UI_P_PANEL}, {"border", UI_P_BORDER}, {"text", UI_P_TEXT}, {"dim", UI_P_DIM},
+    };
+    for (int i = 0; i < (int)(sizeof(cols) / sizeof(cols[0])); i++) {
+        lua_pushinteger(L, t->pal[cols[i].slot]);
+        lua_setfield(L, -2, cols[i].name);
+    }
+    lua_pushinteger(L, t->focus_bg);
+    lua_setfield(L, -2, "focus");
+    lua_pushinteger(L, t->focus_fg);
+    lua_setfield(L, -2, "focus_text");
+    lua_pushinteger(L, t->radius);
+    lua_setfield(L, -2, "radius");
+}
+
+static int l_theme_list(lua_State *L)
+{
+    lua_createtable(L, ui_theme_count(), 0);
+    for (int i = 0; i < ui_theme_count(); i++) {
+        theme_push(L, ui_theme_at(i));
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
+
+static int l_theme_get(lua_State *L)
+{
+    theme_push(L, ui_theme());
+    return 1;
+}
+
+// Switching rebuilds every screen, the app's included, so the app closes and
+// the badge shows the home screen in the new theme. Queued in that order:
+// both happen once this callback has returned.
+static int l_theme_set(lua_State *L)
+{
+    int id = (int)luaL_checkinteger(L, 1);
+    bool ok = false;
+    for (int i = 0; i < ui_theme_count(); i++) {
+        ok = ok || ui_theme_at(i)->id == id;
+    }
+    if (ok && id != ui_theme()->id) {
+        os_launch(&os_launcher);
+        ok = os_theme_set(id);
+    }
+    lua_pushboolean(L, ok);
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 
 void lh_open_sys(lua_State *L)
 {
@@ -469,4 +536,7 @@ void lh_open_sys(lua_State *L)
     lua_setglobal(L, "storage");
     luaL_newlib(L, wifi);
     lua_setglobal(L, "wifi");
+    static const luaL_Reg theme[] = {{"list", l_theme_list}, {"get", l_theme_get}, {"set", l_theme_set}, {NULL, NULL}};
+    luaL_newlib(L, theme);
+    lua_setglobal(L, "theme");
 }

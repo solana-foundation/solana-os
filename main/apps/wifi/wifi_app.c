@@ -12,6 +12,7 @@
 #include "core/os_mesh.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 
 #define SCAN_MAX    32
 #define NET_MAX     24
@@ -30,6 +31,7 @@ static bool s_saved_row;        // row 0 is the saved network
 static bool s_scanning;
 static int64_t s_retry_scan_at;
 static lv_obj_t *s_root, *s_status, *s_detail;
+static lv_obj_t *s_caps, *s_dot;        // the Streaming theme's card: the label over the name, the state's dot
 static ui_list_t *s_list;
 static ui_kb_t *s_kb;
 static char s_kb_ssid[33];
@@ -124,6 +126,26 @@ static void render_status(void)
     os_wifi_info_t w;
     os_wifi_get_info(&w);
     uint32_t c = COL_DIM;
+    if (s_caps) {
+        // Streaming: the network's name as the headline, its state under it.
+        char saved[33], caps[40];
+        bool has = os_wifi_saved_ssid(saved, sizeof(saved));
+        const char *name = w.ssid[0] ? w.ssid : has ? saved : "Wi-Fi is off";
+        const char *state = "Off";
+        switch (w.state) {
+        case OS_WIFI_CONNECTED:  state = "Connected"; c = COL_GREEN; break;
+        case OS_WIFI_CONNECTING: state = "Joining..."; c = COL_YELLOW; break;
+        case OS_WIFI_FAILED:     state = w.fail_reason ? w.fail_reason : "Can't join"; c = COL_ERR; break;
+        case OS_WIFI_SUSPENDED:  state = "Paused"; c = COL_PINK; break;
+        default:                 state = has ? "Off. SELECT the saved network to connect" : "Pick a network below"; break;
+        }
+        lv_label_set_text(s_caps, w.ssid[0] || has ? (w.state == OS_WIFI_CONNECTED ? "CONNECTED TO" : "SAVED NETWORK") : "NO NETWORK SAVED");
+        lv_label_set_text(s_status, ui_stream_caps(caps, sizeof(caps), name));
+        lv_label_set_text(s_detail, s_scanning ? "Scanning 2.4 + 5 GHz..." : state);
+        lv_obj_set_style_text_color(s_detail, ui_col(s_scanning ? COL_DIM : c == COL_DIM ? COL_DIM : c), 0);
+        lv_obj_set_style_bg_color(s_dot, ui_col(c), 0);
+        return;
+    }
     switch (w.state) {
     case OS_WIFI_CONNECTED:
         lv_label_set_text_fmt(s_status, LV_SYMBOL_WIFI "  %s", w.ssid);
@@ -211,6 +233,47 @@ static void enter(lv_obj_t *root)
     s_nets = calloc(NET_MAX, sizeof(net_t));
     s_count = 0;
     s_kb = NULL;
+    s_caps = NULL;
+    if (ui_stream()) {
+        // The saved network as a card with the rings, then the scan.
+        lv_obj_t *card = lv_obj_create(root);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_pos(card, 14, 4);
+        lv_obj_set_size(card, OS_ROOT_W - 28, 66);
+        lv_obj_set_style_radius(card, 6, 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x141416), 0);
+        lv_obj_set_style_bg_grad_color(card, lv_color_hex(0x4A160A), 0);
+        lv_obj_set_style_bg_grad_dir(card, LV_GRAD_DIR_HOR, 0);
+        lv_obj_set_style_clip_corner(card, true, 0);
+        lv_obj_set_scrollable(card, false);
+        lv_obj_t *rings = lv_image_create(card);
+        lv_image_set_src(rings, &img_black_pearl_wifi);
+        lv_obj_align(rings, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+        s_caps = ui_stream_caps_label(card, "");
+        lv_obj_set_pos(s_caps, 12, 9);
+        s_status = ui_stream_display(card, 24, "");
+        lv_obj_set_pos(s_status, 12, 22);
+        lv_obj_set_style_max_width(s_status, 220, 0);
+        lv_label_set_long_mode(s_status, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_height(s_status, 24);
+        s_dot = lv_obj_create(card);
+        lv_obj_remove_style_all(s_dot);
+        lv_obj_set_size(s_dot, 5, 5);
+        lv_obj_set_pos(s_dot, 12, 51);
+        lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(s_dot, LV_OPA_COVER, 0);
+        s_detail = ui_label(card, &stream_bold_11, COL_DIM, "");
+        lv_obj_set_pos(s_detail, 22, 47);
+        lv_obj_set_style_max_width(s_detail, 220, 0);
+        lv_label_set_long_mode(s_detail, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_height(s_detail, lv_font_get_line_height(&stream_bold_11));
+        s_list = ui_list_create(root, 74, OS_ROOT_H - 74 - UI_HINT_H, row, NULL);
+        ui_hint(root, LV_SYMBOL_UP LV_SYMBOL_DOWN " pick  SELECT join  " LV_SYMBOL_RIGHT " rescan  " LV_SYMBOL_LEFT " forget");
+        update_rows();
+        start_scan();
+        return;
+    }
     lv_obj_t *head = ui_panel(root, 4, 4, OS_ROOT_W - 8, 42);
     lv_obj_set_style_pad_ver(head, 3, 0);
     s_status = ui_label(head, &sol_font_14, COL_TEXT, "");

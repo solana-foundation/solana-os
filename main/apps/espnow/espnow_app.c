@@ -26,6 +26,7 @@
 #include "core/os_mesh.h"
 #include "core/os_wifi.h"
 #include "core/ui.h"
+#include "core/ui_stream.h"
 #include "game/game.h"
 
 static const char *TAG = "espnow_app";
@@ -391,9 +392,58 @@ static int by_rssi(const void *a, const void *b)
     return s->peers[*(const int *)b].rssi - s->peers[*(const int *)a].rssi;
 }
 
+// The Streaming theme's banner: the channel as a big figure, its band, and a
+// little mesh drawn beside them. NULL in every other theme.
+static lv_obj_t *s_big, *s_band, *s_cap;
+
+static void stream_banner(lv_obj_t *root)
+{
+    static const lv_point_precise_t ring[] = {{30, 22}, {78, 15}, {92, 57}, {52, 69}, {30, 22}, {92, 57}};
+    static const lv_point_precise_t cross[] = {{78, 15}, {52, 69}};
+    static const struct {
+        uint8_t x, y, r;
+        uint32_t col;
+    } nodes[] = {{30, 22, 5, 0xE9D9FF}, {78, 15, 4, 0xC9A2FF}, {92, 57, 6, 0xE9D9FF}, {52, 69, 4, 0xC9A2FF}};
+    lv_obj_t *g = lv_obj_create(root);
+    lv_obj_remove_style_all(g);
+    lv_obj_set_pos(g, 196, UI_TABS_H + 2);
+    lv_obj_set_size(g, 110, 84);
+    lv_obj_set_scrollable(g, false);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *ln = lv_line_create(g);
+        lv_line_set_points(ln, i ? cross : ring, i ? 2 : 6);
+        lv_obj_set_style_line_width(ln, 1, 0);
+        lv_obj_set_style_line_color(ln, lv_color_hex(0xC9A2FF), 0);
+        lv_obj_set_style_line_opa(ln, LV_OPA_50, 0);
+    }
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *n = lv_obj_create(g);
+        lv_obj_remove_style_all(n);
+        lv_obj_set_size(n, nodes[i].r * 2, nodes[i].r * 2);
+        lv_obj_set_pos(n, nodes[i].x - nodes[i].r, nodes[i].y - nodes[i].r);
+        lv_obj_set_style_radius(n, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(n, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(n, lv_color_hex(nodes[i].col), 0);
+    }
+    s_cap = ui_stream_caps_label(root, "MESH CHANNEL");
+    lv_obj_set_pos(s_cap, 14, UI_TABS_H + 8);
+    s_big = ui_stream_display(root, 64, "");
+    lv_obj_set_pos(s_big, 14, UI_TABS_H + 20);
+    s_band = ui_stream_display(root, 24, "");
+    lv_obj_set_style_text_color(s_band, lv_color_hex(0xC9A2FF), 0);
+}
+
 static void render(void)
 {
     int64_t now = esp_timer_get_time();
+    if (s_big) {
+        int ch = s_tab == TAB_MESH ? os_mesh_channel() : s_channel;
+        lv_label_set_text(s_cap, s_tab == TAB_MESH ? "MESH CHANNEL" : s_hop == HOP_LOCKED ? "LOCKED ON CHANNEL" : "HOPPING, NOW ON");
+        lv_label_set_text_fmt(s_big, "%d", ch);
+        lv_label_set_text(s_band, ch > 14 ? "5 GHZ" : "2.4 GHZ");
+        lv_obj_update_layout(s_big);
+        lv_obj_align_to(s_band, s_big, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -4);
+    }
     if (s_tab == TAB_MESH) {
         group(now);
         ui_list_set_count(s_list, 1 + s->nchan);
@@ -455,11 +505,21 @@ static void enter(lv_obj_t *root)
     s_mesh_all = os_mesh_channel() > 14;    // a 5 GHz mesh: sweep both bands from the start
 
     s_tabs = ui_tabs(root, tab_names, 2);
+    s_big = NULL;
+    if (ui_stream()) {
+        stream_banner(root);
+    }
     s_head = ui_label(root, &sol_font_14, COL_TEXT, "");
     lv_obj_set_pos(s_head, 8, UI_TABS_H + 2);
     s_sub = ui_label(root, &sol_mono_12, COL_DIM, "");
     lv_obj_set_pos(s_sub, 8, UI_TABS_H + 20);
-    s_list = ui_list_create(root, UI_TABS_H + 36, OS_ROOT_H - UI_TABS_H - 36 - UI_HINT_H, row, NULL);
+    s_list = ui_list_create(root, UI_TABS_H + (s_big ? 92 : 36), OS_ROOT_H - UI_TABS_H - (s_big ? 92 : 36) - UI_HINT_H, row, NULL);
+    if (s_big) {
+        // The banner says the first line; the second sits under the figure.
+        lv_obj_set_hidden(s_head, true);
+        lv_obj_set_style_text_font(s_sub, &pearl_font_11, 0);
+        lv_obj_set_pos(s_sub, 14, UI_TABS_H + 74);
+    }
     s_hint = ui_hint(root, "");
 
     // Borrow the radio: Wi-Fi reconnects (or parks on the mesh channel) when we give it back in on_exit.

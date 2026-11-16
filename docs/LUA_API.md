@@ -214,7 +214,11 @@ ui.clear()                              -- remove every object
 ```
 
 Colours are theme names: `"text" "dim" "bg" "panel" "border" "purple" "green" "pink"
-"lpurple" "blue" "aqua" "lime" "yellow" "orange"`. They follow the Dark/Light theme.
+"lpurple" "blue" "aqua" "lime" "yellow" "orange"`. They follow the theme the owner
+picked in the Themes app, so the same name is a different colour from one theme to the
+next (`"green"` is ink black in E-paper): use names, not `0xRRGGBB`, for anything that
+must stay readable on `"bg"` and `"panel"`. Lists, hints, the keyboard and dialogs take
+the theme's shape (corners, borders, how the selected row is shown) on their own.
 A number `0xRRGGBB` is a fixed colour. While a list, `ui.confirm` or `ui.input` has
 focus it consumes the keys it uses before `on_key` sees them.
 
@@ -358,6 +362,28 @@ function on_tick(ms)
   dot:pos(x, y)
 end
 ```
+
+### `theme` (always allowed)
+
+The looks the badge's Solana OS has, so an app can be the theme picker
+([examples/themes](examples/themes/)). Not in Solana OS 2.1.0 and earlier: check
+`if theme then`.
+
+```lua
+theme.list()        -- every theme, in the OS's order:
+--   { {id=0, name="Classic Dark", about="White on black, the original", on=true, light=false,
+--      bg=0x000000, panel=0x111116, border=0x2A2935, text=0xFFFFFF, dim=0x8E8C9E,
+--      focus=0x14F195, focus_text=0x000000, radius=6}, ... }
+theme.get()         -- the one that is on, as one such table
+theme.set(id)       -- switch to it; false if the badge has no theme with that id
+```
+
+`id` is fixed for good and is what the badge saves; `on` marks the theme in use. The
+colours are that theme's own, as `0xRRGGBB`, for drawing a preview of a theme that isn't
+on (`focus` and `focus_text` are its selected row). `theme.set` saves the choice (the
+Theme setting, as Settings > Theme does) and rebuilds every screen, so **the app closes**
+and the badge shows the home screen in the new theme: `on_exit` runs as for HOME. Setting
+the theme that is already on does nothing and returns true.
 
 ### `storage` (always allowed)
 

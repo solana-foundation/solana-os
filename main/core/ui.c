@@ -5,6 +5,7 @@
 #include <string.h>
 #include "esp_random.h"
 #include "ui.h"
+#include "ui_stream.h"
 #include "os.h"
 #include "os_api.h"
 #include "os_cloud.h"
@@ -13,40 +14,96 @@
 
 bool ui_light(void)
 {
-    return os_setting(OS_SET_THEME) == OS_THEME_LIGHT;
+    return ui_theme()->light;
 }
 
-// Light theme: surfaces and text swap, and the lighter brand accents get
-// deeper shades so they stay legible on white. Purple and the gradients are
-// unchanged.
+// Every UI colour goes through the active theme's palette (core/ui_theme.c).
 lv_color_t ui_col(uint32_t c)
 {
-    if (ui_light()) {
-        switch (c) {
-        case COL_BG:        c = 0xFFFFFF; break;
-        case COL_PANEL:     c = 0xF4F3F8; break;
-        case COL_PANEL_HI:  c = 0xE8E6F0; break;
-        case COL_BORDER:    c = 0xD5D2E0; break;
-        case COL_TEXT:      c = 0x000000; break;
-        case COL_DIM:       c = 0x6B6880; break;
-        case COL_GREEN:     c = 0x0A9E62; break;
-        case COL_YELLOW:    c = 0x8F8A00; break;
-        case COL_AQUA:      c = 0x0089A8; break;
-        case COL_LIME:      c = 0x3A9A28; break;
-        case COL_LPURPLE:   c = 0x6B5CF0; break;
-        case COL_BLUE:      c = 0x2A76D2; break;
-        case COL_ORANGE:    c = 0xE04E1E; break;
-        case COL_PINK:      c = 0xC8319A; break;
-        default:            break;
-        }
+    return lv_color_hex(ui_theme_hex(ui_theme(), c));
+}
+
+const lv_font_t *ui_font(const lv_font_t *f)
+{
+    return f == &sol_font_14 && ui_theme()->mono ? &sol_mono_12 : f;
+}
+
+int ui_radius(void)
+{
+    return ui_theme()->radius;
+}
+
+int ui_border_w(void)
+{
+    return ui_theme()->border_w;
+}
+
+lv_color_t ui_focus_bg(void)
+{
+    return lv_color_hex(ui_theme()->focus_bg);
+}
+
+lv_color_t ui_focus_fg(void)
+{
+    return lv_color_hex(ui_theme()->focus_fg);
+}
+
+lv_color_t ui_accent(void)
+{
+    return lv_color_hex(ui_theme()->accent);
+}
+
+void ui_surface(lv_obj_t *obj)
+{
+    lv_obj_set_style_bg_color(obj, ui_col(COL_BG), 0);
+    lv_obj_set_style_bg_opa(obj, ui_theme()->sheet_opa, 0);
+}
+
+lv_obj_t *ui_scrim(void)
+{
+    lv_obj_t *s = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s);
+    lv_obj_set_size(s, BOARD_LCD_H_RES, BOARD_LCD_V_RES);
+    lv_obj_set_style_bg_opa(s, LV_OPA_70, 0);
+    lv_obj_set_style_bg_color(s, lv_color_hex(ui_theme()->scrim), 0);
+    lv_obj_set_scrollable(s, false);
+    return s;
+}
+
+void ui_card(lv_obj_t *p)
+{
+    const ui_theme_t *t = ui_theme();
+    lv_obj_set_style_bg_opa(p, t->panel_opa, 0);
+    lv_obj_set_style_bg_color(p, ui_col(COL_PANEL), 0);
+    lv_obj_set_style_border_width(p, t->border_w, 0);
+    lv_obj_set_style_border_color(p, ui_col(COL_BORDER), 0);
+    lv_obj_set_style_radius(p, t->radius, 0);
+    if (t->shadow) {
+        // A hard offset shadow: no blur, the border's colour.
+        lv_obj_set_style_shadow_width(p, 1, 0);
+        lv_obj_set_style_shadow_spread(p, 0, 0);
+        lv_obj_set_style_shadow_offset_x(p, t->shadow, 0);
+        lv_obj_set_style_shadow_offset_y(p, t->shadow, 0);
+        lv_obj_set_style_shadow_color(p, ui_col(COL_BORDER), 0);
+        lv_obj_set_style_shadow_opa(p, LV_OPA_COVER, 0);
     }
-    return lv_color_hex(c);
+}
+
+void ui_focus(lv_obj_t *obj, bool on)
+{
+    const ui_theme_t *t = ui_theme();
+    bool fill = on && (t->focus == UI_FOCUS_FILL || t->focus == UI_FOCUS_BAR);
+    bool ring = on && (t->focus == UI_FOCUS_RING || t->focus == UI_FOCUS_CURSOR);
+    lv_obj_set_style_bg_color(obj, fill ? ui_focus_bg() : ui_col(COL_PANEL), 0);
+    lv_obj_set_style_text_color(obj, fill ? ui_focus_fg() : ui_col(COL_TEXT), 0);
+    lv_obj_set_style_border_color(obj, ring ? ui_focus_bg() : ui_col(COL_BORDER), 0);
+    lv_obj_set_style_border_width(obj, ring && t->border_w < 2 ? 2 : t->border_w, 0);
 }
 
 lv_obj_t *ui_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
 {
     lv_obj_t *l = lv_label_create(parent);
-    lv_obj_set_style_text_font(l, font, 0);
+    lv_obj_set_style_text_font(l, ui_font(font), 0);
     lv_obj_set_style_text_color(l, ui_col(color), 0);
     lv_label_set_text(l, text ? text : "");
     return l;
@@ -58,14 +115,20 @@ lv_obj_t *ui_panel(lv_obj_t *parent, int x, int y, int w, int h)
     lv_obj_remove_style_all(p);
     lv_obj_set_pos(p, x, y);
     lv_obj_set_size(p, w, h);
-    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(p, ui_col(COL_PANEL), 0);
-    lv_obj_set_style_border_width(p, 1, 0);
-    lv_obj_set_style_border_color(p, ui_col(COL_BORDER), 0);
-    lv_obj_set_style_radius(p, 6, 0);
+    ui_card(p);
     lv_obj_set_style_pad_all(p, 6, 0);
     lv_obj_set_scrollable(p, false);
     return p;
+}
+
+lv_color_t ui_grad_a(void)
+{
+    return lv_color_hex(ui_theme()->grad_a);
+}
+
+lv_color_t ui_grad_b(void)
+{
+    return lv_color_hex(ui_theme()->grad_b);
 }
 
 lv_obj_t *ui_gradient_bar(lv_obj_t *parent, int x, int y, int w, int h)
@@ -75,10 +138,10 @@ lv_obj_t *ui_gradient_bar(lv_obj_t *parent, int x, int y, int w, int h)
     lv_obj_set_pos(b, x, y);
     lv_obj_set_size(b, w, h);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(b, ui_col(COL_PURPLE), 0);
-    lv_obj_set_style_bg_grad_color(b, lv_color_hex(COL_GREEN), 0);
+    lv_obj_set_style_bg_color(b, ui_grad_a(), 0);
+    lv_obj_set_style_bg_grad_color(b, ui_grad_b(), 0);
     lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_radius(b, h / 2, 0);
+    lv_obj_set_style_radius(b, ui_radius() ? h / 2 : 0, 0);
     return b;
 }
 
@@ -88,13 +151,19 @@ lv_obj_t *ui_hint(lv_obj_t *root, const char *text)
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, OS_ROOT_W, UI_HINT_H);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(bar, ui_theme()->panel_opa, 0);
     lv_obj_set_style_bg_color(bar, ui_col(COL_PANEL), 0);
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_width(bar, ui_border_w(), 0);
     lv_obj_set_style_border_color(bar, ui_col(COL_BORDER), 0);
     lv_obj_t *l = ui_label(bar, &sol_mono_12, COL_DIM, text);
     lv_obj_align(l, LV_ALIGN_LEFT_MID, 6, 0);
+    if (ui_theme()->bar == UI_BAR_STREAM) {
+        // Streaming: no strip, just the quiet line of text.
+        lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_font(l, &pearl_font_11, 0);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 14, 0);
+    }
     return l;
 }
 
@@ -119,6 +188,16 @@ lv_obj_t *ui_tabs(lv_obj_t *root, const char *const *names, int count)
         lv_obj_set_style_pad_top(l, 4, 0);
         lv_obj_set_style_border_side(l, LV_BORDER_SIDE_BOTTOM, 0);
         lv_obj_set_style_border_color(l, ui_col(COL_GREEN), 0);
+        if (ui_theme()->bar == UI_BAR_STREAM) {
+            // Streaming: bold names, the selected one underlined in red.
+            lv_obj_set_style_text_font(l, &stream_bold_11, 0);
+            lv_obj_set_style_border_color(l, ui_accent(), 0);
+            lv_obj_set_style_pad_top(l, 5, 0);
+        }
+    }
+    if (ui_theme()->bar == UI_BAR_STREAM) {
+        lv_obj_set_style_border_width(t, 0, 0);
+        lv_obj_set_style_pad_left(t, 8, 0);
     }
     ui_tabs_select(t, 0);
     return t;
@@ -142,12 +221,16 @@ void ui_tabs_select(lv_obj_t *tabs, int index)
 
 typedef struct {
     lv_obj_t *obj, *mark, *title, *sub, *right;
+    lv_obj_t *thumb, *thumb_icon, *action, *action_l;   // the Streaming theme's (ui_row_t), else NULL
 } row_objs_t;
 
 struct ui_list {
     lv_obj_t *box, *empty, *scroll;
+    lv_obj_t *empty_hint;
+    lv_obj_t *empty_head, *empty_art;   // the Streaming theme's empty state: artwork, a headline, then `empty`
     row_objs_t rows[MAX_ROWS];
     int w, visible, count, sel, top;
+    bool hint_fits;     // room for empty_hint under the text
     ui_row_cb_t cb;
     void *ctx;
 };
@@ -179,22 +262,26 @@ ui_list_t *ui_list_create_at(lv_obj_t *parent, int x, int y, int w, int h, ui_ro
     lv_obj_set_scrollable(l->box, false);
     lv_obj_add_event_cb(l->box, list_deleted, LV_EVENT_DELETE, l);
 
+    int focus = ui_theme()->focus;
     for (int i = 0; i < l->visible; i++) {
         row_objs_t *r = &l->rows[i];
         r->obj = lv_obj_create(l->box);
         lv_obj_remove_style_all(r->obj);
         lv_obj_set_pos(r->obj, 0, i * ROW_H);
         lv_obj_set_size(r->obj, w - 6, ROW_H);
-        lv_obj_set_style_bg_color(r->obj, ui_col(COL_PANEL_HI), 0);
-        lv_obj_set_style_border_side(r->obj, LV_BORDER_SIDE_BOTTOM, 0);
-        lv_obj_set_style_border_width(r->obj, 1, 0);
-        lv_obj_set_style_border_color(r->obj, ui_col(COL_PANEL), 0);
-        r->mark = lv_obj_create(r->obj);
-        lv_obj_remove_style_all(r->mark);
-        lv_obj_set_size(r->mark, 3, ROW_H - 8);
-        lv_obj_align(r->mark, LV_ALIGN_LEFT_MID, 0, 0);
-        lv_obj_set_style_bg_opa(r->mark, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(r->mark, ui_col(COL_GREEN), 0);
+        lv_obj_set_style_radius(r->obj, focus == UI_FOCUS_BAR ? 0 : ui_radius(), 0);
+        if (focus == UI_FOCUS_CURSOR) {
+            // The selected row is the one with the cursor before it.
+            r->mark = ui_label(r->obj, &sol_mono_12, COL_TEXT, LV_SYMBOL_RIGHT);
+            lv_obj_align(r->mark, LV_ALIGN_TOP_LEFT, 0, 4);
+        } else {
+            r->mark = lv_obj_create(r->obj);
+            lv_obj_remove_style_all(r->mark);
+            lv_obj_set_size(r->mark, 3, ROW_H - 8);
+            lv_obj_align(r->mark, LV_ALIGN_LEFT_MID, 0, 0);
+            lv_obj_set_style_bg_opa(r->mark, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(r->mark, ui_col(COL_GREEN), 0);
+        }
         // One line each: a fixed height makes long text end in "..." instead of wrapping.
         r->title = ui_label(r->obj, &sol_font_14, COL_TEXT, "");
         lv_obj_set_pos(r->title, 10, 2);
@@ -206,12 +293,39 @@ ui_list_t *ui_list_create_at(lv_obj_t *parent, int x, int y, int w, int h, ui_ro
         lv_label_set_long_mode(r->sub, LV_LABEL_LONG_MODE_DOTS);
         r->right = ui_label(r->obj, &sol_mono_12, COL_DIM, "");
         lv_obj_align(r->right, LV_ALIGN_TOP_RIGHT, -4, 4);
+        if (ui_stream()) {
+            // Streaming: Geist, an optional thumbnail and an action button.
+            lv_obj_set_style_text_font(r->title, &pearl_font_13, 0);
+            lv_obj_set_height(r->title, lv_font_get_line_height(&pearl_font_13) + 2);
+            lv_obj_set_pos(r->title, 10, 4);
+            lv_obj_set_style_text_font(r->sub, &pearl_font_11, 0);
+            lv_obj_set_height(r->sub, lv_font_get_line_height(&pearl_font_11) + 2);
+            lv_obj_set_pos(r->sub, 10, 20);
+            lv_obj_set_style_text_font(r->right, &pearl_font_11, 0);
+            lv_obj_align(r->right, LV_ALIGN_TOP_RIGHT, -8, 6);
+            r->thumb = lv_obj_create(r->obj);
+            lv_obj_remove_style_all(r->thumb);
+            lv_obj_set_size(r->thumb, 40, 24);
+            lv_obj_set_pos(r->thumb, 6, 6);
+            lv_obj_set_style_radius(r->thumb, 3, 0);
+            lv_obj_set_style_bg_opa(r->thumb, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_grad_color(r->thumb, lv_color_hex(0x101013), 0);
+            lv_obj_set_style_bg_grad_dir(r->thumb, LV_GRAD_DIR_VER, 0);
+            r->thumb_icon = lv_label_create(r->thumb);
+            lv_obj_set_style_text_font(r->thumb_icon, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(r->thumb_icon, lv_color_white(), 0);
+            lv_obj_center(r->thumb_icon);
+            r->action = ui_stream_button(r->obj, NULL, "", true);
+            lv_obj_set_height(r->action, 18);
+            lv_obj_align(r->action, LV_ALIGN_RIGHT_MID, -8, 0);
+            r->action_l = lv_obj_get_child(r->action, 0);
+        }
     }
 
     l->scroll = lv_obj_create(l->box);
     lv_obj_remove_style_all(l->scroll);
     lv_obj_set_style_bg_opa(l->scroll, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(l->scroll, ui_col(COL_PURPLE), 0);
+    lv_obj_set_style_bg_color(l->scroll, ui_accent(), 0);
     lv_obj_set_style_radius(l->scroll, 1, 0);
 
     l->empty = ui_label(l->box, &sol_font_14, COL_DIM, "Nothing here yet");
@@ -219,6 +333,13 @@ ui_list_t *ui_list_create_at(lv_obj_t *parent, int x, int y, int w, int h, ui_ro
     lv_obj_set_style_text_align(l->empty, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(l->empty, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_align(l->empty, LV_ALIGN_CENTER, 0, 0);
+    if (ui_stream()) {
+        l->empty_art = ui_stream_empty_art(l->box);
+        l->empty_head = ui_stream_display(l->box, 24, "");
+        l->empty_hint = ui_stream_empty_hint(l->box);
+        lv_obj_set_style_text_font(l->empty, &pearl_font_11, 0);
+        ui_list_set_empty(l, "Nothing here yet");
+    }
     ui_list_refresh(l);
     return l;
 }
@@ -243,6 +364,7 @@ void ui_list_refresh(ui_list_t *l)
         l->top = 0;
     }
 
+    int focus = ui_theme()->focus;
     for (int i = 0; i < l->visible; i++) {
         row_objs_t *r = &l->rows[i];
         int idx = l->top + i;
@@ -254,18 +376,58 @@ void ui_list_refresh(ui_list_t *l)
         l->cb(idx, &row, l->ctx);
         lv_obj_set_hidden(r->obj, false);
         bool sel = idx == l->sel;
-        lv_obj_set_style_bg_opa(r->obj, sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_hidden(r->mark, !sel);
+        // The selected row, in the theme's way: a raised row with a bar or a
+        // cursor, a row filled with the focus colour, or a ring round it.
+        bool fill = sel && focus == UI_FOCUS_FILL;
+        bool ring = sel && focus == UI_FOCUS_RING;
+        lv_obj_set_style_bg_color(r->obj, fill ? ui_focus_bg() : ui_col(COL_PANEL_HI), 0);
+        lv_obj_set_style_bg_opa(r->obj, sel && !ring ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_side(r->obj, ring ? LV_BORDER_SIDE_FULL : LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_width(r->obj, ring ? 2 : 1, 0);
+        lv_obj_set_style_border_color(r->obj, ring ? ui_focus_bg() : ui_col(COL_PANEL), 0);
+        lv_obj_set_hidden(r->mark, !sel || fill || ring);
         lv_label_set_text(r->title, row.title);
-        lv_obj_set_style_text_color(r->title, ui_col(row.title_color ? row.title_color : COL_TEXT), 0);
+        lv_obj_set_style_text_color(r->title, fill ? ui_focus_fg() : ui_col(row.title_color ? row.title_color : COL_TEXT), 0);
         lv_label_set_text(r->sub, row.sub);
+        lv_obj_set_style_text_color(r->sub, fill ? ui_focus_fg() : ui_col(COL_DIM), 0);
         lv_label_set_text(r->right, row.right);
-        lv_obj_set_style_text_color(r->right, ui_col(row.right_color ? row.right_color : COL_DIM), 0);
+        lv_obj_set_style_text_color(r->right, fill ? ui_focus_fg() : ui_col(row.right_color ? row.right_color : COL_DIM), 0);
+        if (r->thumb) {
+            // Streaming: the selected row is a raised card in a white ring.
+            int x = row.thumb ? 54 : 10;
+            bool act = sel && row.action;
+            lv_obj_set_style_bg_opa(r->obj, sel ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_color(r->obj, sel ? lv_color_white() : lv_color_hex(0x222226), 0);
+            lv_obj_set_hidden(r->thumb, !row.thumb);
+            lv_obj_set_style_bg_color(r->thumb, lv_color_hex(row.thumb), 0);
+            lv_label_set_text(r->thumb_icon, row.thumb_symbol ? row.thumb_symbol : "");
+            lv_obj_set_x(r->title, x);
+            lv_obj_set_x(r->sub, x);
+            lv_obj_set_width(r->sub, l->w - x - (act ? 76 : 16));
+            lv_obj_set_hidden(r->action, !act);
+            lv_obj_set_hidden(r->right, act);
+            if (act) {
+                lv_label_set_text(r->action_l, row.action);
+            }
+            lv_obj_update_layout(r->obj);
+            lv_obj_set_width(r->title, l->w - x - 16 - (act ? lv_obj_get_width(r->action) + 8
+                                                         : row.right[0] ? lv_obj_get_width(r->right) + 8 : 0));
+            continue;
+        }
         // Keep the title clear of the right-hand label.
         lv_obj_set_width(r->title, l->w - 26 - (row.right[0] ? lv_obj_get_width(r->right) + 8 : 0));
     }
 
     lv_obj_set_hidden(l->empty, l->count > 0);
+    if (l->empty_head) {
+        lv_obj_set_hidden(l->empty_head, l->count > 0);
+    }
+    if (l->empty_art) {
+        lv_obj_set_hidden(l->empty_art, l->count > 0);
+    }
+    if (l->empty_hint) {
+        lv_obj_set_hidden(l->empty_hint, l->count > 0 || !l->hint_fits);
+    }
     bool scroll = l->count > l->visible;
     lv_obj_set_hidden(l->scroll, !scroll);
     if (scroll) {
@@ -287,6 +449,52 @@ void ui_list_set_count(ui_list_t *l, int count)
 
 void ui_list_set_empty(ui_list_t *l, const char *text)
 {
+    if (l->empty_head) {
+        // Streaming: the first sentence is the headline, the rest the line
+        // under it, below the app's artwork if it has some.
+        char head[64];
+        const char *rest = strstr(text, ". "), *colon = strstr(text, ": ");
+        if (colon && (!rest || colon < rest)) {
+            rest = colon;       // "Not linked yet: claim this badge first"
+        }
+        size_t n = rest ? (size_t)(rest - text) : strlen(text);
+        if (n >= sizeof(head)) {
+            n = sizeof(head) - 1;
+        }
+        memcpy(head, text, n);
+        head[n] = 0;
+        char caps[64];
+        lv_label_set_text(l->empty_head, ui_stream_caps(caps, sizeof(caps), head));
+        lv_label_set_text(l->empty, rest ? rest + 2 : "");
+        lv_obj_update_layout(l->box);
+        // Artwork, headline, line, hint pill: closed up when the pill is there,
+        // which goes if even that doesn't fit the list's box.
+        int box = lv_obj_get_height(l->box), body = lv_obj_get_height(l->empty);
+        int gap = l->empty_hint ? 4 : 8, head_h = l->empty_hint ? 25 : 28;
+        int art = l->empty_art ? lv_obj_get_height(l->empty_art) + gap : 0;
+        l->hint_fits = l->empty_hint && art + head_h + body + 4 + 20 <= box;
+        if (!l->hint_fits) {
+            gap = 8;
+            head_h = 28;
+            art = l->empty_art ? lv_obj_get_height(l->empty_art) + gap : 0;
+        }
+        if (l->empty_hint) {
+            lv_obj_set_hidden(l->empty_hint, !l->hint_fits || l->count > 0);
+        }
+        int y = (box - art - head_h - body - (l->hint_fits ? 24 : 0)) / 2;
+        if (y < 0) {
+            y = 0;
+        }
+        if (l->empty_art) {
+            lv_obj_align(l->empty_art, LV_ALIGN_TOP_MID, 0, y);
+        }
+        lv_obj_align(l->empty_head, LV_ALIGN_TOP_MID, 0, y + art);
+        lv_obj_align(l->empty, LV_ALIGN_TOP_MID, 0, y + art + head_h);
+        if (l->hint_fits) {
+            lv_obj_align(l->empty_hint, LV_ALIGN_TOP_MID, 0, y + art + head_h + body + 4);
+        }
+        return;
+    }
     lv_label_set_text(l->empty, text);
 }
 
@@ -390,6 +598,7 @@ ui_kb_t *ui_kb_create(lv_obj_t *parent, const char *title, size_t max_len)
     kb->box = lv_obj_create(parent);
     lv_obj_remove_style_all(kb->box);
     lv_obj_set_size(kb->box, OS_ROOT_W, OS_ROOT_H);
+    // Opaque whatever the theme: it covers the app it types into.
     lv_obj_set_style_bg_opa(kb->box, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(kb->box, ui_col(COL_BG), 0);
     lv_obj_set_scrollable(kb->box, false);
@@ -398,7 +607,8 @@ ui_kb_t *ui_kb_create(lv_obj_t *parent, const char *title, size_t max_len)
     lv_obj_t *t = ui_label(kb->box, &sol_mono_12, COL_DIM, title);
     lv_obj_set_pos(t, 8, 3);
     lv_obj_t *field = ui_panel(kb->box, 6, 19, OS_ROOT_W - 12, 28);
-    lv_obj_set_style_border_color(field, ui_col(COL_PURPLE), 0);
+    lv_obj_set_style_border_color(field, ui_accent(), 0);
+    lv_obj_set_style_bg_opa(field, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_ver(field, 4, 0);
     kb->text = ui_label(field, &sol_font_14, COL_TEXT, "");
     lv_obj_set_width(kb->text, OS_ROOT_W - 26);
@@ -416,12 +626,12 @@ ui_kb_t *ui_kb_create(lv_obj_t *parent, const char *title, size_t max_len)
     lv_obj_set_style_bg_opa(kb->btnm, LV_OPA_COVER, LV_PART_ITEMS);
     lv_obj_set_style_text_color(kb->btnm, ui_col(COL_TEXT), LV_PART_ITEMS);
     lv_obj_set_style_text_font(kb->btnm, &sol_mono_12, LV_PART_ITEMS);
-    lv_obj_set_style_radius(kb->btnm, 4, LV_PART_ITEMS);
+    lv_obj_set_style_radius(kb->btnm, ui_radius() < 4 ? ui_radius() : 4, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(kb->btnm, 0, LV_PART_ITEMS);
     lv_obj_set_style_border_width(kb->btnm, 0, LV_PART_ITEMS);
     lv_obj_set_style_outline_width(kb->btnm, 0, LV_PART_ITEMS | LV_STATE_FOCUS_KEY);
-    lv_obj_set_style_bg_color(kb->btnm, ui_col(COL_GREEN), LV_PART_ITEMS | LV_STATE_FOCUSED);
-    lv_obj_set_style_text_color(kb->btnm, ui_col(COL_BG), LV_PART_ITEMS | LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_color(kb->btnm, ui_focus_bg(), LV_PART_ITEMS | LV_STATE_FOCUSED);
+    lv_obj_set_style_text_color(kb->btnm, ui_focus_fg(), LV_PART_ITEMS | LV_STATE_FOCUSED);
     lv_obj_add_state(kb->btnm, LV_STATE_FOCUSED);
     kb_build_map(kb);
 
@@ -672,6 +882,7 @@ lv_obj_t *ui_offline_create(lv_obj_t *parent, int y, int h, bool need_owner)
     lv_obj_remove_style_all(p);
     lv_obj_set_pos(p, 0, y);
     lv_obj_set_size(p, OS_ROOT_W, h);
+    // Opaque whatever the theme: it hides the content it stands in for.
     lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(p, ui_col(COL_BG), 0);
     lv_obj_set_scrollable(p, false);
@@ -682,7 +893,7 @@ lv_obj_t *ui_offline_create(lv_obj_t *parent, int y, int h, bool need_owner)
     o->ring = lv_obj_create(p);
     lv_obj_remove_style_all(o->ring);
     lv_obj_set_size(o->ring, 44, 44);
-    lv_obj_set_style_radius(o->ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(o->ring, ui_radius() ? LV_RADIUS_CIRCLE : 0, 0);
     lv_obj_set_style_bg_opa(o->ring, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(o->ring, ui_col(COL_PANEL_HI), 0);
     lv_obj_set_style_border_width(o->ring, 2, 0);
@@ -699,6 +910,13 @@ lv_obj_t *ui_offline_create(lv_obj_t *parent, int y, int h, bool need_owner)
     lv_label_set_long_mode(o->body, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_style_text_align(o->body, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(o->body, LV_ALIGN_TOP_MID, 0, top + 86);
+    if (ui_stream()) {
+        // Streaming: a display headline over a quiet line.
+        lv_obj_set_style_text_font(o->title, &stream_disp_24, 0);
+        lv_obj_set_style_text_letter_space(o->title, 1, 0);
+        lv_obj_set_style_text_font(o->body, &pearl_font_11, 0);
+        lv_obj_align(o->body, LV_ALIGN_TOP_MID, 0, top + 84);
+    }
     ui_offline_update(p);
     return p;
 }
@@ -778,7 +996,8 @@ ui_net_t ui_offline_update(lv_obj_t *panel)
     lv_label_set_text(o->icon, icon);
     lv_obj_set_style_text_color(o->icon, ui_col(col), 0);
     lv_obj_set_style_border_color(o->ring, ui_col(col), 0);
-    lv_label_set_text(o->title, title);
+    char caps[64];
+    lv_label_set_text(o->title, ui_stream() ? ui_stream_caps(caps, sizeof(caps), title) : title);
     lv_label_set_text(o->body, body);
     return st;
 }

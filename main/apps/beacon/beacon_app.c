@@ -68,7 +68,7 @@ static lv_obj_t *message(const char *symbol, const char *title, const char *body
         ring = lv_obj_create(s_view);
         lv_obj_remove_style_all(ring);
         lv_obj_set_size(ring, 48, 48);
-        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_radius(ring, ui_radius() ? LV_RADIUS_CIRCLE : 0, 0);
         lv_obj_set_style_bg_opa(ring, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(ring, ui_col(COL_PANEL_HI), 0);
         lv_obj_set_style_border_width(ring, 2, 0);
@@ -173,7 +173,7 @@ static void build_on_air(const beacon_info_t *b)
     lv_obj_set_pos(box, 10, (CONTENT_H - QR_BOX) / 2 - 6);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(box, bg, 0);
-    lv_obj_set_style_radius(box, 8, 0);
+    lv_obj_set_style_radius(box, ui_radius() ? 8 : 0, 0);
     if (!light) {
         lv_obj_set_style_border_width(box, 1, 0);
         lv_obj_set_style_border_color(box, ui_col(COL_BORDER), 0);
