@@ -2,7 +2,8 @@
 // simulated radio. Scans find one open network, "Emulator Guest" (no password to
 // type; any other name isn't found), on the server's mesh channel, so joining it never
 // takes the radio off the mesh; joining hands out a fake private IP. Credentials
-// use the badge's NVS keys ("wifi/ssid|pass"), saved only once "connected".
+// are saved like the badge's (os_wifi_saved.c), only once "connected", so the
+// saved list here never holds more than that one network.
 // Like the badge, Wi-Fi starts off (os_wifi_boot.c joins the saved one), and the emulated radio
 // (esp_wifi_emu.c, which os_radio_emu.c sends on) sits on the access point's
 // channel while joined and on the park channel otherwise.
@@ -33,46 +34,13 @@ static const char *TAG = "os_wifi";
 
 static os_wifi_state_t s_state = OS_WIFI_IDLE;
 static char s_ssid[33], s_pass[65], s_ip[16];
+static volatile uint32_t s_changes;     // os_wifi_changes()
 static bool s_save_on_ip, s_suspended, s_enabled;
 static int s_park;
 static const char *s_fail;
 static int64_t s_scan_done_at, s_connect_at;
 static bool s_scanning, s_scan_done;
 static bool s_joined;           // on EMU_SSID (the "AP" the badge is associated with)
-
-static bool nvs_get(const char *key, char *out, size_t n)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return false;
-    }
-    size_t len = n;
-    esp_err_t err = nvs_get_str(h, key, out, &len);
-    nvs_close(h);
-    return err == ESP_OK;
-}
-
-bool os_wifi_saved_ssid(char *out, size_t n)
-{
-    return nvs_get("ssid", out, n) && out[0];
-}
-
-bool os_wifi_saved_pass(char *out, size_t n)
-{
-    return nvs_get("pass", out, n);
-}
-
-static void save_creds(const char *ssid, const char *pass)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "ssid", ssid);
-        nvs_set_str(h, "pass", pass);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "saved network '%s'", ssid);
-    }
-}
 
 // The network sits on the channel the server announces for the mesh (before the first
 // hello, the park channel; 1 until the mesh sets one). Not the park channel itself: a
@@ -124,7 +92,8 @@ static void wifi_task(void *arg)
                 esp_wifi_set_channel(ap_channel(), WIFI_SECOND_CHAN_NONE);
                 ESP_LOGI(TAG, "connected to '%s', ip %s (simulated)", s_ssid, s_ip);
                 if (s_save_on_ip) {
-                    save_creds(s_ssid, s_pass);
+                    os_wifi_saved_put(s_ssid, s_pass);
+                    ESP_LOGI(TAG, "saved network '%s'", s_ssid);
                     s_save_on_ip = false;
                 }
             } else {
@@ -144,8 +113,9 @@ esp_err_t os_wifi_init(void)
     if (os_wifi_saved_ssid(s_ssid, sizeof(s_ssid))) {
         // Emulators saved on one of the old demo networks (some with passwords) move to the open one.
         if (!known(s_ssid)) {
+            os_wifi_saved_remove(s_ssid);
             strlcpy(s_ssid, EMU_SSID, sizeof(s_ssid));
-            save_creds(s_ssid, "");
+            os_wifi_saved_put(s_ssid, "");
         }
         ESP_LOGI(TAG, "saved network '%s'", s_ssid);
     }
@@ -216,6 +186,7 @@ esp_err_t os_wifi_connect(const char *ssid, const char *pass)
 
 esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
 {
+    s_changes++;
     if (!ssid || !ssid[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -235,6 +206,7 @@ esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
 
 void os_wifi_forget(void)
 {
+    s_changes++;
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_erase_all(h);
@@ -270,6 +242,7 @@ void os_wifi_resume(void)
 
 void os_wifi_set_enabled(bool on)
 {
+    s_changes++;
     if (on) {
         char ssid[33], pass[65] = "";
         if (os_wifi_saved_ssid(ssid, sizeof(ssid))) {
@@ -295,6 +268,11 @@ void os_wifi_set_enabled(bool on)
 bool os_wifi_enabled(void)
 {
     return s_enabled;
+}
+
+uint32_t os_wifi_changes(void)
+{
+    return s_changes;
 }
 
 void os_wifi_set_park_channel(int channel)

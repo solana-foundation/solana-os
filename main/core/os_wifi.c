@@ -1,4 +1,4 @@
-// System Wi-Fi service: STA on both bands, saved network in NVS, joined only
+// System Wi-Fi service: STA on both bands, saved networks in NVS (os_wifi_saved.c), joined only
 // while Wi-Fi is on (at boot if it's in range: os_wifi_boot.c), auto reconnect, async
 // scans, suspend/resume for apps that need the radio, and the park channel
 // the radio returns to whenever no network is joined (ESP-NOW listens there).
@@ -31,52 +31,19 @@ static const char *TAG = "os_wifi";
 static SemaphoreHandle_t s_lock;
 static os_wifi_state_t s_state = OS_WIFI_IDLE;
 static char s_ssid[33], s_pass[65], s_ip[16];
+static volatile uint32_t s_changes;     // os_wifi_changes()
 static bool s_save_on_ip, s_suspended, s_started, s_enabled, s_scanning;
 static bool s_join_scan;        // the one-channel scan before a join is running
 static bool s_join_pending;     // a join waits for the app's scan to finish
 static bool s_pinned;           // the STA config names one AP (BSSID + channel)
 static int s_retries, s_park, s_want_ch;
-static wifi_ap_record_t *s_scan_cache;  // the app's scan, read at SCAN_DONE
+static wifi_ap_record_t *s_scan_cache;  // a caller's scan (an app, os_wifi_boot), read at SCAN_DONE
 static uint16_t s_scan_n;
 static const char *s_fail;
 static volatile bool s_scan_done;
 
 #define LOCK()   xSemaphoreTake(s_lock, portMAX_DELAY)
 #define UNLOCK() xSemaphoreGive(s_lock)
-
-static bool nvs_get(const char *key, char *out, size_t n)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return false;
-    }
-    size_t len = n;
-    esp_err_t err = nvs_get_str(h, key, out, &len);
-    nvs_close(h);
-    return err == ESP_OK;
-}
-
-bool os_wifi_saved_ssid(char *out, size_t n)
-{
-    return nvs_get("ssid", out, n) && out[0];
-}
-
-bool os_wifi_saved_pass(char *out, size_t n)
-{
-    return nvs_get("pass", out, n);
-}
-
-static void save_creds(const char *ssid, const char *pass)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "ssid", ssid);
-        nvs_set_str(h, "pass", pass);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "saved network '%s'", ssid);
-    }
-}
 
 static const char *reason_str(int reason)
 {
@@ -261,7 +228,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_retries = 0;
         ESP_LOGI(TAG, "connected to '%s', ip %s", s_ssid, s_ip);
         if (s_save_on_ip) {
-            save_creds(s_ssid, s_pass);
+            os_wifi_saved_put(s_ssid, s_pass);
+            ESP_LOGI(TAG, "saved network '%s'", s_ssid);
             s_save_on_ip = false;
         }
     }
@@ -369,6 +337,7 @@ esp_err_t os_wifi_connect(const char *ssid, const char *pass)
 
 esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
 {
+    s_changes++;
     if (!ssid || !ssid[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -378,7 +347,7 @@ esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
     os_wifi_saved_ssid(saved, sizeof(saved));
     strlcpy(s_ssid, ssid, sizeof(s_ssid));
     strlcpy(s_pass, pass ? pass : "", sizeof(s_pass));
-    // Rejoining the saved network with its stored password needs no save.
+    // Rejoining the most recent saved network with its stored password needs no save.
     char saved_pass[65] = "";
     s_save_on_ip = strcmp(saved, s_ssid) || !os_wifi_saved_pass(saved_pass, sizeof(saved_pass)) ||
                    strcmp(saved_pass, s_pass);
@@ -395,6 +364,7 @@ esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
 
 void os_wifi_forget(void)
 {
+    s_changes++;
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_erase_all(h);
@@ -441,6 +411,7 @@ void os_wifi_resume(void)
 
 void os_wifi_set_enabled(bool on)
 {
+    s_changes++;
     if (on) {
         char ssid[33], pass[65] = "";
         if (os_wifi_saved_ssid(ssid, sizeof(ssid))) {
@@ -472,6 +443,11 @@ void os_wifi_set_enabled(bool on)
 bool os_wifi_enabled(void)
 {
     return s_enabled;
+}
+
+uint32_t os_wifi_changes(void)
+{
+    return s_changes;
 }
 
 void os_wifi_set_park_channel(int channel)

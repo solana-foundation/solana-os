@@ -151,6 +151,7 @@ void os_mesh_nonce(char out[17]);           // 16 random lowercase hex + NUL
 // os_mesh_keep_wifi() holds it.
 void os_mesh_acquire(void);
 void os_mesh_release(void);
+bool os_mesh_held(void);        // a mesh app is open: joining Wi-Fi now would take its radio
 
 // For os_bridge. Bridges need the network: while kept, mesh apps don't suspend
 // Wi-Fi (a suspension of ours ends at once; it comes back if a mesh app is

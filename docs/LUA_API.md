@@ -413,8 +413,8 @@ stays open, so reading on in it (pages, lines) doesn't pay to open it again.
 
 ```lua
 wifi.status()               -- "off" | "connecting" | "on" | "failed"
-wifi.ssid()                 -- saved network name or nil
-wifi.on()                   -- join the saved network
+wifi.ssid()                 -- most recent saved network name or nil
+wifi.on()                   -- join the most recent saved network
 wifi.off()
 ```
 
