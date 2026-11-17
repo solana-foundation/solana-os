@@ -21,36 +21,39 @@ static const char *TAG = "wifi_boot";
 #define SCAN_MS         15000       // bound on the dual-band scan for an older network
 #define SCAN_MAX        32
 
+static uint32_t s_mine;     // os_wifi_changes() right after this task's own last call
+
 static bool past(TickType_t start, int ms)
 {
     return xTaskGetTickCount() - start >= pdMS_TO_TICKS(ms);
 }
 
+// Someone else (the user, a Lua app's wifi.on()/off(), a bridge) drove Wi-Fi
+// since: what happens next is theirs, even if Wi-Fi is off again.
+static bool taken(void)
+{
+    return os_wifi_changes() != s_mine;
+}
+
 // With Wi-Fi off, a mesh app opening doesn't pause it: scanning or joining then
 // would take the app's radio. Go on once it closes, as a resume would. False:
-// Wi-Fi was turned on meanwhile (the app's wifi.on(), the user, a bridge).
+// someone else drove Wi-Fi meanwhile.
 static bool wait_for_mesh_apps(void)
 {
-    os_wifi_info_t in;
-    for (;;) {
-        os_wifi_get_info(&in);
-        if (in.enabled) {
-            return false;       // and whatever follows (even turning it off again) is theirs
-        }
-        if (!os_mesh_held()) {
-            return true;
-        }
+    while (!taken() && os_mesh_held()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    return !taken();
 }
 
 // The most recent saved network isn't here: Wi-Fi off (the driver doesn't scan
 // while it joins), scan both bands and join the most recent older saved network
 // in range. True: joining it, and ssid/pass now name it. False: Wi-Fi stays off
-// (none in range), or the user or a bridge turned it on meanwhile.
+// (none in range), or someone else drove Wi-Fi meanwhile.
 static bool join_older(char *ssid, char *pass)
 {
     os_wifi_set_enabled(false);
+    s_mine = os_wifi_changes();
     wifi_ap_record_t *recs = malloc(SCAN_MAX * sizeof(*recs));      // the task's stack is small
     if (!recs) {
         return false;
@@ -58,7 +61,7 @@ static bool join_older(char *ssid, char *pass)
     TickType_t start = xTaskGetTickCount();
     bool scanning = false;
     int n = 0;
-    while (!scanning && !past(start, SCAN_MS)) {
+    while (!scanning && !past(start, SCAN_MS) && !taken()) {
         if (os_mesh_held()) {
             if (!wait_for_mesh_apps()) {
                 free(recs);
@@ -71,8 +74,12 @@ static bool join_older(char *ssid, char *pass)
             vTaskDelay(pdMS_TO_TICKS(250));     // another scan runs, or the radio is lent out
         }
     }
-    while (scanning && !os_wifi_scan_done() && !past(start, SCAN_MS)) {
+    while (scanning && !os_wifi_scan_done() && !past(start, SCAN_MS) && !taken()) {
         vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (taken()) {
+        free(recs);
+        return false;
     }
     if (scanning && os_wifi_scan_done()) {
         n = os_wifi_scan_results(recs, SCAN_MAX);

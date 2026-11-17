@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "esp_wifi_types.h"
 
@@ -61,6 +62,10 @@ int os_wifi_scan_results(wifi_ap_record_t *out, int max);
 // turned off, the network is forgotten, or the badge reboots.
 void os_wifi_set_enabled(bool on);
 bool os_wifi_enabled(void);
+// Bumped by every os_wifi_connect/_ch, os_wifi_set_enabled and os_wifi_forget
+// call: background code that drives Wi-Fi (os_wifi_boot.c) compares it to see
+// whether anyone else has since, even if Wi-Fi ended up as it was.
+uint32_t os_wifi_changes(void);
 
 // At boot, after os_mesh_init(): with a saved network, turn Wi-Fi on and turn it
 // off again if it hasn't joined within 30 s. With older networks saved too, one

@@ -34,6 +34,7 @@ static const char *TAG = "os_wifi";
 
 static os_wifi_state_t s_state = OS_WIFI_IDLE;
 static char s_ssid[33], s_pass[65], s_ip[16];
+static volatile uint32_t s_changes;     // os_wifi_changes()
 static bool s_save_on_ip, s_suspended, s_enabled;
 static int s_park;
 static const char *s_fail;
@@ -185,6 +186,7 @@ esp_err_t os_wifi_connect(const char *ssid, const char *pass)
 
 esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
 {
+    s_changes++;
     if (!ssid || !ssid[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -204,6 +206,7 @@ esp_err_t os_wifi_connect_ch(const char *ssid, const char *pass, int channel)
 
 void os_wifi_forget(void)
 {
+    s_changes++;
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_erase_all(h);
@@ -239,6 +242,7 @@ void os_wifi_resume(void)
 
 void os_wifi_set_enabled(bool on)
 {
+    s_changes++;
     if (on) {
         char ssid[33], pass[65] = "";
         if (os_wifi_saved_ssid(ssid, sizeof(ssid))) {
@@ -264,6 +268,11 @@ void os_wifi_set_enabled(bool on)
 bool os_wifi_enabled(void)
 {
     return s_enabled;
+}
+
+uint32_t os_wifi_changes(void)
+{
+    return s_changes;
 }
 
 void os_wifi_set_park_channel(int channel)
