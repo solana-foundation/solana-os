@@ -74,18 +74,20 @@ static bool join_older(char *ssid, char *pass)
             vTaskDelay(pdMS_TO_TICKS(250));     // another scan runs, or the radio is lent out
         }
     }
-    while (scanning && !os_wifi_scan_done() && !past(start, SCAN_MS) && !taken()) {
+    // Even if someone takes over meanwhile, let the scan end and read it: that
+    // frees the results os_wifi keeps for whoever started the scan.
+    while (scanning && !os_wifi_scan_done() && !past(start, SCAN_MS)) {
         vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    if (taken()) {
-        free(recs);
-        return false;
     }
     if (scanning && os_wifi_scan_done()) {
         n = os_wifi_scan_results(recs, SCAN_MAX);
         ESP_LOGI(TAG, "scan: %d access points in %d ms", n, (int)((xTaskGetTickCount() - start) * portTICK_PERIOD_MS));
-    } else {
+    } else if (!taken()) {
         ESP_LOGW(TAG, "no scan within %d s", SCAN_MS / 1000);
+    }
+    if (taken()) {
+        free(recs);
+        return false;
     }
     char s[33], p[65];
     bool found = false;
