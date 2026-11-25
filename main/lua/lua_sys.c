@@ -10,6 +10,8 @@
 #include "core/os_cloud.h"
 #include "core/os_data.h"
 #include "core/os_wifi.h"
+#include "core/os_mem.h"
+#include "esp_heap_caps.h"
 #include "lua_priv.h"
 
 // ---------------------------------------------------------------------------
@@ -105,10 +107,13 @@ static int add_timer(lua_State *L, bool every)
     if (s->ui_off) {
         return 0;       // closing: nothing will fire
     }
-    if (ms < LH_TIMER_MIN_MS) {
-        ms = LH_TIMER_MIN_MS;
+    // A service (2.3.0): 4 timers, none faster than a second.
+    int max = s->svc ? LH_SVC_TIMER_MAX : LH_TIMER_MAX;
+    lua_Integer min = s->svc ? LH_SVC_TIMER_MIN_MS : LH_TIMER_MIN_MS;
+    if (ms < min) {
+        ms = min;
     }
-    for (int i = 0; i < LH_TIMER_MAX; i++) {
+    for (int i = 0; i < max; i++) {
         lh_timer_t *t = &s->timers[i];
         if (t->id) {
             continue;
@@ -121,7 +126,7 @@ static int add_timer(lua_State *L, bool every)
         lua_pushinteger(L, t->id);
         return 1;
     }
-    return luaL_error(L, "too many timers (%d)", LH_TIMER_MAX);
+    return luaL_error(L, "too many timers (%d)", max);
 }
 
 static int l_after(lua_State *L)
@@ -212,6 +217,26 @@ static int l_millis(lua_State *L)
     return 1;
 }
 
+// sys.tick(ms): on_tick's period from now on, LH_TICK_MIN_MS..1000 (2.3.0);
+// returns the one before. Periods off the RTOS's 10 ms tick are woken by a
+// timer (lua_host.c), so a game asking 16 ms gets 16, not 20.
+static int l_tick(lua_State *L)
+{
+    lh_t *s = lh_get(L);
+    int before = s->tick_ms;
+    if (!lua_isnoneornil(L, 1)) {
+        lua_Integer ms = luaL_checkinteger(L, 1);
+        luaL_argcheck(L, ms >= LH_TICK_MIN_MS && ms <= 1000, 1, "16 to 1000 ms");
+        s->tick_ms = (int)ms;
+        s->tick_set = true;
+        if (s->next_tick > lh_now() + ms) {
+            s->next_tick = lh_now() + ms;
+        }
+    }
+    lua_pushinteger(L, before);
+    return 1;
+}
+
 static int l_time(lua_State *L)
 {
     int64_t ms = os_cloud_time_ms();
@@ -225,11 +250,12 @@ static int l_time(lua_State *L)
 
 static int l_battery(lua_State *L)
 {
-    int mv = bsp_battery_mv();
-    if (mv < 0 || mv > 4300) {      // unknown, or on USB power
+    os_battery_info_t b;
+    os_battery_get(&b);
+    if (!b.known || b.usb || b.pct < 0) {      // unknown, or on USB power
         lua_pushnil(L);
     } else {
-        lua_pushinteger(L, bsp_battery_percent(mv));
+        lua_pushinteger(L, b.pct);
     }
     return 1;
 }
@@ -245,6 +271,16 @@ static int l_memory(lua_State *L)
     lua_setfield(L, -2, "used");
     lua_pushinteger(L, (lua_Integer)s->heap_max);
     lua_setfield(L, -2, "max");
+    return 1;
+}
+
+// sys.budget() (2.5.0): instructions this callback has left, to the nearest
+// thousand (the count is checked every 1 000), so work spread over ticks
+// (loading, building tables) can do as much as fits and carry on next time.
+static int l_budget(lua_State *L)
+{
+    lh_t *s = lh_get(L);
+    lua_pushinteger(L, s->steps < s->steps_max ? (lua_Integer)(s->steps_max - s->steps) : 0);
     return 1;
 }
 
@@ -306,11 +342,159 @@ static int l_badge_online(lua_State *L)
 }
 
 // ---------------------------------------------------------------------------
-// storage: data.json, kept as a table; set() re-encodes it (≤ 16 KB) and the
-// write happens at most once a second, and on exit.
+// storage: data.json, kept as a table per state; set() re-encodes it (≤ 16 KB)
+// into the app's shared copy, which data.json gets at most once a second and
+// when the state closes. The app and its background service (2.3.0) share
+// that copy: a state whose table is older than the copy (the other one set
+// something) builds its table again from it at its next get or set, so each
+// sees the other's writes at once, and data.json always gets the newest.
+// The copy lives in PSRAM when there is some: a service keeps nothing in SRAM.
+
+#define STORE_SHARED    (1 + LUA_SVC_MAX)
+
+typedef struct {
+    char id[LUA_PKG_ID_MAX + 1];        // "": free
+    char *json;                         // NULL: empty (no data.json)
+    size_t len;
+    uint32_t ver;                       // + 1 per committed set()
+    uint32_t saved;                     // the version data.json has
+    int users;                          // states holding it (lh_t.store_held)
+    bool loaded;
+    bool writing;                       // a flush is writing data.json (one at a time)
+} store_t;
+
+// THE RULES of the shared copy (every function below follows them):
+//  - The entry (store_t) exists while at least one state holds it. A state
+//    takes its one reference in lh_storage_load() (store_held), before
+//    anything there can fail, and gives back exactly that one in
+//    lh_storage_close(); a state that never took one (an error before the
+//    load) releases nothing. close_state() (lua_host.c, lua_svc.c) runs
+//    lh_storage_flush(force) and then lh_storage_close() whatever way the
+//    state ends.
+//  - Every field is read and changed only under lh_mx, which is never held
+//    across a card access, a delay or a Lua call.
+//  - data.json is read only while the entry isn't loaded yet (no state has a
+//    copy, so nobody writes it then); of two first holders loading at once,
+//    the first to finish installs its copy and the other drops its own.
+//  - set() replaces json only if ver still equals the version its table was
+//    built from (else it rebuilds and retries), and bumps ver: a commit.
+//  - The card gets data.json from lh_storage_flush() only, one writer at a
+//    time (writing: set and cleared by the same flush, both under lh_mx); the
+//    copy written is the newest at that moment, whoever committed it, and
+//    saved moves to its version only when the write succeeded.
+//  - A periodic flush that finds the other state writing leaves the change
+//    pending (store_dirty) for its next one. A state's last flush (force)
+//    does not return before every version committed when it began (all of
+//    them once it is the only holder) is on the card: it waits for a write
+//    in flight, then writes the newest copy. Versions the other state
+//    commits later are that state's to save (its own last flush waits the
+//    same way), so a last flush writes at most once more and never chases.
+//  - Lost, only when the card fails: a write that fails is not retried by a
+//    last flush, and a wait longer than STORE_FINAL_MS (a stalled card) stops
+//    waiting; whatever is unsaved when the last holder closes is then logged
+//    and freed with the entry.
+
+static store_t s_store[STORE_SHARED];   // under lh_mx
+
+static char *store_dup(const char *p, size_t len)
+{
+    char *d = heap_caps_malloc(len + 1, os_mem_psram() ? OS_MEM_PSRAM : MALLOC_CAP_DEFAULT);
+    if (d) {
+        memcpy(d, p, len);
+        d[len] = 0;
+    }
+    return d;
+}
+
+static store_t *store_find(const char *id)  // lh_mx held
+{
+    for (int i = 0; i < STORE_SHARED; i++) {
+        if (s_store[i].id[0] && !strcmp(s_store[i].id, id)) {
+            return &s_store[i];
+        }
+    }
+    return NULL;
+}
+
+// The shared copy, duplicated into *out (NULL: empty), and its version.
+// false when the duplicate couldn't be made: never read that as empty, or
+// the next set() would write an empty table over the app's data.
+static bool store_copy(const char *id, char **out, size_t *len, uint32_t *ver)
+{
+    xSemaphoreTake(lh_mx, portMAX_DELAY);
+    store_t *st = store_find(id);
+    bool have = st && st->json;
+    char *d = have ? store_dup(st->json, st->len) : NULL;
+    *len = d ? st->len : 0;
+    *ver = st ? st->ver : 0;
+    xSemaphoreGive(lh_mx);
+    *out = d;
+    return !have || d;
+}
+
+// Pushes the table json decodes to, or a new one (missing, broken, not a table).
+static void store_push(lua_State *L, const char *json, size_t len)
+{
+    int top = lua_gettop(L);
+    if (!json || lh_json_decode(L, json, len) || !lua_istable(L, -1)) {
+        lua_settop(L, top);
+        lua_newtable(L);
+    }
+}
+
+static int store_push_p(lua_State *L)
+{
+    const char *json = lua_touserdata(L, 1);
+    size_t len = (size_t)lua_tointeger(L, 2);
+    lua_settop(L, 0);
+    store_push(L, json, len);
+    return 1;
+}
+
+// store_push, then frees json (not on the Lua heap) whatever happens: building
+// the table can raise "not enough memory", which is raised again after the free.
+static void store_push_free(lua_State *L, char *json, size_t len)
+{
+    if (!lua_checkstack(L, 3)) {
+        free(json);
+        luaL_error(L, "storage: not enough memory");
+    }
+    lua_pushcfunction(L, store_push_p);     // a light C function, a pointer and a number: no allocation
+    lua_pushlightuserdata(L, json);
+    lua_pushinteger(L, (lua_Integer)len);
+    int r = lua_pcall(L, 2, 1, 0);
+    free(json);
+    if (r != LUA_OK) {
+        lua_error(L);
+    }
+}
+
+// The other side set something since this table was built: build it again.
+static void store_refresh(lua_State *L, lh_t *s)
+{
+    xSemaphoreTake(lh_mx, portMAX_DELAY);
+    store_t *st = store_find(s->pkg.id);
+    bool stale = st && st->ver != s->store_ver;
+    xSemaphoreGive(lh_mx);
+    if (!stale) {
+        return;
+    }
+    size_t len;
+    uint32_t ver;
+    char *json;
+    if (!store_copy(s->pkg.id, &json, &len, &ver)) {
+        // The old table and its version stay: nothing is lost, the call fails.
+        luaL_error(L, "storage: not enough memory");
+    }
+    store_push_free(L, json, len);
+    luaL_unref(L, LUA_REGISTRYINDEX, s->store_ref);
+    s->store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    s->store_ver = ver;
+}
 
 static int store_table(lua_State *L, lh_t *s)
 {
+    store_refresh(L, s);
     lua_rawgeti(L, LUA_REGISTRYINDEX, s->store_ref);
     return lua_gettop(L);
 }
@@ -333,23 +517,62 @@ static int l_set(lua_State *L)
     luaL_argcheck(L, type == LUA_TNIL || type == LUA_TNONE || type == LUA_TNUMBER || type == LUA_TSTRING
                   || type == LUA_TBOOLEAN || type == LUA_TTABLE, 2, "storage takes numbers, strings, booleans and tables");
     lua_settop(L, 2);
-    int t = store_table(L, s);
-    lua_pushvalue(L, 1);
-    lua_rawget(L, t);               // old value, kept to undo
-    lua_pushvalue(L, 1);
-    lua_pushvalue(L, 2);
-    lua_rawset(L, t);
-    lh_jbuf_t b = { .max = LH_STORAGE_MAX };
-    if (!lh_json_encode(L, t, &b)) {
-        free(b.p);
+    // The app and its service each change their own table and replace the
+    // shared copy with it. The replacement happens only if nobody replaced
+    // the copy since this table was built from it (the version still
+    // matches); else the table is built again from the newer copy, this key
+    // set on it, and the whole is tried again. So two writers of different
+    // keys both land, and of one key the last one to commit wins.
+    for (int tries = 0;; tries++) {
+        int t = store_table(L, s);
         lua_pushvalue(L, 1);
-        lua_pushvalue(L, -2);
+        lua_rawget(L, t);               // old value, kept to undo
+        lua_pushvalue(L, 1);
+        lua_pushvalue(L, 2);
         lua_rawset(L, t);
-        return luaL_error(L, "storage: %s", !strcmp(b.err, "too big") ? "full (16 KB per app)" : b.err);
+        lh_jbuf_t b = { .max = LH_STORAGE_MAX };
+        char *copy = NULL;
+        bool ok = lh_json_encode(L, t, &b);
+        if (ok && !(copy = store_dup(b.p, b.len))) {
+            b.err = "not enough memory";
+            ok = false;
+        }
+        free(b.p);
+        if (!ok) {
+            lua_pushvalue(L, 1);
+            lua_pushvalue(L, -2);
+            lua_rawset(L, t);
+            return luaL_error(L, "storage: %s", !strcmp(b.err, "too big") ? "full (16 KB per app)" : b.err);
+        }
+        xSemaphoreTake(lh_mx, portMAX_DELAY);
+        store_t *st = s->store_held ? store_find(s->pkg.id) : NULL;
+        bool current = !st || st->ver == s->store_ver;
+        if (st && current) {
+            free(st->json);
+            st->json = copy;
+            st->len = b.len;
+            s->store_ver = ++st->ver;
+            copy = NULL;
+        }
+        xSemaphoreGive(lh_mx);
+        free(copy);
+        if (!st) {
+            // No shared copy to keep it in (never the case while this state
+            // holds one): an error, never a set() that silently isn't kept.
+            lua_settop(L, 2);
+            return luaL_error(L, "storage: unavailable");
+        }
+        if (current) {
+            break;
+        }
+        // The other side committed first: our table is stale (its next
+        // store_table() rebuilds it from the newer copy, without this key).
+        lua_settop(L, 2);
+        if (tries >= 16) {
+            return luaL_error(L, "storage: busy, try again");
+        }
     }
-    free(s->store_pending);
-    s->store_pending = b.p;
-    s->store_len = b.len;
+    s->store_dirty = true;
     return 0;
 }
 
@@ -363,34 +586,160 @@ static int l_remove(lua_State *L)
 bool lh_storage_load(lh_t *s)
 {
     lua_State *L = s->L;
-    char rel[64];
-    lua_pkg_rel(rel, sizeof(rel), s->pkg.id, "data.json");
-    size_t len = 0;
-    int top = lua_gettop(L);
-    char *json = os_data_read(rel, LH_STORAGE_MAX, &len);
-    const char *err = json ? lh_json_decode(L, json, len) : "missing";
-    free(json);
-    if (err || !lua_istable(L, -1)) {
-        lua_settop(L, top);
-        lua_newtable(L);
+    const char *id = s->pkg.id;
+    xSemaphoreTake(lh_mx, portMAX_DELAY);
+    store_t *st = s->store_held ? NULL : store_find(id);
+    for (int i = 0; !s->store_held && !st && i < STORE_SHARED; i++) {
+        if (!s_store[i].id[0]) {
+            st = &s_store[i];
+            *st = (store_t){ 0 };
+            strlcpy(st->id, id, sizeof(st->id));
+        }
     }
+    if (st) {
+        st->users++;                    // released once, by lh_storage_close()
+        s->store_held = true;
+    }
+    bool need = st && !st->loaded;
+    xSemaphoreGive(lh_mx);
+    if (!st) {
+        return luaL_error(L, "storage: unavailable");
+    }
+    if (need) {
+        // The first state of this app reads the card (outside the lock: the
+        // mesh task takes it too); a second one finds the copy.
+        char rel[64];
+        lua_pkg_rel(rel, sizeof(rel), id, "data.json");
+        size_t len = 0;
+        char *raw = os_data_read(rel, LH_STORAGE_MAX, &len);
+        char *json = raw ? store_dup(raw, len) : NULL;
+        free(raw);
+        if (!json && os_data_exists(rel)) {
+            // data.json is there but couldn't be read (memory, the card): the app
+            // doesn't start rather than start empty and write that over its data.
+            // The reference stays held: close_state() releases it, once.
+            return luaL_error(L, "storage: can't read data.json (not enough memory or a card error)");
+        }
+        xSemaphoreTake(lh_mx, portMAX_DELAY);
+        if (!st->loaded) {
+            st->json = json;
+            st->len = json ? len : 0;
+            st->loaded = true;
+            json = NULL;
+        }
+        xSemaphoreGive(lh_mx);
+        free(json);
+    }
+    size_t len;
+    uint32_t ver;
+    char *json;
+    if (!store_copy(id, &json, &len, &ver)) {
+        return luaL_error(L, "storage: not enough memory");
+    }
+    store_push_free(L, json, len);
     s->store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    s->store_ver = ver;
     return true;
 }
 
+// A last flush's wait for the other state's write in flight is bounded: the
+// app's error path runs it with the LVGL lock held, and the OS task waits
+// LH_EXIT_WAIT_MS (2 s) for an app to close. A data.json write takes tens of
+// ms (16 KB at most), so only a stalled card reaches it.
+#define STORE_FINAL_MS      2000
+#define STORE_FINAL_POLL_MS 20
+
 void lh_storage_flush(lh_t *s, bool force)
 {
-    if (!s->store_pending || (!force && lh_now() - s->store_saved < LH_STORAGE_SAVE_MS)) {
+    if (!s->store_held || (!force && (!s->store_dirty || lh_now() - s->store_saved < LH_STORAGE_SAVE_MS))) {
         return;
     }
     char rel[64];
     lua_pkg_rel(rel, sizeof(rel), s->pkg.id, "data.json");
-    if (!os_data_write(rel, s->store_pending, s->store_len)) {
-        printf("[lua:%s] storage: write failed\n", s->pkg.id);
+    int64_t t0 = lh_now();
+    bool pending = false;
+    bool have_target = false;
+    uint32_t target = 0;                // a last flush: the version that must reach the card
+    for (;;) {
+        xSemaphoreTake(lh_mx, portMAX_DELAY);
+        store_t *st = store_find(s->pkg.id);
+        if (st && !have_target) {
+            target = st->ver;           // what was committed when this flush began
+            have_target = true;
+        }
+        if (st && st->users <= 1) {
+            target = st->ver;           // the only holder: nobody else can commit any more
+        }
+        pending = st && st->loaded && st->ver != st->saved;
+        bool needed = pending && (!force || (int32_t)(target - st->saved) > 0);
+        bool busy = needed && st->writing;
+        char *json = NULL;
+        size_t len = 0;
+        uint32_t ver = 0;
+        bool ok = true;
+        if (needed && !busy) {
+            ver = st->ver;
+            len = st->len;
+            json = st->json ? store_dup(st->json, st->len) : NULL;
+            ok = !st->json || json;     // a copy that can't be made stays pending
+            st->writing = ok;
+        }
+        xSemaphoreGive(lh_mx);
+        if (!needed || !ok) {
+            break;                      // saved (or not needed by this one), or no memory for the copy
+        }
+        if (busy) {
+            // The other state is writing. A periodic flush leaves it pending (its
+            // next one tries again); a last one waits for that write to end.
+            if (!force || lh_now() - t0 >= STORE_FINAL_MS) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(STORE_FINAL_POLL_MS));
+            continue;
+        }
+        // An empty copy (no data.json and nothing set since) has nothing to write.
+        if (json && !os_data_write(rel, json, len)) {
+            printf("[lua:%s] storage: write failed\n", s->tag[0] ? s->tag : s->pkg.id);
+            ok = false;
+        }
+        free(json);
+        xSemaphoreTake(lh_mx, portMAX_DELAY);
+        st = store_find(s->pkg.id);     // still ours: this state holds a reference
+        if (st) {
+            st->writing = false;
+            if (ok && (int32_t)(ver - st->saved) > 0) {
+                st->saved = ver;
+            }
+            pending = st->ver != st->saved;
+        }
+        xSemaphoreGive(lh_mx);
+        // The copy written was the newest, so it covers the target: done, unless
+        // the write failed (not retried here: the card is failing).
+        break;
     }
-    free(s->store_pending);
-    s->store_pending = NULL;
+    s->store_dirty = pending;
     s->store_saved = lh_now();
+}
+
+void lh_storage_close(lh_t *s)
+{
+    if (!s->store_held) {
+        return;                         // never took a reference: nothing to release
+    }
+    s->store_held = false;
+    xSemaphoreTake(lh_mx, portMAX_DELAY);
+    store_t *st = store_find(s->pkg.id);
+    bool lost = false;
+    if (st && --st->users <= 0) {
+        lost = st->loaded && st->ver != st->saved;  // the last flush failed
+        free(st->json);
+        *st = (store_t){ 0 };
+    }
+    xSemaphoreGive(lh_mx);
+    if (lost) {
+        printf("[lua:%s] storage: data.json couldn't be written; the last changes are lost\n",
+               s->tag[0] ? s->tag : s->pkg.id);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +795,8 @@ void lh_open_sys(lua_State *L)
     static const luaL_Reg timer[] = {{"after", l_after}, {"every", l_every}, {"cancel", l_cancel}, {NULL, NULL}};
     static const luaL_Reg sys[] = {
         {"millis", l_millis}, {"time", l_time}, {"battery", l_battery}, {"keys", l_keys}, {"memory", l_memory},
-        {"exit", l_exit}, {NULL, NULL},
+        {"budget", l_budget},
+        {"exit", l_exit}, {"tick", l_tick}, {NULL, NULL},
     };
     static const luaL_Reg badge[] = {
         {"id", l_badge_id}, {"owner", l_badge_owner}, {"online", l_badge_online}, {NULL, NULL},

@@ -5,7 +5,7 @@
 // out. The cloud task runs the connection without the lock and checks the
 // slot between steps: each step sends one queued message, then reads for up
 // to POLL_MS (no wait while more are queued), so a send goes out within
-// ~50 ms. Every open and close bumps the slot's generation, so a run whose
+// ~10 ms. Every open and close bumps the slot's generation, so a run whose
 // socket the app closed only sends what was queued (handed over in s_flush),
 // takes its connection down and leaves the next socket alone.
 
@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "os_http.h"
+#include "os_mesh.h"
 #include "os_net.h"
 #include "os_socket.h"
 #include "os_wifi.h"
@@ -25,7 +26,9 @@ static const char *TAG = "os_socket";
 
 #define IN_MAX          8               // messages waiting for the app: then the host waits
 #define OUT_MAX         8               // messages waiting to go out: then send() says "too fast"
-#define POLL_MS         50
+// The longest a send queued while the cloud task waits for the host's bytes
+// waits itself (50 before 2.5.0; a wait in select costs nothing).
+#define POLL_MS         10
 
 typedef struct msg {
     struct msg *next;
@@ -50,6 +53,7 @@ static struct {
     int code;
     msg_t *in, *out;
     int nin, nout;
+    bool sending;                       // the cloud task is writing one taken from out
 } s;
 
 static void lock(void)
@@ -212,6 +216,14 @@ void os_socket_close(void *ctx)
     unlock();
 }
 
+int os_socket_queued(void *ctx)
+{
+    lock();
+    int n = ctx && s.ctx == ctx ? s.nout + s.sending : 0;
+    unlock();
+    return n;
+}
+
 bool os_socket_active(void)
 {
     return s_active;
@@ -236,6 +248,7 @@ static const char *step(uint32_t gen, int *code, int *out_code)
     if (m) {
         s.out = m->next;
         s.nout--;
+        s.sending = true;
     }
     if (!mine && s_flush_gen == gen) {
         flush = s_flush;
@@ -257,6 +270,11 @@ static const char *step(uint32_t gen, int *code, int *out_code)
     if (m) {
         esp_err_t err = os_ws_send(m->data, m->len);
         free_msg(m);
+        lock();
+        if (s.gen == gen) {
+            s.sending = false;
+        }
+        unlock();
         if (err != ESP_OK) {
             return broken();
         }
@@ -341,10 +359,12 @@ bool os_socket_service(bool online)
         }
         unlock();
         notify(gen);
+        os_mesh_awake_hold(true);           // modem sleep: the AP would hold the host's packets
         while (!why) {
             why = step(gen, &code, &out_code);
         }
         os_ws_close(out_code);
+        os_mesh_awake_hold(false);
     }
     ESP_LOGI(TAG, "socket ended: %s", why);
 

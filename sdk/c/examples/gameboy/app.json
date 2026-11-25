@@ -1,0 +1,12 @@
+{
+  "id": "gameboy",
+  "name": "Game Boy",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Play Game Boy and Game Boy Color games you own: copy one to the app's folder on the card.",
+  "icon": "play",
+  "accent": "9945FF",
+  "category": "games",
+  "lang": "c",
+  "permissions": ["files"]
+}

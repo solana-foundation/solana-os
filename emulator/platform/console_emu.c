@@ -98,9 +98,10 @@ EMSCRIPTEN_KEEPALIVE void emu_console(const char *line)
             printf("          %s\n", os_cmd_get(i)->help);
         }
     } else if (!strcmp(cmd, "info")) {
-        int mv = bsp_battery_mv();
-        printf("Solana OS %s (browser emulator)\nBattery: %d mV (%d%%)\nButtons: 0x%02lX\n",
-               esp_app_get_description()->version, mv, bsp_battery_percent(mv), (unsigned long)bsp_buttons_get());
+        char batt[40];
+        os_battery_text(batt, sizeof(batt));
+        printf("Solana OS %s (browser emulator)\nBattery: %s\nButtons: 0x%02lX\n",
+               esp_app_get_description()->version, batt, (unsigned long)bsp_buttons_get());
         bsp_sd_print_card();
     } else if (!strcmp(cmd, "apps")) {
         cmd_apps();

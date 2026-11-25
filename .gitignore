@@ -4,3 +4,4 @@ sdkconfig
 sdkconfig.old
 shots/
 .DS_Store
+tools/cc/.toolchain/

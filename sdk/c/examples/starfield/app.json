@@ -1,0 +1,12 @@
+{
+  "id": "starfield-c",
+  "name": "Starfield",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Fly through the stars and catch the green ones. Drawn in C, a frame at a time.",
+  "icon": "play",
+  "accent": "9945FF",
+  "category": "games",
+  "lang": "c",
+  "permissions": ["led"]
+}

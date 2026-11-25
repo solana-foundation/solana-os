@@ -25,9 +25,12 @@
 
 #include <string.h>
 #include "lvgl_private.h"         // lv_image_decoder_dsc_t
+#include "bsp.h"
 #include "lua_gif.h"
 #include "lua_png.h"
 #include "lua_priv.h"
+
+_Static_assert(LH_PX_CLEAR == BSP_FRAME_CLEAR, "ui.frame sends see-through pixels black through bsp_display_frame");
 
 #define IMG_META    "ui.img"
 #define SCALE_MAX   16
@@ -40,10 +43,21 @@ typedef struct {
     uint16_t px[];
 } lh_pix_t;
 
+// A canvas's changed pixels since the screen last heard (2.5.0): a few
+// rectangles, inclusive, in canvas pixels. Drawing marks them; lh_img_flush
+// tells LVGL once per event, so one moved sprite redraws its own few rows,
+// not the whole canvas, and a thousand c:pixel calls are still one area.
+#define DIRTY_MAX   4
+typedef struct {
+    int16_t x1, y1, x2, y2;
+} lh_rect_t;
+
 typedef struct {
     lv_image_dsc_t dsc;             // first: what lv_image_set_src() gets
     lh_pix_t *pix;                  // user value 1 keeps it alive
     uint8_t scale;
+    uint8_t ndirty;                 // canvases: rectangles in dirty
+    lh_rect_t dirty[DIRTY_MAX];
 } lh_view_t;
 
 typedef struct {
@@ -281,6 +295,9 @@ static lh_pix_t *load_file(lua_State *L, int idx, const char *what)
 {
     lh_t *s = lh_get(L);
     char rel[LUA_PKG_PATH_MAX + 1];
+    if (!lua_rawlen(L, idx)) {
+        luaL_error(L, "%s: the path is empty: a bundled PNG or GIF's name, or a table of pixel art rows", what);
+    }
     lh_fs_check_path(L, idx, rel);
     lh_charge_steps(L, LH_FS_OPEN_STEPS);
     long size;
@@ -369,8 +386,11 @@ static lh_pix_t *load_art(lua_State *L, int idx, int opts, const char *what)
         lua_pop(L, 1);
     }
     int h = (int)lua_rawlen(L, idx), w = 0;
-    if (h < 1 || h > LH_PNG_DIM_MAX) {
-        luaL_error(L, "%s: pixel art takes 1 to %d rows", what, LH_PNG_DIM_MAX);
+    if (h < 1) {
+        luaL_error(L, "%s: the table of pixel art rows is empty: an image needs one row at least", what);
+    }
+    if (h > LH_PNG_DIM_MAX) {
+        luaL_error(L, "%s: pixel art takes %d rows at most, not %d", what, LH_PNG_DIM_MAX, h);
     }
     for (int y = 1; y <= h; y++) {
         if (lua_rawgeti(L, idx, y) != LUA_TSTRING) {
@@ -380,8 +400,11 @@ static lh_pix_t *load_art(lua_State *L, int idx, int opts, const char *what)
         w = n > w ? n : w;
         lua_pop(L, 1);
     }
-    if (w < 1 || w > LH_PNG_DIM_MAX) {
-        luaL_error(L, "%s: pixel art rows are 1 to %d characters", what, LH_PNG_DIM_MAX);
+    if (w < 1) {
+        luaL_error(L, "%s: every pixel art row is empty: an image needs one pixel at least ('.' is see-through)", what);
+    }
+    if (w > LH_PNG_DIM_MAX) {
+        luaL_error(L, "%s: a pixel art row has %d characters, more than %d", what, w, LH_PNG_DIM_MAX);
     }
     lh_charge_steps(L, (unsigned)(w * h / PX_PER_STEP));
     lh_pix_t *p = new_pix(L, what, w, h);
@@ -810,6 +833,103 @@ static lh_pix_t *canvas(lua_State *L, lh_obj_t **out)
     return o ? view_of(o)->pix : NULL;
 }
 
+static int rect_area(const lh_rect_t *r)
+{
+    return (r->x2 - r->x1 + 1) * (r->y2 - r->y1 + 1);
+}
+
+static lh_rect_t rect_union(const lh_rect_t *a, const lh_rect_t *b)
+{
+    return (lh_rect_t){ a->x1 < b->x1 ? a->x1 : b->x1, a->y1 < b->y1 ? a->y1 : b->y1,
+                        a->x2 > b->x2 ? a->x2 : b->x2, a->y2 > b->y2 ? a->y2 : b->y2 };
+}
+
+// Pixels x1..x2, y1..y2 of the canvas changed (any order, clipped here).
+static void mark(lh_t *s, lh_obj_t *o, int x1, int y1, int x2, int y2)
+{
+    lh_view_t *v = view_of(o);
+    const lh_pix_t *p = v->pix;
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
+    x1 = x1 < 0 ? 0 : x1;
+    y1 = y1 < 0 ? 0 : y1;
+    x2 = x2 >= p->w ? p->w - 1 : x2;
+    y2 = y2 >= p->h ? p->h - 1 : y2;
+    if (x1 > x2 || y1 > y2) {
+        return;
+    }
+    lh_rect_t r = { (int16_t)x1, (int16_t)y1, (int16_t)x2, (int16_t)y2 };
+    s->img_dirty = true;
+    // Touching or overlapping one already marked: one rectangle.
+    for (int i = 0; i < v->ndirty; i++) {
+        lh_rect_t *d = &v->dirty[i];
+        if (r.x1 <= d->x2 + 1 && r.x2 + 1 >= d->x1 && r.y1 <= d->y2 + 1 && r.y2 + 1 >= d->y1) {
+            *d = rect_union(d, &r);
+            return;
+        }
+    }
+    if (v->ndirty < DIRTY_MAX) {
+        v->dirty[v->ndirty++] = r;
+        return;
+    }
+    // Full: into the one that grows least.
+    int best = 0, grow = INT32_MAX;
+    for (int i = 0; i < v->ndirty; i++) {
+        lh_rect_t u = rect_union(&v->dirty[i], &r);
+        int g = rect_area(&u) - rect_area(&v->dirty[i]);
+        if (g < grow) {
+            grow = g;
+            best = i;
+        }
+    }
+    v->dirty[best] = rect_union(&v->dirty[best], &r);
+}
+
+static void mark_all(lh_t *s, lh_obj_t *o)
+{
+    const lh_pix_t *p = view_of(o)->pix;
+    mark(s, o, 0, 0, p->w - 1, p->h - 1);
+}
+
+// Lua task, LVGL lock held, after each event's callbacks: the screen areas of
+// what the canvases' drawing changed. The object's coordinates may be a
+// layout behind (moved in the same callback): LVGL redraws the whole object at
+// its new place when it moves anyway.
+void lh_img_flush(lh_t *s)
+{
+    if (!s->img_dirty || !s->area) {
+        return;
+    }
+    s->img_dirty = false;
+    for (int i = 0; i < LH_OBJ_MAX; i++) {
+        lh_obj_t *o = &s->objs[i];
+        if (!o->obj || o->kind != LH_CANVAS) {
+            continue;
+        }
+        lh_view_t *v = view_of(o);
+        if (!v->ndirty) {
+            continue;
+        }
+        lv_area_t c;
+        lv_obj_get_coords(o->obj, &c);
+        int k = v->scale;
+        for (int j = 0; j < v->ndirty; j++) {
+            const lh_rect_t *d = &v->dirty[j];
+            lv_area_t a = { c.x1 + d->x1 * k, c.y1 + d->y1 * k, c.x1 + (d->x2 + 1) * k - 1, c.y1 + (d->y2 + 1) * k - 1 };
+            lv_obj_invalidate_area(o->obj, &a);
+        }
+        v->ndirty = 0;
+    }
+}
+
 // A colour argument: nil or none is see-through.
 static uint16_t arg_px(lua_State *L, int idx)
 {
@@ -841,7 +961,7 @@ int lh_cv_clear(lua_State *L)
     uint16_t c = arg_px(L, 2);
     if (p) {
         fill(L, p, 0, 0, p->w, p->h, c);
-        lv_obj_invalidate(o->obj);
+        mark_all(lh_get(L), o);
     }
     return 0;
 }
@@ -854,7 +974,7 @@ int lh_cv_pixel(lua_State *L)
     uint16_t c = arg_px(L, 4);
     if (p && x >= 0 && y >= 0 && x < p->w && y < p->h) {
         p->px[y * p->w + x] = c;
-        lv_obj_invalidate(o->obj);
+        mark(lh_get(L), o, x, y, x, y);
     }
     return 0;
 }
@@ -868,7 +988,7 @@ int lh_cv_rect(lua_State *L)
     uint16_t c = arg_px(L, 6);
     if (p && w > 0 && h > 0) {
         fill(L, p, x, y, w, h, c);
-        lv_obj_invalidate(o->obj);
+        mark(lh_get(L), o, x, y, x + w - 1, y + h - 1);
     }
     return 0;
 }
@@ -920,6 +1040,9 @@ int lh_cv_line(lua_State *L)
     if (len > 2 * (p->w + p->h) && !clip_line(&x0, &y0, &x1, &y1, p->w, p->h)) {
         return 0;
     }
+    // What it can touch: the clipped ends' box (mark clips it to the canvas).
+    mark(lh_get(L), o, (int)(x0 < -1 ? -1 : x0 > p->w ? p->w : x0), (int)(y0 < -1 ? -1 : y0 > p->h ? p->h : y0),
+         (int)(x1 < -1 ? -1 : x1 > p->w ? p->w : x1), (int)(y1 < -1 ? -1 : y1 > p->h ? p->h : y1));
     int64_t dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y0 - y1 : y1 - y0;
     int64_t sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
     lh_charge_steps(L, (unsigned)((dx > -dy ? dx : -dy) / PX_PER_STEP));
@@ -940,36 +1063,108 @@ int lh_cv_line(lua_State *L)
             y0 += sy;
         }
     }
-    lv_obj_invalidate(o->obj);
     return 0;
 }
 
-// c:image(src, x, y [, opts]): see-through pixels leave the canvas as it was.
+// c:image(src, x, y [, opts]) or c:image(src, x, y, sx, sy, sw, sh [, opts]):
+// the image, or its sw x sh part at (sx, sy) (a sprite sheet's cell, a map's
+// view; 2.5.0), mirrored (opts.flip_x, opts.flip_y) and then turned clockwise
+// (opts.rotate: 0, 90, 180 or 270) with (x, y) the result's top-left corner.
+// See-through pixels leave the canvas as it was.
+static int opt_rotate(lua_State *L, int t, bool *fx, bool *fy)
+{
+    int r = 0;
+    *fx = *fy = false;
+    if (lua_type(L, t) != LUA_TTABLE) {
+        return 0;
+    }
+    lua_getfield(L, t, "rotate");
+    if (!lua_isnil(L, -1)) {
+        lua_Integer v = luaL_checkinteger(L, -1);
+        if (v % 90) {
+            luaL_error(L, "canvas:image: rotate is 0, 90, 180 or 270");
+        }
+        r = (int)(((v % 360) + 360) % 360);
+    }
+    lua_getfield(L, t, "flip_x");
+    *fx = lua_toboolean(L, -1);
+    lua_getfield(L, t, "flip_y");
+    *fy = lua_toboolean(L, -1);
+    lua_pop(L, 3);
+    return r;
+}
+
 int lh_cv_image(lua_State *L)
 {
+    // Everything that can run Lua (a path or rows to load, which may collect
+    // and run a __gc; the options' __index) comes before the canvas is looked
+    // up: a script that removed the canvas meanwhile leaves no stale pointer.
+    bool part = lua_type(L, 5) == LUA_TNUMBER;
+    int opts = part ? 9 : 5;
+    lh_pix_t *src = to_pix(L, 2, opts, "canvas:image");
+    int x = coord(L, 3), y = coord(L, 4);
+    int sx = 0, sy = 0, sw = src->w, sh = src->h;
+    if (part) {
+        sx = coord(L, 5);
+        sy = coord(L, 6);
+        sw = coord(L, 7);
+        sh = coord(L, 8);
+        if (sx < 0 || sy < 0 || sw < 1 || sh < 1 || sx + sw > src->w || sy + sh > src->h) {
+            luaL_error(L, "canvas:image: the part %d, %d, %d x %d isn't inside the %d x %d image", sx, sy, sw, sh,
+                       src->w, src->h);
+        }
+    }
+    bool fx, fy;
+    int rot = opt_rotate(L, opts, &fx, &fy);
     lh_obj_t *o;
     lh_pix_t *p = canvas(L, &o);
-    lh_pix_t *src = to_pix(L, 2, 5, "canvas:image");
-    int x = coord(L, 3), y = coord(L, 4);
     if (!p) {
         return 0;
     }
+    int dw = rot == 90 || rot == 270 ? sh : sw, dh = rot == 90 || rot == 270 ? sw : sh;
     int i0 = x < 0 ? -x : 0, j0 = y < 0 ? -y : 0;
-    int i1 = src->w < p->w - x ? src->w : p->w - x, j1 = src->h < p->h - y ? src->h : p->h - y;
+    int i1 = dw < p->w - x ? dw : p->w - x, j1 = dh < p->h - y ? dh : p->h - y;
     if (i0 >= i1 || j0 >= j1) {
         return 0;
     }
     lh_charge_steps(L, (unsigned)((i1 - i0) * (j1 - j0) / PX_PER_STEP));
-    for (int j = j0; j < j1; j++) {
-        const uint16_t *from = src->px + (size_t)j * src->w;
-        uint16_t *to = p->px + (size_t)(y + j) * p->w + x;
-        for (int i = i0; i < i1; i++) {
-            if (from[i] != LH_PX_CLEAR) {
-                to[i] = from[i];
+    if (!rot && !fx && !fy) {
+        for (int j = j0; j < j1; j++) {
+            const uint16_t *from = src->px + (size_t)(sy + j) * src->w + sx;
+            uint16_t *to = p->px + (size_t)(y + j) * p->w + x;
+            for (int i = i0; i < i1; i++) {
+                if (from[i] != LH_PX_CLEAR) {
+                    to[i] = from[i];
+                }
+            }
+        }
+    } else {
+        // Each pixel of the result from its place in the part: undo the turn,
+        // then the mirror.
+        for (int j = j0; j < j1; j++) {
+            uint16_t *to = p->px + (size_t)(y + j) * p->w + x;
+            for (int i = i0; i < i1; i++) {
+                int a, b;
+                switch (rot) {
+                case 90:  a = j;          b = sh - 1 - i; break;
+                case 180: a = sw - 1 - i; b = sh - 1 - j; break;
+                case 270: a = sw - 1 - j; b = i;          break;
+                default:  a = i;          b = j;          break;
+                }
+                if (fx) {
+                    a = sw - 1 - a;
+                }
+                if (fy) {
+                    b = sh - 1 - b;
+                }
+                uint16_t c = src->px[(size_t)(sy + b) * src->w + sx + a];
+                if (c != LH_PX_CLEAR) {
+                    to[i] = c;
+                }
             }
         }
     }
-    lv_obj_invalidate(o->obj);
+    mark(lh_get(L), o, x + i0, y + j0, x + i1 - 1, y + j1 - 1);
     return 0;
 }
 
@@ -986,6 +1181,88 @@ int lh_cv_get(lua_State *L)
         uint32_t r = c >> 11, g = (c >> 5) & 63, b = c & 31;
         lua_pushinteger(L, (lua_Integer)((r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2)));
     }
+    return 1;
+}
+
+// ui.frame(src, x, y [, scale]) (2.5.0): pixels straight to the panel past
+// LVGL, as C apps' ui_frame (bsp_display_frame): src is a canvas (hide it so
+// LVGL doesn't draw it too), an image object or a ui.load image, scaled
+// (nearest; default the object's scale, else 1) at (x, y) of the app area.
+// Opaque: see-through pixels show as black. true shown, false not (a dialog,
+// the keyboard or the OS is over the app). LVGL's next redraw of that area
+// paints over it, so a frame belongs on part of the app where nothing else is.
+int lh_ui_frame(lua_State *L)
+{
+    lh_t *s = lh_get(L);
+    lh_pix_t *p = luaL_testudata(L, 1, IMG_META);
+    int scale = 1;
+    if (!p) {
+        lh_obj_t *o = lh_ui_test(L, 1, LH_CANVAS);
+        o = o ? o : lh_ui_test(L, 1, LH_IMAGE);
+        luaL_argexpected(L, o, 1, "a canvas, an image or a ui.load image");
+        p = view_of(o)->pix;
+        scale = view_of(o)->scale;
+    }
+    int x = coord(L, 2), y = coord(L, 3);
+    if (!lua_isnoneornil(L, 4)) {
+        scale = (int)luaL_checkinteger(L, 4);
+        luaL_argcheck(L, scale >= 1 && scale <= SCALE_MAX, 4, "scale is 1 to 16");
+    }
+    int dw = p->w * scale, dh = p->h * scale;
+    if (x < 0 || y < 0 || x + dw > OS_ROOT_W || y + dh > OS_ROOT_H) {
+        luaL_error(L, "ui.frame: %d x %d at %d, %d isn't inside the app's %d x %d", dw, dh, x, y, OS_ROOT_W, OS_ROOT_H);
+    }
+    if (s->svc || !s->area || s->ui_off || s->modal || s->kb || os_confirm_open() || os_overlay() || s->failed) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    lv_area_t area;
+    lv_obj_get_coords(s->area, &area);
+    int sx = area.x1 + x, sy = area.y1 + y, h = p->h, dhh = dh;
+    int t0, t1;
+    if (os_toast_rows(&t0, &t1) && t0 < sy + dh && t1 >= sy) {
+        lh_frame_cut(p->h, dh, t0 - sy, &h, &dhh);      // the whole scaled rows above the toast
+        if (h <= 0) {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+    }
+    lh_charge_steps(L, (unsigned)(dw * dhh / PX_PER_STEP));
+    // LH_PX_CLEAR (see-through) is BSP_FRAME_CLEAR: it goes to the panel black.
+    if (bsp_display_frame(p->px, p->w, p->w, h, sx, sy, dw, dhh, false, true) != ESP_OK) {
+        luaL_error(L, "ui.frame: not enough memory");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// A C app's sos_blit (lua_wasm.c): w x h pixels from the app's memory onto
+// the canvas, clipped, opaque. Charged like canvas:image.
+int lh_cv_blit(lua_State *L)
+{
+    lh_obj_t *o = lh_ui_test(L, 1, LH_CANVAS);
+    const lh_blit_t *b = lua_touserdata(L, 2);
+    if (!o) {
+        lua_pushinteger(L, -1);
+        return 1;
+    }
+    lh_pix_t *p = view_of(o)->pix;
+    int x = b->x, y = b->y;
+    int i0 = x < 0 ? -x : 0, j0 = y < 0 ? -y : 0;
+    int i1 = b->w < p->w - x ? b->w : p->w - x, j1 = b->h < p->h - y ? b->h : p->h - y;
+    if (i0 < i1 && j0 < j1) {
+        lh_charge_steps(L, (unsigned)((i1 - i0) * (j1 - j0) / PX_PER_STEP));
+        for (int j = j0; j < j1; j++) {
+            const uint8_t *from = b->px + ((size_t)j * b->w + i0) * 2;
+            uint16_t *to = p->px + (size_t)(y + j) * p->w + x + i0;
+            for (int i = i0; i < i1; i++, from += 2) {
+                uint16_t v = (uint16_t)(from[0] | from[1] << 8);
+                *to++ = v == LH_PX_CLEAR ? 0 : v;
+            }
+        }
+        mark(lh_get(L), o, x + i0, y + j0, x + i1 - 1, y + j1 - 1);
+    }
+    lua_pushinteger(L, 0);
     return 1;
 }
 

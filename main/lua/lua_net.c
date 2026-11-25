@@ -1,4 +1,5 @@
 // mesh, lamps, items, profile, quest, http and rpc for Lua apps (docs/LUA_API.md).
+// profile.items and profile.pages (2.3.0) read the owner's inventory: permission "inventory".
 // ws is in lua_ws.c; while its socket is open, calls here fail with "socket open".
 //
 // Server calls go through os_api with the app id fixed by the host. A sent
@@ -18,12 +19,14 @@
 #include "core/os_mesh.h"
 #include "core/os_socket.h"
 #include "core/os_wifi.h"
+#include "core/os_mem.h"
+#include "esp_heap_caps.h"
 #include "lua_priv.h"
 
 typedef enum {
     OP_BALANCE, OP_SPEND, OP_TRANSFER, OP_DEPOSIT, OP_AWARD,
     OP_ITEMS, OP_GRANT, OP_UPDATE, OP_REMOVE,
-    OP_ME, OP_PROFILE,
+    OP_ME, OP_PROFILE, OP_INV_ITEMS, OP_INV_PAGES,
     OP_REPORT, OP_ACTIVE,
     OP_HTTP, OP_RPC,
     OP_MEETS,
@@ -40,6 +43,7 @@ static const struct {
     [OP_ITEMS] = {LUA_PERM_ITEMS, "items"}, [OP_GRANT] = {LUA_PERM_ITEMS, NULL},
     [OP_UPDATE] = {LUA_PERM_ITEMS, NULL}, [OP_REMOVE] = {LUA_PERM_ITEMS, "ok"},
     [OP_ME] = {LUA_PERM_PROFILE, NULL}, [OP_PROFILE] = {LUA_PERM_PROFILE, NULL},
+    [OP_INV_ITEMS] = {LUA_PERM_INVENTORY, NULL}, [OP_INV_PAGES] = {LUA_PERM_INVENTORY, NULL},
     [OP_REPORT] = {LUA_PERM_QUEST, NULL}, [OP_ACTIVE] = {LUA_PERM_QUEST, "items"},
     [OP_HTTP] = {LUA_PERM_HTTP, NULL}, [OP_RPC] = {LUA_PERM_RPC, "result"},
     [OP_MEETS] = {LUA_PERM_MESH, NULL},
@@ -53,7 +57,7 @@ static uint32_t s_token;
 static void wake(lh_t *s)
 {
     lh_ev_t ev = { .kind = LH_EV_WAKE, .gen = s->gen };
-    lh_post(&ev);
+    lh_post_to(s, &ev);
 }
 
 static void free_call(lh_call_t *c)
@@ -65,18 +69,29 @@ static void free_call(lh_call_t *c)
     free(c);
 }
 
-// os_api answer, on the OS task.
+// os_api answer, on the OS task: for the app on screen or one of the
+// background services (2.3.0). A service's copy of the answer goes to PSRAM.
 static void api_cb(int status, const char *body, void *ctx)
 {
     xSemaphoreTake(lh_mx, portMAX_DELAY);
-    lh_t *s = lh_cur;
-    for (lh_call_t *c = s ? s->calls : NULL; c; c = c->next) {
-        if (c->state == LH_CALL_SENT && c->ctx == ctx && !c->done) {
-            c->status = status;
-            c->body = body ? strdup(body) : NULL;
-            c->done = true;
-            wake(s);
-            break;
+    for (int i = -1; i < LUA_SVC_MAX; i++) {
+        lh_t *s = i < 0 ? lh_cur : lh_svc_session(i);
+        for (lh_call_t *c = s ? s->calls : NULL; c; c = c->next) {
+            if (c->state == LH_CALL_SENT && c->ctx == ctx && !c->done) {
+                c->status = status;
+                if (body && s->svc && os_mem_psram()) {
+                    size_t n = strlen(body) + 1;
+                    if ((c->body = heap_caps_malloc(n, OS_MEM_PSRAM))) {
+                        memcpy(c->body, body, n);
+                    }
+                } else {
+                    c->body = body ? strdup(body) : NULL;
+                }
+                c->done = true;
+                wake(s);
+                i = LUA_SVC_MAX;
+                break;
+            }
         }
     }
     xSemaphoreGive(lh_mx);
@@ -193,7 +208,7 @@ static int start_ex(lua_State *L, op_t op, const char *method, const char *path,
     const char *err = !(s->pkg.perms & s_ops[op].perm) ? "denied"
                     : fail ? fail
                     : !body_ok ? (strcmp(b.err, "too big") ? b.err : "request too big")
-                    : n >= LH_CALLS_MAX || (confirm && os_confirm_open()) ? "busy"
+                    : n >= (s->svc ? LH_SVC_CALLS : LH_CALLS_MAX) || (confirm && os_confirm_open()) ? "busy"
                     : lh_ws_busy(s) || os_socket_active() ? "socket open"
                     : !os_api_online() ? "offline" : NULL;
     if (!err) {
@@ -541,6 +556,42 @@ static int l_profile_get(lua_State *L)
     return start(L, OP_PROFILE, "GET", path, 0, 2, NULL);
 }
 
+// profile.items([cursor,] cb) / profile.pages([cursor,] cb): one page of the owner's
+// inventory (server/API.md "Player inventory"); the answer's `next` is the cursor for the
+// rest. A cursor is the server's opaque base64url text, so it goes in the query as is.
+static int inventory_get(lua_State *L, op_t op, const char *what)
+{
+    char tail[24 + LH_CURSOR_MAX], path[64 + sizeof(tail)];
+    snprintf(tail, sizeof(tail), "inventory/%s", what);
+    if (lua_gettop(L) >= 1 && !lua_isfunction(L, 1)) {
+        if (!lua_isnil(L, 1)) {
+            const char *cursor = luaL_checkstring(L, 1);
+            size_t n = strlen(cursor);
+            bool ok = n > 0 && n <= LH_CURSOR_MAX;
+            for (size_t i = 0; ok && i < n; i++) {
+                char c = cursor[i];
+                ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+            }
+            luaL_argcheck(L, ok, 1, "not a cursor (pass the answer's next)");
+            strlcat(tail, "?cursor=", sizeof(tail));   // copied while the string is still on the stack
+            strlcat(tail, cursor, sizeof(tail));
+        }
+        lua_remove(L, 1);
+    }
+    app_path(L, path, sizeof(path), tail);
+    return start(L, op, "GET", path, 0, 1, NULL);
+}
+
+static int l_profile_items(lua_State *L)
+{
+    return inventory_get(L, OP_INV_ITEMS, "items");
+}
+
+static int l_profile_pages(lua_State *L)
+{
+    return inventory_get(L, OP_INV_PAGES, "pages");
+}
+
 static int l_report(lua_State *L)
 {
     luaL_checkstring(L, 1);
@@ -766,7 +817,7 @@ static void mesh_handler(os_mesh_type_t type, const os_mesh_peer_t *from, const 
             memcpy(data, from->id, idn + 1);
             memcpy(data + idn + 1, text, n + 1);
             lh_ev_t ev = { .kind = is_meet ? LH_EV_MEET : LH_EV_MESH, .gen = gen, .data = data };
-            if (!lh_post(&ev)) {
+            if (!lh_post_lossy(&ev)) {
                 free(data);
             }
         }
@@ -779,6 +830,7 @@ void lh_mesh_start(lh_t *s)
 {
     os_cloud_info_t in;
     os_cloud_get_info(&in);
+    strlcpy(s->mesh_me, in.id, sizeof(s->mesh_me));
     xSemaphoreTake(lh_mx, portMAX_DELAY);
     strlcpy(s_mesh_app, s->pkg.id, sizeof(s_mesh_app));
     strlcpy(s_mesh_me, in.id, sizeof(s_mesh_me));
@@ -790,11 +842,17 @@ void lh_mesh_start(lh_t *s)
     s_mesh_sub = os_mesh_subscribe(OS_MESH_APP, mesh_handler, NULL);
 }
 
-void lh_mesh_me(char out[OS_MESH_ID_LEN + 1])
+void lh_mesh_me(const lh_t *s, char out[OS_MESH_ID_LEN + 1])
+{
+    strlcpy(out, s->mesh_me, OS_MESH_ID_LEN + 1);
+}
+
+bool lh_mesh_app_is(const char *id)
 {
     xSemaphoreTake(lh_mx, portMAX_DELAY);
-    strlcpy(out, s_mesh_me, OS_MESH_ID_LEN + 1);
+    bool is = s_mesh_app[0] && !strcmp(s_mesh_app, id);
     xSemaphoreGive(lh_mx);
+    return is;
 }
 
 void lh_mesh_mute(void)
@@ -859,7 +917,7 @@ static int l_mesh_nearby(lua_State *L)
         lua_setfield(L, -2, "level");
         lua_pushinteger(L, peers[i].rssi);
         lua_setfield(L, -2, "rssi");
-        lua_pushstring(L, peers[i].kind == OS_PEER_BEACON ? "beacon" : "badge");
+        lua_pushstring(L, peers[i].kind == OS_PEER_BEACON ? "beacon" : peers[i].kind == OS_PEER_STATION ? "station" : "badge");
         lua_setfield(L, -2, "kind");
         lua_pushboolean(L, peers[i].bridged);
         lua_setfield(L, -2, "bridged");
@@ -877,15 +935,23 @@ static int l_mesh_send(lua_State *L)
     bool bcast = !strcmp(to, "*");
     luaL_argcheck(L, bcast || strlen(to) == OS_MESH_ID_LEN, 1, "a badge id or \"*\"");
     int64_t now = lh_now();
+    // Broadcasts reach every badge in the room and each one handles them: 4 a
+    // second. Messages to badges heard over the radio, 30 in all (2.5.0): a
+    // two-badge game straight over ESP-NOW. Broadcasts and bridged peers
+    // (through the server) share the 4.
+    bool fast = !bcast && !os_mesh_bridged(to);
+    int64_t *ring = fast ? s->mesh_sent_to : s->mesh_sent;
+    int ring_n = fast ? LH_MESH_TO_PER_S : LH_MESH_PER_S;
     int oldest = 0;
-    for (int i = 1; i < LH_MESH_PER_S; i++) {
-        if (s->mesh_sent[i] < s->mesh_sent[oldest]) {
+    for (int i = 1; i < ring_n; i++) {
+        if (ring[i] < ring[oldest]) {
             oldest = i;
         }
     }
-    if (s->mesh_sent[oldest] && now - s->mesh_sent[oldest] < 1000) {
+    if (ring[oldest] && now - ring[oldest] < 1000) {
         lua_pushnil(L);
-        lua_pushliteral(L, "too fast: 4 messages per second");
+        lua_pushstring(L, fast ? "too fast: 30 messages per second to badges nearby"
+                               : "too fast: 4 messages per second to everyone or over a bridge");
         return 2;
     }
     lh_jbuf_t d = { .max = LH_MESH_MAX };
@@ -912,7 +978,7 @@ static int l_mesh_send(lua_State *L)
         }
         return 2;
     }
-    s->mesh_sent[oldest] = now;
+    ring[oldest] = now;
     lua_pushboolean(L, 1);
     return 1;
 }
@@ -1277,7 +1343,8 @@ void lh_open_net(lua_State *L)
         {"list", l_items_list}, {"all", l_items_all}, {"grant", l_grant}, {"update", l_update},
         {"remove", l_items_remove}, {NULL, NULL},
     };
-    static const luaL_Reg profile[] = {{"me", l_me}, {"get", l_profile_get}, {NULL, NULL}};
+    static const luaL_Reg profile[] = {{"me", l_me}, {"get", l_profile_get}, {"items", l_profile_items},
+                                       {"pages", l_profile_pages}, {NULL, NULL}};
     static const luaL_Reg quest[] = {{"report", l_report}, {"active", l_active}, {NULL, NULL}};
     static const luaL_Reg mesh[] = {{"nearby", l_mesh_nearby}, {"send", l_mesh_send}, {"bridge", l_mesh_bridge},
                                     {"meet", lh_mesh_meet}, {"meets", l_mesh_meets}, {"pause", l_mesh_pause},

@@ -12,6 +12,7 @@
 #include "lvgl.h"
 #include "os_keys.h"
 #include "theme.h"
+#include "os_battery.h"   // the battery as the OS reads it (2.4.0)
 
 #define OS_TICK_MS      100
 
@@ -27,6 +28,9 @@ typedef struct {
     void (*on_tick)(void);          // every OS_TICK_MS
     void (*on_button)(uint32_t bit); // optional: raw presses instead of keys (calibration)
     bool (*visible)(void);          // optional: in the launcher only while true (Beacon); "open <id>" works anyway
+    // optional (2.5.0): a key whose press on_key got was let go, held_ms after it went down.
+    // Never HOME; never a key a dialog or the OS took; a console "key" is a press and its release.
+    void (*on_key_up)(os_key_t key, uint32_t held_ms);
 } os_app_t;
 
 // apps/registry.c
@@ -49,6 +53,9 @@ void os_inject_key(os_key_t key);
 // false if the queue is full; then fn is not called.
 bool os_post(void (*fn)(void *arg), void *arg);
 void os_toast(const char *fmt, ...);         // any task
+// The toast's rows on screen while one shows (y0..y1, inclusive), for a C
+// app's frames past LVGL (ui_frame), which keep off them. LVGL locked.
+bool os_toast_rows(int *y0, int *y1);
 // Calls cb once, on the OS task, the first time the battery sense says USB
 // power (over 4.3 V, the status bar's rule; also when there is no battery
 // sense), now if it already does. One callback at a time; any task.
@@ -86,6 +93,13 @@ const os_overlay_t *os_overlay(void);           // the open one, or NULL
 // held, HOME toasts `why` instead of going home and os_launch() is ignored.
 // NULL releases it. OS task.
 void os_hold(const char *why);
+
+// Is the current app held (os_hold)? OS task.
+bool os_held(void);
+
+// esp_timer ms of the last key the OS handed out (buttons, console `key`), 0
+// before the first: how long the owner has left the badge alone. Any task.
+int64_t os_last_key_ms(void);
 
 // Rebuild the UI in the current theme (OS task, LVGL locked; the Settings app).
 void os_theme_apply(void);

@@ -591,6 +591,7 @@ static const struct {
     {"history", "History", COL_CAT_HISTORY},
     {"people", "People", COL_CAT_PEOPLE},
     {"lore", "Lore", COL_CAT_LORE},
+    {"gossip", "Gossip", COL_CAT_GOSSIP},
 };
 
 uint32_t ui_cat_color(const char *id)

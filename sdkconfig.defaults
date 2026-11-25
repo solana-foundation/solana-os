@@ -17,7 +17,7 @@ CONFIG_SOLANA_OS_SERVER_URL="https://badge-api.solana.com"
 
 # App metadata shown in About / info
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="2.2.0"
+CONFIG_APP_PROJECT_VER="2.5.1"
 
 # Over-the-air updates (core/os_ota.c): a new build boots on trial and the
 # bootloader goes back to the previous slot unless it confirms itself. This
@@ -161,12 +161,21 @@ CONFIG_LV_USE_SNAPSHOT=n
 CONFIG_LV_USE_LOG=n
 CONFIG_LV_USE_QRCODE=y
 
-# TLS for the badge server (core/os_http.c): allocate the record buffers per
-# message and free the handshake data after use. A handshake costs ~47 KB of
-# heap with static 16 KB/4 KB buffers.
-CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
-CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
-CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# TLS (core/os_http.c, os_ws.c, OTA downloads through os_http): fixed record
+# buffers (2.4.0). Dynamic buffers (DYNAMIC_BUFFER and its DYNAMIC_FREE_*
+# options, 0.5.x to 2.3.x) freed and reallocated the record buffers around
+# every message; they are off as a security risk. Each open connection now
+# holds its input and output buffers until it closes, in PSRAM first
+# (tls_calloc in os_http.c). Sizes, chosen on purpose:
+# - IN 16384: TLS's maximum record. Any host may send full records (Google's
+#   front end before the server does, and a Lua app's ws host is anyone), and
+#   most servers ignore the max_fragment_length extension, so a smaller buffer
+#   would fail mid-connection (MBEDTLS_ERR_SSL_INVALID_RECORD). With CBC
+#   suites built in, the buffer is 16384 + 333 B (header, IV, MAC, padding).
+# - OUT 2048 (below): only what the badge sends.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=n
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 # os_http keeps one connection to the server open: drop the server's
 # certificate after the handshake (~4 KB held otherwise), and keep a session
 # ticket so the handshake after an idle close is a short resumption.
@@ -176,9 +185,11 @@ CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
 # GlobalSign Root CA, which ESP-IDF 6's bundle no longer has: verify the chain
 # through the bundle's own GTS Root R1 instead (~700 B of heap).
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
-# The handshake's TX buffer is this big; the client's largest message is a
-# ClientHello under 1 KB. Application data is written per record, and
-# esp_http_client and os_ws both loop on partial writes.
+# The output buffer is this big (+ 333 B), held for the connection's life.
+# The client's largest handshake message is a ClientHello under 1 KB (no
+# client certificate); application data bigger than a record (a request with
+# its <= 4 KB body, a ws message) is split into records, and esp_http_client
+# and os_ws both loop on partial writes.
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
 
 # Mesh messages are untrusted JSON and cJSON parses recursively (~80 B of

@@ -1,17 +1,27 @@
-// Battery voltage on GPIO1 (ADC1, 1:1 divider). Mirrors the stock firmware:
-// 8 calibrated samples at 12 dB, averaged, times two.
+// Battery sense on GPIO1 (ADC1, 12 dB): a 22k/22k divider from VSYS, so the
+// pin reads half of VSYS. VSYS is VBUS through a Schottky on USB (~4.6-4.9 V)
+// and the cell through the power path otherwise (main/core/battery_calc.h
+// says what that means for the percentage, which the OS works out, not the
+// BSP).
 
+#include <stdlib.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_check.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "bsp.h"
 
 static const char *TAG = "bsp_battery";
 
+#define BURST       16                  // readings per bsp_battery_mv()
+#define TRIM        4                   // dropped at each end before averaging
+
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali;
 static adc_channel_t s_chan;
+static SemaphoreHandle_t s_mx;          // the OS task and the console both read
 
 esp_err_t bsp_battery_init(void)
 {
@@ -25,34 +35,45 @@ esp_err_t bsp_battery_init(void)
         .unit_id = unit, .chan = s_chan, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     ESP_RETURN_ON_ERROR(adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali), TAG, "cali");
+    s_mx = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(s_mx, ESP_ERR_NO_MEM, TAG, "mutex");
     return ESP_OK;
+}
+
+int bsp_battery_read(int *out, int n)
+{
+    if (!s_adc || !s_mx) {
+        return -1;
+    }
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    int got = 0;
+    for (; got < n; got++) {
+        int raw, mv;
+        if (adc_oneshot_read(s_adc, s_chan, &raw) != ESP_OK ||
+                adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) {
+            break;
+        }
+        out[got] = mv * BOARD_BAT_DIVIDER;
+    }
+    xSemaphoreGive(s_mx);
+    return got == n ? n : -1;
+}
+
+static int cmp_int(const void *a, const void *b)
+{
+    return *(const int *)a - *(const int *)b;
 }
 
 int bsp_battery_mv(void)
 {
-    if (!s_adc) {
+    int v[BURST];
+    if (bsp_battery_read(v, BURST) != BURST) {
         return -1;
     }
+    qsort(v, BURST, sizeof(v[0]), cmp_int);
     int sum = 0;
-    for (int i = 0; i < 8; i++) {
-        int raw, mv;
-        if (adc_oneshot_read(s_adc, s_chan, &raw) != ESP_OK ||
-                adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) {
-            return -1;
-        }
-        sum += mv;
+    for (int i = TRIM; i < BURST - TRIM; i++) {
+        sum += v[i];
     }
-    return sum / 8 * BOARD_BAT_DIVIDER;
-}
-
-int bsp_battery_percent(int mv)
-{
-    // Linear Li-ion approximation, 3.30 V empty .. 4.15 V full.
-    if (mv <= 3300) {
-        return 0;
-    }
-    if (mv >= 4150) {
-        return 100;
-    }
-    return (mv - 3300) * 100 / (4150 - 3300);
+    return sum / (BURST - 2 * TRIM);
 }

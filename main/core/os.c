@@ -18,6 +18,8 @@
 #include "os.h"
 #include "os_wifi.h"
 #include "os_settings.h"
+#include "os_battery.h"
+#include "os_service.h"
 #include "ui.h"
 
 static const char *TAG = "os";
@@ -123,6 +125,8 @@ os_key_t os_key_parse(const char *name)
 // Status bar
 
 static lv_obj_t *s_bar;
+static lv_obj_t *s_bell;     // background services' unread count (os_service_unread), hidden at 0
+static lv_obj_t *s_mark;     // a service's mark (os_service_mark: Collaborator's eye), hidden without one
 
 static void status_create(lv_obj_t *scr)
 {
@@ -142,6 +146,10 @@ static void status_create(lv_obj_t *scr)
     lv_obj_align(s_batt, LV_ALIGN_RIGHT_MID, -6, 0);
     s_wifi = ui_label(bar, &lv_font_montserrat_14, COL_DIM, LV_SYMBOL_WIFI);
     lv_obj_align(s_wifi, LV_ALIGN_RIGHT_MID, -76, 0);
+    s_bell = ui_label(bar, &lv_font_montserrat_14, COL_PURPLE, "");
+    lv_obj_set_hidden(s_bell, true);
+    s_mark = ui_label(bar, &lv_font_montserrat_14, COL_GREEN, "");
+    lv_obj_set_hidden(s_mark, true);
 
     // Brand gradient hairline under the bar.
     lv_obj_t *line = ui_gradient_bar(bar, 0, OS_STATUS_H - 2, BOARD_LCD_H_RES, 2);
@@ -159,15 +167,18 @@ static void usb_fire(void)
 
 static void status_update(void)
 {
-    int mv = bsp_battery_mv();
-    s_usb = mv < 0 || mv > 4300;
+    os_battery_tick();
+    os_battery_info_t b;
+    os_battery_get(&b);
+    s_usb = !b.known || b.usb;
     usb_fire();
-    if (mv < 0) {
+    if (!b.known || (!b.usb && b.pct < 0)) {
         lv_label_set_text(s_batt, LV_SYMBOL_BATTERY_EMPTY " --");
-    } else if (mv > 4300) {
+    } else if (b.usb) {
+        // VSYS is VBUS: the cell (charging, full or absent) can't be read.
         lv_label_set_text(s_batt, LV_SYMBOL_USB " USB");
     } else {
-        int pct = bsp_battery_percent(mv);
+        int pct = b.pct;
         const char *sym = pct > 80 ? LV_SYMBOL_BATTERY_FULL : pct > 55 ? LV_SYMBOL_BATTERY_3
                         : pct > 30 ? LV_SYMBOL_BATTERY_2 : pct > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
         lv_label_set_text_fmt(s_batt, "%s %d%%", sym, pct);
@@ -184,6 +195,22 @@ static void status_update(void)
     }
     lv_obj_set_style_text_color(s_wifi, ui_col(c), 0);
     lv_obj_align_to(s_wifi, s_batt, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+
+    uint32_t mark_col = COL_GREEN;
+    const char *mark = os_service_mark(&mark_col);
+    lv_obj_set_hidden(s_mark, mark == NULL);
+    if (mark) {
+        lv_label_set_text(s_mark, mark);
+        lv_obj_set_style_text_color(s_mark, ui_col(mark_col), 0);
+        lv_obj_align_to(s_mark, s_wifi, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    }
+
+    int unread = os_service_unread();
+    lv_obj_set_hidden(s_bell, unread <= 0);
+    if (unread > 0) {
+        lv_label_set_text_fmt(s_bell, LV_SYMBOL_BELL "%d", unread > 99 ? 99 : unread);
+        lv_obj_align_to(s_bell, mark ? s_mark : s_wifi, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +225,19 @@ static void toast_show(const char *msg)
     lv_obj_move_foreground(s_toast);    // over a panel drawn after it (os_overlay)
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -22);
     s_toast_until = now_ms() + TOAST_MS;
+}
+
+bool os_toast_rows(int *y0, int *y1)
+{
+    if (!s_toast || lv_obj_is_hidden(s_toast)) {
+        return false;
+    }
+    lv_area_t a;
+    lv_obj_update_layout(s_toast);
+    lv_obj_get_coords(s_toast, &a);
+    *y0 = a.y1;
+    *y1 = a.y2;
+    return true;
 }
 
 static void toast_posted(void *arg)
@@ -405,6 +445,10 @@ static bool overlay_key(os_key_t key, bool repeat)
 
 static void repin_display_events(void);
 
+// Keys whose press went to the app (bit per os_key_t) and when, for on_key_up.
+static uint32_t s_down;
+static int64_t s_down_ms[OS_KEY_COUNT];
+
 static void switch_to(const os_app_t *app)
 {
     if (app == s_app) {
@@ -419,6 +463,7 @@ static void switch_to(const os_app_t *app)
     if (s_app && s_app->on_exit) {
         s_app->on_exit();
     }
+    s_down = 0;                     // presses the old app got: their releases are nobody's
     lv_obj_clean(s_root);
     lv_obj_scroll_to(s_root, 0, 0, LV_ANIM_OFF);
     repin_display_events();         // the app's memory is free now
@@ -430,10 +475,24 @@ static void switch_to(const os_app_t *app)
     }
 }
 
-static void dispatch(os_key_t key, bool repeat)
+static volatile int64_t s_last_key_ms;     // os_last_key_ms()
+
+int64_t os_last_key_ms(void)
 {
+    return s_last_key_ms;
+}
+
+bool os_held(void)
+{
+    return s_hold != NULL;
+}
+
+// True when the app on screen got it (and is still the one on screen).
+static bool dispatch(os_key_t key, bool repeat)
+{
+    s_last_key_ms = now_ms();
     if (confirm_key(key, repeat) || overlay_key(key, repeat)) {
-        return;
+        return false;
     }
     if (key == OS_KEY_HOME) {
         if (!repeat && s_hold) {
@@ -441,11 +500,34 @@ static void dispatch(os_key_t key, bool repeat)
         } else if (!repeat) {
             switch_to(&os_launcher);
         }
-        return;
+        return false;
     }
-    bool handled = s_app->on_key && s_app->on_key(key, repeat);
+    const os_app_t *app = s_app;
+    bool handled = app->on_key && app->on_key(key, repeat);
     if (!handled && key == OS_KEY_BACK && !repeat && s_app != &os_launcher) {
         switch_to(&os_launcher);
+    }
+    return s_app == app;
+}
+
+// A press the app got: its release goes to on_key_up.
+static void press_to_app(os_key_t k)
+{
+    if (s_app->on_key_up && k >= 0 && k < OS_KEY_COUNT) {
+        s_down |= 1u << k;
+        s_down_ms[k] = now_ms();
+    }
+}
+
+static void release(os_key_t k)
+{
+    if (k < 0 || k >= OS_KEY_COUNT || !(s_down & (1u << k))) {
+        return;
+    }
+    s_down &= ~(1u << k);
+    if (s_app->on_key_up) {
+        int64_t ms = now_ms() - s_down_ms[k];
+        s_app->on_key_up(k, (uint32_t)(ms < 0 ? 0 : ms));
     }
 }
 
@@ -528,9 +610,23 @@ static void capture_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     if (s_capturing) {
         int w = lv_area_get_width(area);
         static unsigned char b64[BOARD_LCD_H_RES * 2 * 4 / 3 + 8];
+        // A C app's frame went to the panel past LVGL (bsp_display_frame):
+        // the shot shows it as the panel did, over what LVGL has there.
+        int fx, fy, fw, fh;
+        const uint16_t *frame = bsp_display_frame_last(&fx, &fy, &fw, &fh);
+        static uint16_t row[BOARD_LCD_H_RES];
         for (int y = area->y1; y <= area->y2; y++) {
             size_t n = 0;
-            mbedtls_base64_encode(b64, sizeof(b64), &n, px + (y - area->y1) * w * 2, w * 2);
+            const uint8_t *line = px + (y - area->y1) * w * 2;
+            if (frame && y >= fy && y < fy + fh && area->x1 < fx + fw && area->x2 >= fx) {
+                memcpy(row, line, (size_t)w * 2);
+                for (int x = fx > area->x1 ? fx : area->x1; x < fx + fw && x <= area->x2; x++) {
+                    uint16_t v = frame[(y - fy) * fw + (x - fx)];
+                    row[x - area->x1] = (uint16_t)(v << 8 | v >> 8);
+                }
+                line = (const uint8_t *)row;
+            }
+            mbedtls_base64_encode(b64, sizeof(b64), &n, line, w * 2);
             b64[n] = 0;
             printf("SHOT %d %d %d %s\n", (int)area->x1, y, w, b64);
         }
@@ -627,9 +723,15 @@ static void handle(const os_event_t *ev, os_key_t *held, int64_t *next_repeat, u
 {
     switch (ev->kind) {
     case EV_BUTTONS: {
-        uint32_t down = ev->a & ev->b;
+        uint32_t down = ev->a & ev->b, up = ~ev->a & ev->b;
         if (*held_bit && !(ev->a & *held_bit)) {
             take_over_repeat(ev->a & ~down, held, next_repeat, held_bit);
+        }
+        for (uint32_t bit = 1; up; bit <<= 1) {
+            if (up & bit) {
+                up &= ~bit;
+                release(os_key_from_button(bit));
+            }
         }
         for (uint32_t bit = 1; down; bit <<= 1) {
             if (!(down & bit)) {
@@ -645,7 +747,9 @@ static void handle(const os_event_t *ev, os_key_t *held, int64_t *next_repeat, u
             if (k == OS_KEY_NONE) {
                 continue;
             }
-            dispatch(k, false);
+            if (dispatch(k, false)) {
+                press_to_app(k);
+            }
             if (k != OS_KEY_SELECT && k != OS_KEY_HOME) {
                 *held = k;
                 *held_bit = bit;
@@ -655,7 +759,11 @@ static void handle(const os_event_t *ev, os_key_t *held, int64_t *next_repeat, u
         break;
     }
     case EV_KEY:
-        dispatch(ev->a, false);
+        // The console's keys are taps: a press, then its release.
+        if (dispatch(ev->a, false)) {
+            press_to_app(ev->a);
+            release(ev->a);
+        }
         break;
     case EV_LAUNCH:
         switch_to(ev->app);

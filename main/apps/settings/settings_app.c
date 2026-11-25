@@ -3,6 +3,8 @@
 // Brightness steps with LEFT/RIGHT (SELECT goes round from brightest to dimmest).
 // Invert colours flips with SELECT or LEFT/RIGHT, at once, so wrong colours
 // (RED on cyan: a prototype's panel) are put right where they're seen.
+// Gossip and May become a leader (2.4.0) flip with SELECT or LEFT/RIGHT and
+// tell the gossip services (game/gossip.h, game/gossip_role.h) at once.
 // Software update opens the update screen (apps/update). Factory reset asks
 // again in an OS confirm dialog (SELECT twice).
 
@@ -14,8 +16,10 @@
 #include "esp_app_desc.h"
 #include "core/os_settings.h"
 #include "core/ui.h"
+#include "game/gossip.h"
+#include "game/gossip_role.h"
 
-enum { ROW_THEME, ROW_BRIGHTNESS, ROW_INVERT, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
+enum { ROW_THEME, ROW_BRIGHTNESS, ROW_INVERT, ROW_GOSSIP, ROW_LEADER, ROW_UPDATE, ROW_CALIB, ROW_RESET, ROW_COUNT };
 
 static ui_list_t *s_list;
 
@@ -51,6 +55,23 @@ static void row(int i, ui_row_t *r, void *ctx)
         strlcpy(r->title, "Invert colours", sizeof(r->title));
         strlcpy(r->sub, on ? "Turn it off only if red looks cyan" : "For prototype badges; on if red looks cyan",
                 sizeof(r->sub));
+        strlcpy(r->right, on ? "On" : "Off", sizeof(r->right));
+        r->right_color = COL_TEXT;
+        break;
+    }
+    case ROW_GOSSIP: {
+        bool on = os_setting(OS_SET_GOSSIP) != 0;
+        strlcpy(r->title, "Gossip", sizeof(r->title));
+        strlcpy(r->sub, on ? "Spread and catch programs nearby" : "Off: nothing heard, nothing spread",
+                sizeof(r->sub));
+        strlcpy(r->right, on ? "On" : "Off", sizeof(r->right));
+        r->right_color = COL_TEXT;
+        break;
+    }
+    case ROW_LEADER: {
+        bool on = os_setting(OS_SET_LEADER) != 0;
+        strlcpy(r->title, "May become a leader", sizeof(r->title));
+        strlcpy(r->sub, "Gossip roles: Leader, MEV Bot and more", sizeof(r->sub));
         strlcpy(r->right, on ? "On" : "Off", sizeof(r->right));
         r->right_color = COL_TEXT;
         break;
@@ -143,7 +164,7 @@ static bool on_key(os_key_t k, bool repeat)
         set_brightness(k);
         return true;
     }
-    bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && (i == ROW_THEME || i == ROW_INVERT));
+    bool change = k == OS_KEY_SELECT || ((k == OS_KEY_LEFT || k == OS_KEY_RIGHT) && (i == ROW_THEME || i == ROW_INVERT || i == ROW_GOSSIP || i == ROW_LEADER));
     if (!change || repeat) {
         return k != OS_KEY_BACK;
     }
@@ -155,6 +176,16 @@ static bool on_key(os_key_t k, bool repeat)
     case ROW_INVERT:
         os_setting_set(OS_SET_LCD_INVERT, !os_setting(OS_SET_LCD_INVERT));
         os_invert_apply();
+        ui_list_refresh(s_list);
+        break;
+    case ROW_GOSSIP:
+        os_setting_set(OS_SET_GOSSIP, !os_setting(OS_SET_GOSSIP));
+        gossip_setting_changed();
+        ui_list_refresh(s_list);
+        break;
+    case ROW_LEADER:
+        os_setting_set(OS_SET_LEADER, !os_setting(OS_SET_LEADER));
+        gossip_role_setting_changed();
         ui_list_refresh(s_list);
         break;
     case ROW_UPDATE:

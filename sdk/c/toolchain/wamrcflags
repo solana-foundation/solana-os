@@ -1,0 +1,30 @@
+# wamrc flags that turn app.wasm into the badge's native code (app.aot), one
+# argument a line (# starts a comment). ESP32-C5: single-core RV32IMAC, no FPU.
+# Measured on a badge (Solana OS 2.3.0, CHANGELOG): this set loads and runs in
+# place from a flash slot, every trap comes back as an error, and it is 26 %
+# smaller and faster than plain --xip. Change AOT_TARGET in `versions` with
+# any change here.
+--target=riscv32
+--target-abi=ilp32
+# Needed: without a CPU wamrc applies no intrinsic set.
+--cpu=generic-rv32
+--cpu-features=+m,+a,+c
+--opt-level=3
+--size-level=3
+# Software bounds checks on every memory access (the badge has no guard pages).
+# Never 0: an out-of-bounds read then restarts the badge.
+--bounds-checks=1
+# The badge's WAMR is built without these.
+--disable-simd
+--disable-ref-types
+# Run in place: no relocations in the code, so the badge maps the file from
+# flash and never copies native code into RAM. Calls to helpers go through a
+# table; the list below is what the badge's WAMR provides for a chip without
+# an FPU (soft-float, 64-bit division, count-trailing-zeros). Single items are
+# WAMR's own names (core/iwasm/aot/aot_intrinsic.c): count-trailing-zeros is
+# llvm.cttz.*, not i32.ctz (a name wamrc ignores, AOT_TARGET -1). Without it
+# LLVM looks ctz up in a table in .rodata, a relocation in the code that the
+# badge refuses ("cannot apply relocation to text section"): every app using
+# wasi-libc's printf or qsort (measured, Solana OS 2.3.0).
+--xip
+--enable-builtin-intrinsics=fp.common,fpxint,i64.div_s,i64.div_u,i64.rem_s,i64.rem_u,f32_demote_f64,f64_promote_f32,llvm.cttz.i32,llvm.cttz.i64

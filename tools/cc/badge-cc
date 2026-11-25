@@ -1,0 +1,185 @@
+#!/bin/sh
+# badge-cc: builds a C app for Solana OS the way the App Store does
+# (docs/C_API.md "How it is compiled"). POSIX sh.
+#
+#   badge-cc <app dir> -o app.wasm [--aot app.aot] [--report] [-q]
+#   badge-cc --check app.wasm [--report]
+#
+# Compiles main.c and every other .c file under the app folder with
+# sdk/c/toolchain/{cflags,ldflags} (headers: the SDK's include/ and the app
+# folder), links one WebAssembly module, then checks it like the store and the
+# badge do: only the imports in sdk/c/toolchain/imports, on_start exported, one
+# memory of at most 4 MB, no WebAssembly feature beyond what the badge runs,
+# at most 1.5 MB. With --aot it also runs wamrc with toolchain/wamrcflags (the
+# badge only ever runs native code the store made; this is for checking) and
+# refuses a file a badge can't run in place (not XIP, or code relocations).
+# --check runs the checks alone on a module built elsewhere. --report prints
+# the module's imports, exports and features.
+#
+# The toolchain comes from tools/cc/fetch.sh, in tools/cc/.toolchain or
+# $SOLANA_CC_TOOLCHAIN. Exit status: 0 built (warnings may be printed),
+# 1 refused or failed.
+
+set -eu
+
+me=badge-cc
+here=$(cd "$(dirname "$0")" && pwd)
+sdk=$(cd "$here/../../sdk/c" && pwd)
+tc=${SOLANA_CC_TOOLCHAIN:-$here/.toolchain}
+tcdir="$sdk/toolchain"
+
+die() { echo "$me: error: $*" >&2; exit 1; }
+warn() { echo "$me: warning: $*" >&2; }
+usage() {
+    echo "usage: $me <app dir> -o app.wasm [--aot app.aot] [--report] [-q]" >&2
+    echo "       $me --check app.wasm [--report]" >&2
+    exit 1
+}
+
+# abspath <path>: the absolute path of a file that may not exist yet.
+abspath() {
+    d=$(dirname "$1")
+    [ -d "$d" ] || die "no such directory: $d"
+    echo "$(cd "$d" && pwd)/$(basename "$1")"
+}
+
+app="" out="" aot="" check="" report="" quiet=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -o) [ $# -ge 2 ] || usage; out=$2; shift 2 ;;
+    --aot) [ $# -ge 2 ] || usage; aot=$2; shift 2 ;;
+    --check) [ $# -ge 2 ] || usage; check=$2; shift 2 ;;
+    --report) report=1; shift ;;
+    -q) quiet=1; shift ;;
+    -h | --help) usage ;;
+    -*) die "unknown option: $1" ;;
+    *) [ -z "$app" ] || usage; app=$1; shift ;;
+    esac
+done
+
+# checkmod <module> <name shown>: the store's checks; prints errors, returns 1.
+checkmod() {
+    size=$(wc -c <"$1" | tr -d ' ')
+    rc=0
+    if [ "$size" -gt 1572864 ]; then
+        echo "$2: error: the module is $size bytes, over 1.5 MB (1572864)"
+        rc=1
+    fi
+    od -An -v -tu1 "$1" | awk -f "$here/wasm-check.awk" -v name="$2" -v imports="$tcdir/imports" \
+        -v maxpages=64 -v report="$report" || rc=1
+    [ -n "$report" ] && echo "size: $size bytes"
+    return $rc
+}
+
+if [ -n "$check" ]; then
+    [ -z "$app$out$aot" ] || usage
+    [ -f "$check" ] || die "no such file: $check"
+    checkmod "$check" "$check"
+    exit $?
+fi
+
+[ -n "$app" ] && [ -n "$out" ] || usage
+[ -d "$app" ] || die "no such app folder: $app"
+[ -f "$app/main.c" ] || die "$app has no main.c"
+clang="$tc/wasi-sdk/bin/clang"
+[ -x "$clang" ] || die "no toolchain in $tc: run $here/fetch.sh first"
+app=$(cd "$app" && pwd)
+out=$(abspath "$out")
+[ -z "$aot" ] || aot=$(abspath "$aot")
+
+# --- the package (LUA_API.md "The package"; the store refuses what fails) ---
+nfiles=0 total=0 srcs=""
+while IFS= read -r f; do
+    case "$app/$f" in "$out" | "$aot") continue ;; esac
+    case "$f" in */.* | .*) warn "skipping $f (a hidden file; the store refuses names starting with '.')"; continue ;; esac
+    sz=$(wc -c <"$app/$f" | tr -d ' ')
+    case "$f" in
+    main.c)
+        [ "$sz" -le 65536 ] || die "main.c is $sz bytes, over 64 KB" ;;
+    app.json) ;;
+    *)
+        nfiles=$((nfiles + 1))
+        total=$((total + sz))
+        [ "$sz" -le 262144 ] || warn "$f is $sz bytes: the store refuses bundled files over 256 KB"
+        if ! echo "$f" | grep -Eq '^[a-z0-9_-][a-z0-9_.-]*(/[a-z0-9_-][a-z0-9_.-]*){0,3}$' || [ ${#f} -gt 64 ] ||
+            echo "$f" | grep -Eq '\.(/|$)'; then
+            warn "$f: the store refuses this path (lowercase letters, digits, _ - . and /; <= 64 characters, <= 4 levels; no name starting or ending with '.')"
+        fi ;;
+    esac
+    case "$f" in
+    main.c) ;;
+    *.c)
+        case "$f" in *[!a-z0-9_./-]*) die "$f: source paths use lowercase letters, digits, _ - . and / only" ;; esac
+        srcs="$srcs $f" ;;
+    esac
+done <<EOF
+$(cd "$app" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+EOF
+[ "$nfiles" -le 64 ] || warn "$nfiles bundled files: the store takes at most 64 besides main.c and app.json"
+[ "$total" -le 1048576 ] || warn "bundled files total $total bytes: the store takes at most 1 MB"
+if [ ! -f "$app/app.json" ]; then
+    warn "no app.json (the submit page fills one in; it must say \"lang\": \"c\")"
+elif ! grep -Eq '"lang"[[:space:]]*:[[:space:]]*"c"' "$app/app.json"; then
+    warn "app.json doesn't say \"lang\": \"c\": the store would take this folder for a Lua app"
+fi
+
+# --- compile and link -----------------------------------------------------------
+# The flag files hold one argument a line; '#' starts a comment.
+set --
+while IFS= read -r a || [ -n "$a" ]; do
+    a=${a%%#*}
+    a=$(echo "$a" | tr -d ' \t\r')
+    [ -z "$a" ] || set -- "$@" "$a"
+done <<EOF
+$(cat "$tcdir/cflags" "$tcdir/ldflags")
+EOF
+tmp="$out.tmp.$$"
+trap 'rm -f "$tmp"' EXIT INT TERM
+# Run from the app folder with relative paths, so diagnostics name files as
+# the author knows them (lib/maze.c:12:3: error: ...).
+# shellcheck disable=SC2086 # srcs: paths checked above, no spaces
+(cd "$app" && "$clang" "$@" "--sysroot=$tc/wasi-sdk/share/wasi-sysroot" \
+    "-I$sdk/include" -I. main.c $srcs -o "$tmp") || die "compiling failed"
+
+if ! checkmod "$tmp" "$(basename "$out")"; then
+    exit 1
+fi
+mv "$tmp" "$out"
+
+# --- native code (checking only: the badge takes app.aot only from the store) --
+if [ -n "$aot" ]; then
+    set --
+    while IFS= read -r a || [ -n "$a" ]; do
+        a=${a%%#*}
+        a=$(echo "$a" | tr -d ' \t\r')
+        [ -z "$a" ] || set -- "$@" "$a"
+    done <"$tcdir/wamrcflags"
+    log=$("$tc/wamrc" "$@" -o "$aot" "$out" 2>&1) || { echo "$log" >&2; rm -f "$aot"; die "wamrc failed"; }
+    [ -f "$aot" ] || { echo "$log" >&2; die "wamrc made no $aot"; }
+    # Run in place, as the store checks (server/src/cc.ts aotProblems): the
+    # target section says XIP (e_type 4, at byte 20), and no relocation group
+    # patches the code (".rela.text" / ".rel.text" in the relocation section's
+    # names: a u16 length, the name, a NUL). A badge maps app.aot from flash
+    # and can't patch it ("cannot apply relocation to text section").
+    etype=$(od -An -tu2 -j20 -N2 "$aot" | tr -d ' ')
+    hex=$(od -An -v -tx1 "$aot" | tr -d ' \n')
+    why=""
+    if [ "$etype" != 4 ]; then
+        why="it isn't built to run in place (e_type $etype, not 4: is --xip in wamrcflags?)"
+    else
+        case "$hex" in
+        *0b002e72656c612e7465787400* | *0a002e72656c2e7465787400*)
+            why="its code needs relocating (a .rela.text section): the badge runs native code in place from flash and can't patch it" ;;
+        esac
+    fi
+    if [ -n "$why" ]; then
+        rm -f "$aot"
+        die "$(basename "$aot"): $why; the store would refuse it too"
+    fi
+fi
+
+if [ -z "$quiet" ]; then
+    msg="$(basename "$out"): $(wc -c <"$out" | tr -d ' ') bytes"
+    [ -z "$aot" ] || msg="$msg; $(basename "$aot"): $(wc -c <"$aot" | tr -d ' ') bytes"
+    echo "$me: $msg"
+fi

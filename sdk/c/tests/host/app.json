@@ -1,0 +1,1 @@
+{ "id": "host-probe", "name": "Host probe", "lang": "c", "version": "0.0.1", "permissions": ["led", "mesh", "wifi", "ble"] }

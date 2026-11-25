@@ -1,0 +1,27 @@
+# Compiler flags for C apps, one argument a line (# starts a comment). The
+# server compiles with exactly these, plus the path-dependent ones badge-cc
+# adds: --sysroot=<wasi-sdk>/share/wasi-sysroot -I<sdk>/include -I<app dir>.
+--target=wasm32-wasip1
+# WebAssembly features: MVP plus the four extensions WAMR 2.4.5 runs in a
+# small embedded build. Everything else is spelled out off, so a toolchain
+# bump can't turn it on unnoticed.
+-mcpu=mvp
+-mmutable-globals
+-msign-ext
+-mnontrapping-fptoint
+-mbulk-memory
+-mno-simd128
+-mno-atomics
+-mno-reference-types
+-mno-multivalue
+-mno-exception-handling
+-mno-tail-call
+-mno-extended-const
+-std=gnu17
+-O2
+-ffunction-sections
+-fdata-sections
+-g0
+-Wall
+# Defined for code shared between an app and a host build.
+-DSOS_APP=1

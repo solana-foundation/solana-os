@@ -56,3 +56,6 @@ void os_socket_close(void *ctx);
 
 // From os_socket_open until its CLOSE is taken: the server connection is off.
 bool os_socket_active(void);
+// Messages the app queued that haven't gone out yet, the one being written
+// included (2.5.0: sock:queued()).
+int os_socket_queued(void *ctx);

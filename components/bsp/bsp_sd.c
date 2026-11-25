@@ -78,7 +78,11 @@ esp_err_t bsp_spi_bus_init(void)
         .miso_io_num = BOARD_SPI_MISO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = BOARD_LCD_H_RES * 40 * sizeof(uint16_t),
+        // A whole screen in one transaction (2.3.0): ESP-IDF master's esp_lcd no
+        // longer splits a big colour buffer into chunks, and a C app's ui_frame
+        // (bsp_display_frame) sends up to the full screen at once. Only the DMA
+        // descriptors grow with it (~1 KB of SRAM).
+        .max_transfer_sz = BOARD_LCD_H_RES * BOARD_LCD_V_RES * sizeof(uint16_t),
     };
     ESP_RETURN_ON_ERROR(spi_bus_initialize(BOARD_SPI_HOST, &bus, SPI_DMA_CH_AUTO), TAG, "spi bus");
     gpio_set_pull_mode(BOARD_SPI_MISO, GPIO_PULLUP_ONLY);

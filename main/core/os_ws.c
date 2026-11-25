@@ -5,15 +5,18 @@
 // have buffered with the upgrade answer (a host's greeting would stall).
 //
 // RAM is the constraint, as for os_http: the handshake to a host we never
-// spoke to is a full one (~33 KB at its peak), so it needs the same room as
-// os_http's first connection. Once open, the connection keeps record buffers
-// the size of its records (dynamic mbedTLS buffers), and a message costs its
-// own size.
+// spoke to is a full one (~44 KB at its peak, 2.4.0), so it needs the same
+// room as os_http's first connection. Once open, the connection holds
+// mbedTLS's fixed record buffers (16.7 KB in, 2.3 KB out, PSRAM first: 2.4.0
+// dropped the dynamic buffers) until it closes, and a message costs its own
+// size on top. The socket takes the server connection's place
+// (os_http_hangup() first), so the two never hold buffers at once.
 //
 // The badge server checked the host's addresses when it signed the URL; we
 // check them again from here, where a rebinding answer or the network's own
 // DNS could point a store app at the network the badge is on.
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,9 +40,10 @@ static const char *TAG = "os_ws";
 
 #define TIMEOUT_MS      10000
 #define HOST_MAX        64              // validate.ts: host names are at most 64 characters
-// os_http.c's room for a full handshake: ~33 KB at the peak, ~24 KB left over.
-#define TLS_MIN_FREE    (56 * 1024)
-#define TLS_MIN_BLOCK   (8 * 1024)
+// os_http.c's room for a full handshake (2.4.0, fixed record buffers): ~44 KB
+// at the peak, ~24 KB left over, and one block for the 16.7 KB input buffer.
+#define TLS_MIN_FREE    (68 * 1024)
+#define TLS_MIN_BLOCK   (17 * 1024)
 #define ANSWER_MAX      2048            // the upgrade answer's headers
 #define CONTROL_MAX     125             // RFC 6455: control frames carry at most this
 #define USER_AGENT      "SolanaOS-Badge/1"
@@ -105,7 +109,11 @@ static bool wr_all(const char *buf, size_t n)
     return true;
 }
 
-// One frame, masked as a client must (in place, restored after).
+// One frame, masked as a client must. Header and payload go in one write, so
+// one TLS record and one TCP segment (2.5.0): two writes left the payload
+// behind Nagle until the host acknowledged the header, a delayed ACK of up to
+// ~200 ms per message. With no room for the copy, in place and two writes.
+#define FRAME_STACK     160             // the cloud task has 6 KB of stack, TLS writes under it
 static bool send_frame(int op, char *data, size_t len)
 {
     uint8_t h[8];
@@ -121,6 +129,19 @@ static bool send_frame(int op, char *data, size_t len)
     uint8_t *mask = h + hl;
     esp_fill_random(mask, 4);
     hl += 4;
+    char stack[FRAME_STACK];
+    char *buf = hl + len <= sizeof(stack) ? stack : malloc(hl + len);
+    if (buf) {
+        memcpy(buf, h, hl);
+        for (size_t i = 0; i < len; i++) {
+            buf[hl + i] = (char)(data[i] ^ mask[i % 4]);
+        }
+        bool ok = wr_all(buf, hl + len);
+        if (buf != stack) {
+            free(buf);
+        }
+        return ok;
+    }
     for (size_t i = 0; i < len; i++) {
         data[i] ^= mask[i % 4];
     }
@@ -313,6 +334,11 @@ esp_err_t os_ws_connect(const char *url, const char *protocols)
             ESP_LOGW(TAG, "%s: no TLS connection", host);
             err = ESP_FAIL;
         } else {
+            // Small messages both ways, each wanted now (2.5.0): no Nagle.
+            int fd = esp_transport_get_socket(s_tls), one = 1;
+            if (fd >= 0 && setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+                ESP_LOGW(TAG, "TCP_NODELAY: %d", errno);
+            }
             err = upgrade(host, path, protocols && protocols[0] ? protocols : NULL);
         }
     }

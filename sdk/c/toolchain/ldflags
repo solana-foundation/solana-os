@@ -1,0 +1,13 @@
+# Linker flags for C apps, one argument a line (# starts a comment), given to
+# clang (the driver) after cflags when it links.
+# A reactor: no main()/_start; the badge calls _initialize once, then on_start.
+-mexec-model=reactor
+-Wl,--gc-sections
+-Wl,--strip-all
+# 32 KB of stack, placed first so an overflow traps instead of writing over data.
+-Wl,-z,stack-size=32768
+-Wl,--stack-first
+# Memory starts as small as the data and stack need and may grow (malloc) to 4 MB.
+-Wl,--max-memory=4194304
+# The badge calls C callbacks (sos_push_fn) through the function table.
+-Wl,--export-table

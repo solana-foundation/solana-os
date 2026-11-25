@@ -42,6 +42,7 @@ typedef enum {
 typedef enum {
     OS_PEER_BADGE,
     OS_PEER_BEACON,
+    OS_PEER_STATION,        // a Collaborator station (MESH.md "Collaborator stations", 2.3.0): APP messages only
 } os_peer_kind_t;
 
 typedef struct {
@@ -126,6 +127,11 @@ int os_mesh_scan_take(uint8_t channels[OS_MESH_SCAN_CH_MAX], int *n_ch, os_mesh_
 // Peers heard in the last OS_MESH_PEER_TTL_MS, strongest first.
 int os_mesh_peers(os_mesh_peer_t *out, int max);
 bool os_mesh_peer(const char *id, os_mesh_peer_t *out);
+// os_mesh_peer, else a live entry of the senders heard (2.4.0, MESH.md "Senders
+// heard": a radio sender past the 20-entry table, its HELLO-bound MAC; only id,
+// mac, rssi, kind and last_ms are set): someone an APP message can be sent to
+// now. Never a bridged peer from the senders table. Any task.
+bool os_mesh_near(const char *id, os_mesh_peer_t *out);
 // Keep a peer in the table whatever else is heard (a trade partner, an
 // accepted X Dex peer); unpin when done. False if the id isn't in the table.
 // Only HELLOs add peers and set their MAC: other messages from an unknown id
@@ -151,6 +157,14 @@ void os_mesh_nonce(char out[17]);           // 16 random lowercase hex + NUL
 // os_mesh_keep_wifi() holds it.
 void os_mesh_acquire(void);
 void os_mesh_release(void);
+// The radio stays awake (no modem sleep) while anyone holds it (2.5.0): a
+// Lua app's open WebSocket does (os_socket.c), since with modem sleep the AP
+// holds every packet for the badge until its next wake (750 to 2 500 ms round
+// trips measured). Counted; any task, never with os_mesh's lock held.
+void os_mesh_awake_hold(bool hold);
+// id is a bridged peer in the table, live or not: where os_mesh_send sends it
+// (through the server). Any task.
+bool os_mesh_bridged(const char *id);
 
 // For os_bridge. Bridges need the network: while kept, mesh apps don't suspend
 // Wi-Fi (a suspension of ours ends at once; it comes back if a mesh app is
@@ -171,6 +185,33 @@ void os_mesh_tag(const uint8_t key[16], const char *msg, char out[OS_MESH_TAG_LE
 void os_mesh_beacon(const char *id);
 void os_mesh_beacon_hello(const char *json);    // <= 200 bytes, copied; NULL = silent
 bool os_mesh_beacon_on(void);
+
+// Collaborator stations (game/collab.c, docs/MESH.md "Collaborator stations", 2.3.0).
+// While a station id is set, the mesh task also broadcasts its HELLO
+// ({"k":"s","n":name}; a name starting with '@' loses it) under that id, next to
+// the badge's own, Wi-Fi stays joined (as for a bridge) and the radio awake.
+// The badge's own HELLO and messages go on under its id. NULL or "" ends it.
+void os_mesh_station(const char *id, const char *name);
+bool os_mesh_station_on(void);
+bool os_mesh_station_id(char out[OS_MESH_ID_LEN + 1]);     // false when none
+// An APP message (MESH.md §6) from the station: to_id NULL or "*" broadcasts,
+// else a peer heard over the air (never over a bridge). Only APP: the station
+// never sends anything tagged. ESP_ERR_INVALID_STATE without a station or off
+// the mesh channel, ESP_ERR_NOT_FOUND for an unknown peer. Any task.
+esp_err_t os_mesh_station_send(const char *to_id, const char *json);
+// Replaces the station's HELLO while a station id is set (a Gossip role, 2.4.0,
+// docs/GOSSIP.md §4): a whole JSON object, <= 200 bytes, copied; NULL or "" goes
+// back to {"k":"s","n":name}. os_mesh_station() resets it. Any task.
+void os_mesh_station_hello(const char *json);
+
+// Extra fields of the badge's own HELLO (Gossip, 2.4.0, docs/GOSSIP.md §4): a
+// ready fragment such as "st":"…","g":"…", appended after "lv". <= 160 bytes of
+// printable ASCII with no braces (anything else clears it), copied under the
+// lock; the HELLO stays one fragment (232 bytes), and a HELLO that wouldn't fit
+// goes out without them. NULL or "" clears. Any task. Receivers don't get these
+// fields through os_mesh_peer_t or on_hello: whoever needs them parses the raw
+// HELLO in its own OS_MESH_HELLO subscriber (game/gossip.c).
+void os_mesh_hello_extra(const char *fields);
 
 typedef struct {
     char id[OS_MESH_ID_LEN + 1];

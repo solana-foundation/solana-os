@@ -1,0 +1,12 @@
+{
+  "id": "hello-c",
+  "name": "Hello C",
+  "version": "1.0.0",
+  "author": "@you",
+  "summary": "Labels, keys and a timer: the smallest C app.",
+  "icon": "star",
+  "accent": "14F195",
+  "category": "demos",
+  "lang": "c",
+  "permissions": []
+}

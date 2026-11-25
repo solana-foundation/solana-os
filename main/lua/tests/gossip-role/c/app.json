@@ -1,0 +1,1 @@
+{"id":"t-c-gossip-role","name":"Test: C gossip roles","version":"1.0.0","author":"Solana OS","lang":"c","permissions":["gossip"]}

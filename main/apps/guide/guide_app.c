@@ -38,7 +38,8 @@ typedef enum { V_TABS, V_PAGES, V_READ, V_REVEAL, V_WELCOME } view_t;
 
 // Category ids in the Guide's order and the rarities (server/API.md); names
 // and colours come from ui_cat_name(), ui_cat_color() and ui_rarity_color().
-static const char *const cats[] = {"events", "culture", "tech", "releases", "ecosystem", "history", "people", "lore"};
+// Gossip came with 2.4.0: the server shows older badges its pages as Tech docs.
+static const char *const cats[] = {"events", "culture", "tech", "releases", "ecosystem", "history", "people", "lore", "gossip"};
 #define CAT_COUNT   ((int)(sizeof(cats) / sizeof(cats[0])))
 static const char *const rarities[] = {"common", "rare", "epic", "legendary"};
 enum { R_COMMON, R_RARE, R_EPIC, R_LEGENDARY };
@@ -118,14 +119,21 @@ static void show_tab(int tab);
 static void tab_render(void);
 static void welcome_open(void);
 
-static int cat_index(const char *id)
+// -1 for a category this build doesn't know (one the server adds later).
+static int cat_find(const char *id)
 {
     for (int i = 0; i < CAT_COUNT; i++) {
         if (!strcmp(cats[i], id)) {
             return i;
         }
     }
-    return 0;
+    return -1;
+}
+
+static int cat_index(const char *id)
+{
+    int i = cat_find(id);
+    return i < 0 ? 0 : i;
 }
 
 static int rarity_index(const char *id)
@@ -181,7 +189,10 @@ static void guide_apply(const cJSON *j)
     memset(s->catn, 0, sizeof(s->catn));
     const cJSON *c;
     cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(j, "categories")) {
-        int i = cat_index(game_jstr(c, "id"));
+        int i = cat_find(game_jstr(c, "id"));
+        if (i < 0) {
+            continue;           // never on top of another category's counts
+        }
         s->catn[i].owned = game_jint(c, "owned", 0);
         s->catn[i].total = game_jint(c, "total", 0);
     }

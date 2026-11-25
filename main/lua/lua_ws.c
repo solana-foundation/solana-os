@@ -409,6 +409,15 @@ static int m_close(lua_State *L)
     return 0;
 }
 
+// sock:queued() (2.5.0): messages sent but not out yet, so a real-time app
+// can skip a state update rather than queue a stale one.
+static int m_queued(lua_State *L)
+{
+    lh_t *s = live(L);
+    lua_pushinteger(L, s && s->ws.state == LH_WS_OPEN ? os_socket_queued(s->ws.sock) : 0);
+    return 1;
+}
+
 static int m_state(lua_State *L)
 {
     lh_t *s = live(L);
@@ -418,7 +427,8 @@ static int m_state(lua_State *L)
 
 void lh_open_ws(lua_State *L)
 {
-    static const luaL_Reg methods[] = {{"send", m_send}, {"close", m_close}, {"state", m_state}, {NULL, NULL}};
+    static const luaL_Reg methods[] = {{"send", m_send}, {"close", m_close}, {"state", m_state},
+                                        {"queued", m_queued}, {NULL, NULL}};
     static const luaL_Reg fns[] = {{"open", l_open}, {NULL, NULL}};
     luaL_newmetatable(L, WS_META);
     luaL_newlib(L, methods);

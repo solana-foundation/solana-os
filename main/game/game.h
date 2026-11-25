@@ -84,3 +84,5 @@ void trade_on_mesh(const os_mesh_peer_t *from, cJSON *msg);
 void quests_init(void);
 void quests_tick(int64_t now);
 void quests_on_mesh(const os_mesh_peer_t *from, cJSON *msg);
+// services.c: the built-in background services' entries (core/os_service.h).
+void game_services_init(void);

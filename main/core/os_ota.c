@@ -30,6 +30,7 @@
 #include "os_http.h"
 #include "os_ota.h"
 #include "os_ota_flash.h"
+#include "os_service.h"
 
 static const char *TAG = "os_ota";
 
@@ -107,11 +108,7 @@ static bool sha256_file(const char *path, uint8_t out[32], size_t *size)
 
 int os_ota_battery(void)
 {
-    int mv = bsp_battery_mv();
-    if (mv < 0) {
-        return -1;
-    }
-    return mv > 4300 ? 100 : bsp_battery_percent(mv);   // over 4.3 V: USB power (the status bar's rule)
+    return os_battery_pct();            // 100 on USB power, the filtered percentage otherwise
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +237,7 @@ esp_err_t os_ota_start(void)
         bool plain = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || strchr(".-_~", *c);
         n += snprintf(path + n, sizeof(path) - n, plain ? "%c" : "%%%02X", (unsigned char)*c);
     }
+    os_service_stop_apps("Stopped: software update");    // app services stop before the download (2.3.0)
     mkdir(OTA_DIR, 0775);
     unlink(OTA_FILE);
     s_ctx = os_api_token();

@@ -39,8 +39,9 @@ static int cmd_info(int argc, char **argv)
            esp_app_get_description()->version, BOARD_SPI_SCK, BOARD_SPI_MOSI, BOARD_SPI_MISO, BOARD_LCD_CS, BOARD_LCD_DC, BOARD_LCD_RST, BOARD_LCD_BL,
            BOARD_SD_CS, BOARD_I2C_SCL, BOARD_I2C_SDA, BOARD_TCA9534_ADDR, BOARD_TCA9534_INT, BOARD_BOOT_BTN,
            BOARD_RGB_COUNT, BOARD_RGB_GPIO, BOARD_BAT_ADC_GPIO, BOARD_BAT_DIVIDER, BOARD_UART_TX, BOARD_UART_RX);
-    int mv = bsp_battery_mv();
-    printf("Battery: %d mV (%d%%)\nButtons: 0x%02lX\nHeap: %u bytes free\n", mv, bsp_battery_percent(mv),
+    char batt[40];
+    os_battery_text(batt, sizeof(batt));
+    printf("Battery: %s\nButtons: 0x%02lX\nHeap: %u bytes free\n", batt,
            (unsigned long)bsp_buttons_get(), (unsigned)heap_caps_get_free_size(OS_MEM_SRAM));
     if (os_mem_psram()) {
         printf("PSRAM: %u KB, %u KB free\n", (unsigned)(heap_caps_get_total_size(OS_MEM_PSRAM) / 1024),
@@ -315,8 +316,9 @@ static int cmd_heap(int argc, char **argv)
            (unsigned)heap_caps_get_largest_free_block(OS_MEM_SRAM));
     if (os_mem_psram()) {
         // Of that, what malloc can still take: not the 32 KB DMA pool (os_mem.h).
-        printf("sram: %u free for malloc, %u min\n", (unsigned)os_mem_sram_malloc_free(),
-               (unsigned)os_mem_sram_malloc_min());
+        // Its low point only as a range: os_mem_sram_malloc_min() says why.
+        printf("sram: %u free for malloc, %u to %u min\n", (unsigned)os_mem_sram_malloc_free(),
+               (unsigned)os_mem_sram_malloc_min(), (unsigned)heap_caps_get_minimum_free_size(OS_MEM_SRAM_MALLOC));
         printf("psram: %u free, %u min, %u largest block, %u total\n", (unsigned)heap_caps_get_free_size(OS_MEM_PSRAM),
                (unsigned)heap_caps_get_minimum_free_size(OS_MEM_PSRAM),
                (unsigned)heap_caps_get_largest_free_block(OS_MEM_PSRAM),
@@ -358,6 +360,11 @@ static void start_now(void)
 {
     esp_console_repl_t *repl;
     esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+    // One line of history, not 32: each line is a small strdup in SRAM that lives
+    // until it's pushed out, the last long-lived thing splitting the heap after an
+    // app (measured on 2.2.0). The console mostly talks to tools, and over most
+    // serial links it runs in dumb mode, where arrow-key recall doesn't work anyway.
+    repl_cfg.max_history_len = 1;
     repl_cfg.prompt = "sol>";
     // lua list, sums and recv parse manifests and hash files on this task:
     // with the default 4 KB, lua list left ~600 bytes of it unused.

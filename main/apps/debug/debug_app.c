@@ -525,7 +525,8 @@ static void tick_system(void)
     esp_flash_get_size(NULL, &flash);
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    int mv = bsp_battery_mv();
+    char batt[40];
+    os_battery_text(batt, sizeof(batt));
     os_wifi_info_t w;
     os_wifi_get_info(&w);
     uint32_t up = esp_timer_get_time() / 1000000;
@@ -538,7 +539,7 @@ static void tick_system(void)
         "Uptime    %luh %02lum %02lus\n"
         "Heap      %u KB free, %u KB min (SRAM)\n"
         "          %u KB PSRAM free\n"
-        "Battery   %d mV (%d%%)\n"
+        "Battery   %s\n"
         "Wi-Fi     %s %s\n"
         "Reset     %s",
         chip.revision / 100, chip.revision % 100, chip.cores, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
@@ -548,7 +549,7 @@ static void tick_system(void)
         (unsigned)(heap_caps_get_free_size(OS_MEM_SRAM) / 1024),
         (unsigned)(heap_caps_get_minimum_free_size(OS_MEM_SRAM) / 1024),
         (unsigned)(heap_caps_get_free_size(OS_MEM_PSRAM) / 1024),
-        mv, bsp_battery_percent(mv),
+        batt,
         w.state == OS_WIFI_CONNECTED ? w.ssid : "not connected", w.ip,
         reset_reason());
 }
